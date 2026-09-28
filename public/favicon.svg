@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.6" stroke-linecap="round">
+  <!-- 图标语义：书写格（外框 + 十字格线），呼应"照着格子手写"的核心流程 -->
+  <rect x="3" y="3" width="18" height="18" rx="3" />
+  <path d="M12 3v18M3 12h18" />
+</svg>

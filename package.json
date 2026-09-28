@@ -1,0 +1,22 @@
+{
+  "name": "sxfont-creator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SxFontCreator 手写字体制作器：打印模板照着写、扫描回传，全自动切格提取手写字形并生成个人手写体字体（纯前端、零后端、离线可用）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:smoke": "node test/smoke-app.mjs"
+  },
+  "dependencies": {
+    "pinia": "^2.3.1",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "puppeteer-core": "^25.10.0",
+    "vite": "^6.0.7"
+  }
+}
