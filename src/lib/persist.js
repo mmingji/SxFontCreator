@@ -1,14 +1,21 @@
-// 项目数据持久化：IndexedDB 为主存储（容量大，容纳数千字形数据），localStorage 作快照兜底
-// 背景（沿用参考项目 sn-font-manager 的实测结论）：localStorage 约 5MB 上限，字形数据一多就
-// setItem 抛 QuotaExceededError，数据存不进 → 刷新即丢；IndexedDB 容量远超（通常数百 MB 级）。
-// 兼容：旧数据只存在 localStorage 时仍可读出；新数据双写（IDB 完整 + LS 快照，LS 超限时忽略）。
+// 项目数据持久化（职责）：把"当前项目"安全地存进本机，并在下次打开时读回来。
 //
-// 本文件在本项目里的键名与参考项目不同（避免两套程序在同一浏览器里互相覆盖数据）：
-//   localStorage 键 snfont.project.v1  → sxfont.project.v1
-//   数据库名     snfont-db              → sxfont-db
-// 项目数据的结构见 store/project.js 顶部注释。
+// 存储分层（这是重构后的关键约定，**不要再往两边都写**）：
+//   IndexedDB   —— **唯一真相**：项目元信息与字形数据都只写这里（容量大，数千字形也放得下）
+//   localStorage —— **只读快照**：只在 IndexedDB 写成功之后落一份，带同一个 rev（版本号）；
+//                    快照只存元信息与进度，**不存字形数据**（localStorage 约 5MB 上限，
+//                    6919 个字形轮廓放不下，硬塞只会得到一个"写失败但不报错"的假兜底）
+//
+// 为什么这么改（踩过的真实缺陷）：旧实现两边都写、读取时"IndexedDB 优先"，于是
+//   改完立刻刷新 → pagehide 把新数据同步写进 localStorage，而 IndexedDB 事务还没跑完
+//   → 下次启动读 IndexedDB 拿到的是旧值，用户最后一次改动凭空消失（界面显示过新值，重开变回旧值）。
+//   现在读取时按 rev 取大者：快照 rev 更大 = 上次没写完就被关掉 → 用快照恢复，并立即固化回 IndexedDB。
+//
+// 数据来源与去向：数据由 store/project.js 提供；本模块不解释字段含义，只负责存取与版本对齐。
 
-const STORAGE_KEY = 'sxfont.project.v1'
+const SNAPSHOT_KEY = 'sxfont.snapshot.v1'
+// 旧键 'sxfont.project.v1' 是"双写时代"的第二份真相，已废弃且不再读取（当前没有真实项目数据，
+// 不做迁移；若将来发现用户机器上有旧数据需要救，再补一次性升级逻辑）
 const DB_NAME = 'sxfont-db'
 const DB_STORE = 'projects'
 const DB_KEY = 'sxfont.project.v1'
@@ -19,7 +26,6 @@ function openDb() {
   if (idbPromise) return idbPromise
   idbPromise = new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) {
-      // 浏览器不支持或处于隐私模式：交由调用方回退到 localStorage 快照
       reject(new Error('indexedDB 不可用'))
       return
     }
@@ -40,7 +46,7 @@ function openDb() {
   return idbPromise
 }
 
-// IndexedDB 是否可用：供界面自检展示（不可用时功能退化为 localStorage 快照）
+// IndexedDB 是否可用：供界面自检展示（不可用时只剩快照可读，写入会明确失败）
 export async function isIdbAvailable() {
   try {
     await openDb()
@@ -50,8 +56,8 @@ export async function isIdbAvailable() {
   }
 }
 
-// 从 IndexedDB 读取项目；无数据或失败返回 null
-export async function loadProjectFromIdb() {
+// 从 IndexedDB 读项目；无数据或失败返回 null
+async function readFromIdb() {
   try {
     const db = await openDb()
     return await new Promise((resolve) => {
@@ -65,78 +71,128 @@ export async function loadProjectFromIdb() {
   }
 }
 
-// 从 localStorage 同步读取（快速路径 / 兼容旧数据；新建项目时为空）
-export function loadProject() {
+// 读快照：无数据、损坏、缺 meta 一律当没有（快照坏了不影响 IndexedDB 里的真相）
+function readSnapshot() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(SNAPSHOT_KEY)
     if (!raw) return null
     const data = JSON.parse(raw)
-    // 只认本项目的结构：至少带 meta（字体名称表字段）；脏数据一律当没读到
-    if (data && typeof data === 'object' && data.meta) return data
-    return null
+    if (!data || typeof data !== 'object' || !data.meta) return null
+    return data
   } catch {
     return null
   }
 }
 
-// localStorage 里是否已有快照：供界面自检展示
-export function hasSnapshot() {
+// 写快照：只读副本，去掉字形数据；返回是否写入成功（失败可忽略，IndexedDB 才是真相）
+function writeSnapshot(data) {
   try {
-    return localStorage.getItem(STORAGE_KEY) != null
+    const copy = { ...data }
+    delete copy.glyphs
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(copy))
+    return true
   } catch {
     return false
   }
 }
 
-// 保存项目：主写 IndexedDB，快照写 localStorage（LS 超限时静默忽略）
-// 返回 Promise<boolean>：IndexedDB 写入成功即为 true（localStorage 失败不算失败）
-// 写队列串行化：连续多次 persist 排队执行，避免并发事务交错，也让"最后一次保存"有完整的
-// 事务完成时机（调用方可 await 后确认落盘）。
-let saveQueue = Promise.resolve()
-export function saveProject(project) {
-  // Pinia state 里是响应式 Proxy，含内部引用；IDB put 要求可结构化克隆的值，
-  // 直接存 Proxy 会抛 DataCloneError。先 JSON 往返转成纯数据再写（顺带排除 undefined/函数字段）。
-  const clean = JSON.parse(JSON.stringify(project))
-  latestSnapshot = clean // 记录最新数据，供刷新前 pagehide 同步兜底
-  const run = saveQueue.then(() => doSave(clean))
-  saveQueue = run.catch(() => {}) // 队列自身不因某次失败中断
-  return run
-}
-
-async function doSave(clean) {
-  let idbOk = false
+// 写 IndexedDB（唯一真相）。返回是否成功；失败由调用方决定怎么提示用户
+async function writeToIdb(data) {
   try {
     const db = await openDb()
     await new Promise((resolve, reject) => {
       const tx = db.transaction(DB_STORE, 'readwrite')
-      tx.objectStore(DB_STORE).put(clean, DB_KEY)
-      tx.oncomplete = () => {
-        idbOk = true
-        resolve()
-      }
+      tx.objectStore(DB_STORE).put(data, DB_KEY)
+      tx.oncomplete = () => resolve()
       tx.onerror = () => reject(tx.error || new Error('IndexedDB 写入失败'))
       tx.onabort = () => reject(tx.error || new Error('IndexedDB 写入中止'))
     })
+    return true
   } catch (e) {
     console.error('IndexedDB 保存失败', e)
+    return false
   }
-  // localStorage 快照尽力写；超限静默（IDB 已保底）
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(clean))
-  } catch {
-    /* 快照超限可忽略：IndexedDB 已保存完整数据 */
-  }
-  return idbOk
 }
 
-// 刷新 / 关闭页面前同步兜底：把队列里最新一次待写数据同步写进 localStorage 快照
-// （IndexedDB 是异步的，可能来不及完成；LS 同步写入保证刷新后至少有快照可恢复）
-let latestSnapshot = null
-export function flushPendingSnapshot() {
-  if (latestSnapshot == null) return
+// 用指定 rev 落盘：IndexedDB 成功后才写快照，保证"快照永远不会比真相新"（除非异常关闭，见 markPendingSnapshot）
+async function persistWithRev(data, rev) {
+  // Pinia state 里是响应式 Proxy，含内部引用；IDB put 要求可结构化克隆的值。
+  // 先 JSON 往返转成纯数据再写（顺带排除 undefined/函数字段）。
+  const clean = JSON.parse(JSON.stringify(data))
+  const next = { ...clean, rev, savedAt: Date.now() }
+  const ok = await writeToIdb(next)
+  if (ok) writeSnapshot(next)
+  return { ok, rev, data: next }
+}
+
+// 写队列：连续多次保存串行执行，避免并发事务交错，也让调用方 await 后确认真正落盘
+let saveQueue = Promise.resolve()
+
+/**
+ * 保存项目：写 IndexedDB（唯一真相），成功后落一份同 rev 的快照
+ * @param {object} project 由 store 传入的项目数据（需带当前 rev）
+ * @returns {Promise<{ok: boolean, rev: number}>} ok=false 表示 IndexedDB 写入失败（数据仍在内存里）
+ */
+export function saveProject(project) {
+  const currentRev = Number(project && project.rev) || 0
+  const run = saveQueue.then(() => persistWithRev(project, currentRev + 1))
+  saveQueue = run.catch(() => ({ ok: false, rev: currentRev })) // 队列自身不因某次失败中断
+  return run.then((res) => ({ ok: res.ok, rev: res.ok ? res.rev : currentRev }))
+}
+
+/**
+ * 关页 / 刷新兜底：把内存里最新数据写成 **rev + 1** 的快照，标记为"未固化"。
+ * 下次启动时会因为快照 rev 更大而被认定为较新的一份，并被固化回 IndexedDB —— 这正是兜底能生效的原因。
+ * 只在"确实有未落盘的改动"时调用（否则每次刷新都会写一份多余的快照，下次启动还会多一次恢复固化）。
+ * @param {object} project 内存中的项目数据（含当前 rev）
+ */
+export function markPendingSnapshot(project) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(latestSnapshot))
+    const clean = JSON.parse(JSON.stringify(project))
+    delete clean.glyphs // 快照不存字形数据
+    clean.rev = (Number(clean.rev) || 0) + 1
+    clean.savedAt = Date.now()
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(clean))
   } catch {
-    /* 超限可忽略 */
+    /* 超限或不可写：忽略，IndexedDB 里的上一次数据仍在 */
+  }
+}
+
+/**
+ * 读取项目：IndexedDB 与快照按 rev 取大者；若采用的那份不是 IndexedDB 里的，立即固化回 IndexedDB。
+ * @returns {Promise<{data: object|null, source: 'new'|'idb'|'snapshot-newer'|'snapshot-only'}>}
+ *   source 用于界面提示：snapshot-newer = 上次关闭前有改动没写完，已从快照恢复
+ */
+export async function loadProject() {
+  const idb = await readFromIdb()
+  const snap = readSnapshot()
+  if (!idb && !snap) return { data: null, source: 'new' }
+
+  const idbRev = idb ? Number(idb.rev) || 0 : -1
+  const snapRev = snap ? Number(snap.rev) || 0 : -1
+
+  if (snap && snapRev > idbRev) {
+    // 快照更新：上次 IndexedDB 没写完就被关掉了 → 用快照恢复（字形数据仍从 IndexedDB 取），并固化回去
+    const data = { ...snap, glyphs: (idb && idb.glyphs) || {} }
+    await persistWithRev(data, snapRev)
+    return { data, source: idb ? 'snapshot-newer' : 'snapshot-only' }
+  }
+  if (idb) return { data: idb, source: 'idb' }
+
+  // 只有快照（IndexedDB 为空或不可用）：用它，并尝试固化
+  const data = { ...snap, glyphs: {} }
+  await persistWithRev(data, snapRev)
+  return { data, source: 'snapshot-only' }
+}
+
+// 存储状态（供界面自检展示）：两边各自的 rev，用于一眼看出是否对齐
+export async function getStorageState() {
+  const idbOk = await isIdbAvailable()
+  const idbData = idbOk ? await readFromIdb() : null
+  const snap = readSnapshot()
+  return {
+    idb: idbOk,
+    idbRev: idbData ? Number(idbData.rev) || 0 : null,
+    snapshotRev: snap ? Number(snap.rev) || 0 : null
   }
 }

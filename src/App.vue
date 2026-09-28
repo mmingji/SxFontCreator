@@ -21,10 +21,12 @@ const STEPS = [
 ]
 const currentStep = 0
 
-// 字体族名改动 → 延迟落盘（300ms）：避免每敲一个字就写一次 IndexedDB
+// 字体族名改动 → 标记未落盘 + 延迟落盘（300ms）：避免每敲一个字就写一次 IndexedDB
+// markDirty 的意义：防抖等待期间若用户直接刷新/关页，pagehide 兜底要靠它判断"确实有改动没存"
 let saveTimer = null
 function onFamilyNameInput(event) {
   store.meta.familyName = event.target.value
+  store.markDirty()
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     store.persist()
@@ -138,6 +140,9 @@ const saveFailed = computed(() => store.saveState === 'failed')
 
     <footer class="statusbar">
       <span class="save-state" :class="{ failed: saveFailed }">{{ saveText }}</span>
+      <span v-if="store.recoveredFromSnapshot" class="recover-note">
+        上次关闭前有一次改动没写完，已从本机快照恢复到最新状态
+      </span>
     </footer>
   </div>
 </template>
