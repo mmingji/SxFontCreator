@@ -8,7 +8,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:smoke": "node test/smoke-app.mjs"
+    "charset": "node scripts/build-charset.mjs",
+    "test:smoke": "node test/smoke-app.mjs",
+    "test:charset": "node test/charset.mjs",
+    "test": "npm run test:charset && npm run build && npm run test:smoke"
   },
   "dependencies": {
     "pinia": "^2.3.1",

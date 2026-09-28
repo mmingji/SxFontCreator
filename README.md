@@ -3,7 +3,7 @@
 打印模板 → 照着格子手写 → 扫描回传 → 全自动切格提取手写字形 → 生成个人手写体字体（TTF / woff / woff2）。
 纯前端、零后端、离线可用；**数据只保存在本机浏览器里**。
 
-当前进度：阶段一步骤 1.1（工程脚手架）已完成，界面为骨架页（含运行环境自检与本地落盘链路）。
+当前进度：阶段一步骤 1.1（工程脚手架）与 1.2（6919 字表模块）已完成，界面为骨架页（含字表与环境自检、本地落盘链路）。
 
 ## 开发命令
 
@@ -11,7 +11,10 @@
 npm install            # 若报 npm 缓存目录权限错误（EPERM），改用：npm install --cache .npm-cache
 npm run dev            # 开发服务，浏览器访问 http://localhost:5173
 npm run build          # 构建到 dist/
-npm run test:smoke     # 冒烟验证：构建产物在真实浏览器里打开、渲染、落盘往返（需先 build）
+npm run charset        # 重新生成字表（读做字体网 V4.0 的 GBK 字序文件，源文件不入库）
+npm test               # 全套：字表校验 + 构建 + 冒烟验证
+npm run test:charset   # 只跑字表校验
+npm run test:smoke     # 只跑冒烟验证（需先 build）
 ```
 
 ## 目录结构

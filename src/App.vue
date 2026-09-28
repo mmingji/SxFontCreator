@@ -3,8 +3,10 @@
 // 本步只打通"界面骨架 + 本地持久化"这一条链路；字表、模板 PDF、切格、识别等模块按后续步骤接入。
 import { computed, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
+import { getCharsetMeta } from './lib/charset.js'
 
 const store = useProjectStore()
+const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
 
 // 流程步骤：与《需求与技术方案》三、完整用户流程一致；尚未接入模块，当前停在第 1 步
 const STEPS = [
@@ -40,6 +42,11 @@ const canvas2dSupported = (() => {
 })()
 
 const checks = computed(() => [
+  {
+    label: '内置字表（' + charset.source + '）',
+    ok: charset.total === 6919 && charset.han === 6812,
+    text: charset.total + ' 字（汉字 ' + charset.han + ' + 符号 ' + charset.symbol + '）'
+  },
   {
     label: '本地数据库（IndexedDB）',
     ok: store.storage.idb,
@@ -107,7 +114,7 @@ const saveFailed = computed(() => store.saveState === 'failed')
           </li>
         </ol>
         <p class="hint">
-          当前停留在第 1 步：选字模块随阶段一步骤 1.2（6919 字表）一起接入，随后是模板 PDF 生成。
+          当前停留在第 1 步：6919 字表已接入（自检可见），选字的挑选与分页界面随模板 PDF 生成一起接入。
         </p>
       </section>
 
