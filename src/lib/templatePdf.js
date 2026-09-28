@@ -35,6 +35,12 @@ export const LAYOUT = (() => {
   const tableBottom = markOffset + markSize + gap
   const cellHeight = (tableTop - tableBottom) / rows // 8 行铺满可用高度
 
+  // 参考字所在区域的高度：沿用 V4.0 的固定行距 360 twips（18pt），
+  // 「参考字区域 + 书写格」作为整体块在字位内垂直居中 —— 这也是 V4.0 的实际排法（一-4）
+  const referenceLineHeight = 18
+  const blockHeight = referenceLineHeight + writingBox
+  const blockBottom = (cellHeight - blockHeight) / 2
+
   // 页脚页码编码标记：一个锚点方块 + 8 个数据位方块（位置对应二进制位）
   const pageMark = {
     anchorSize: 8,
@@ -51,12 +57,19 @@ export const LAYOUT = (() => {
   return {
     pageWidth, pageHeight, cols, rows,
     cellWidth, cellHeight, writingBox, referenceFontSize, lineWidth,
+    referenceLineHeight, blockHeight, blockBottom,
     tableWidth, tableLeft, tableTop, tableBottom,
     markSize, markOffset, pageMark,
     perPage: cols * rows,
-    // 颜色：格线与参考字都用 V4.0 的 #BFBFBF；定位块与页码标记用纯黑（供识别）
-    gridColor: rgb(0.749, 0.749, 0.749),
-    markColor: rgb(0, 0, 0)
+    // 书写格内的十字辅助线（田字格）：极淡虚线，只做书写参考；识别时按灰度滤掉（笔迹是黑的，优先级最高）
+    crossGuide: true,
+    crossLineWidth: 0.4,
+    // 颜色
+    gridColor: rgb(0.749, 0.749, 0.749), // #BFBFBF：字位框、书写格、参考字
+    crossColor: rgb(0.851, 0.851, 0.851), // #D9D9D9：十字辅助线，比格线更淡
+    // #2E6E7E 中深青：定位块与页码标记用它，替代原来的纯黑 ——
+    // ① 红度 R − max(G,B) = −80（负值），不会被红圈识别误判；② 灰度约 93，灰度扫描下仍远深于灰格线（191）
+    markColor: rgb(0.18, 0.431, 0.494)
   }
 })()
 
@@ -81,23 +94,22 @@ export function cellRect(index) {
   }
 }
 
-// 字位内的书写格位置：水平居中、贴字位底部留 2pt
+// 字位内的书写格位置：水平居中；垂直方向上，「参考字区域 + 书写格」整体在字位内居中
+// （V4.0 的实际排法是参考字紧贴书写格上方、整体居中，见《决策记录》一-4）
 export function writingBoxRect(cell) {
   return {
     x: cell.x + (cell.width - LAYOUT.writingBox) / 2,
-    y: cell.y + 2,
+    y: cell.y + LAYOUT.blockBottom,
     width: LAYOUT.writingBox,
     height: LAYOUT.writingBox
   }
 }
 
-// 参考字的基线位置：放在书写格上方的剩余区域里做视觉居中
+// 参考字的基线位置：在书写格上方那一段固定高度的区域里做视觉居中
 // （汉字在字体里大致占 em 的 -0.12~0.88，视觉中心约在基线以上 0.38em）
 export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize) {
   const box = writingBoxRect(cell)
-  const areaBottom = box.y + box.height
-  const areaTop = cell.y + cell.height
-  const centerY = (areaBottom + areaTop) / 2
+  const centerY = box.y + box.height + LAYOUT.referenceLineHeight / 2
   return centerY - 0.38 * fontSize
 }
 
@@ -170,6 +182,25 @@ function drawGrid(page) {
       borderWidth: lineWidth,
       borderDashArray: [1, 2] // 点线：与 V4.0 的 dotted 边框对应
     })
+    // 十字辅助线（田字格）：帮用户把字写正、写满、大小一致；极淡虚线，扫描时按灰度滤掉
+    if (LAYOUT.crossGuide) {
+      const cx = box.x + box.width / 2
+      const cy = box.y + box.height / 2
+      page.drawLine({
+        start: { x: box.x, y: cy },
+        end: { x: box.x + box.width, y: cy },
+        thickness: LAYOUT.crossLineWidth,
+        color: LAYOUT.crossColor,
+        dashArray: [1, 2]
+      })
+      page.drawLine({
+        start: { x: cx, y: box.y },
+        end: { x: cx, y: box.y + box.height },
+        thickness: LAYOUT.crossLineWidth,
+        color: LAYOUT.crossColor,
+        dashArray: [1, 2]
+      })
+    }
   }
 }
 
