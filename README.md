@@ -28,7 +28,7 @@ npm run test:smoke     # 只跑冒烟验证（需先 build）
 | `src/components/` | 界面组件（`TemplatePreview.vue` 为模板生成面板） |
 | `src/store/` | 项目状态（Pinia），也是「导出项目包」的数据结构来源 |
 | `src/data/` | 生成的字表数据（`charset.js`，由脚本生成、请勿手改） |
-| `src/assets/`、`public/fonts/` | 内置参考字字体子集与它的 OFL 许可文本 |
+| `public/fonts/` | 内置参考字字体子集（3.27MB，只含字表 6919 字）与它的 OFL 许可文本 |
 | `scripts/` | 构建期脚本（字表转换、字体子集化） |
 | `test/` | 分层验证脚本：每轮跑相关脚本、提交前跑全套 |
 | `docs/` | 需求、实施计划、决策记录、待办清单、提交历史、样例图 |
