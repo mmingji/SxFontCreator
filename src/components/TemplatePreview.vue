@@ -93,10 +93,16 @@ async function generateTemplate() {
         progress.value = { done, total }
       }
     })
-    const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : totalPages + '页') + '.pdf'
+    const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
     download(out.bytes, name)
-    lastResult.value = { name, pages: out.pageCount, bytes: out.bytes.length, font: font.label }
-    setMessage('模板已生成并开始下载：' + out.pageCount + ' 页（' + (out.bytes.length / 1024 / 1024).toFixed(2) + ' MB），参考字用' + font.label, 'done')
+    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label }
+    const mb = (out.bytes.length / 1024 / 1024).toFixed(2)
+    const selfNote = out.selfCheck ? '；最后 1 页是打印自检页，先用尺子量 1cm 方框再开始手写' : ''
+    setMessage(
+      '模板已生成并开始下载：' + out.sheetPages + ' 字表页' + (out.selfCheck ? ' + 1 页自检' : '') +
+        '（' + mb + ' MB），参考字用' + font.label + selfNote,
+      'done'
+    )
   } catch (e) {
     setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
@@ -164,12 +170,12 @@ async function generateCorrectionBook() {
 
     <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
     <p v-if="lastResult" class="panel-hint">
-      最近产物：{{ lastResult.name }}（{{ lastResult.pages }} 页，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}）
+      最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}）
     </p>
 
     <p class="panel-hint">
       打印要求：彩色喷墨打印机、按「实际大小 / 100%」打印（不要选「适合页面」）；黑白激光打印会把灰格线打成黑色，混进字形。
-      每格 1cm×1cm 是实际尺寸，打印后可用尺子核对。
+      每格 1cm×1cm 是实际尺寸；<strong>先打最后一页自检页</strong>，用尺子量方框是否为 1cm，确认后再打印全部。
     </p>
   </section>
 </template>
