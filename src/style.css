@@ -267,3 +267,83 @@ small {
 .save-state.failed {
   color: var(--danger);
 }
+
+/* ── 模板与更正册面板 ─────────────────────────────────────────────── */
+
+.panel-row {
+  margin-bottom: 10px;
+}
+
+.panel-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.radio input {
+  margin: 0;
+}
+
+/* 本机字体选择：把 file input 藏起来，用 label 当按钮（原生控件在各浏览器样式不一） */
+.file-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.file-button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.file-button input {
+  display: none;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.panel-hint {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.7;
+}
+
+.panel-message {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.panel-message.error {
+  color: var(--danger);
+}
+
+.panel-message.done {
+  color: var(--success);
+}
+
+.panel-message.info {
+  color: var(--text-2);
+}

@@ -4,6 +4,7 @@
 import { computed, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
+import TemplatePreview from './components/TemplatePreview.vue'
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
@@ -114,9 +115,11 @@ const saveFailed = computed(() => store.saveState === 'failed')
           </li>
         </ol>
         <p class="hint">
-          当前停留在第 1 步：6919 字表已接入（自检可见），选字的挑选与分页界面随模板 PDF 生成一起接入。
+          当前停留在第 1 步：字表已接入，模板与更正册可以直接生成打印；扫描回传与识别按后续步骤接入。
         </p>
       </section>
+
+      <TemplatePreview />
 
       <section class="card">
         <h2>运行环境自检</h2>
