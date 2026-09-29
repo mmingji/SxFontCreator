@@ -276,6 +276,36 @@ small {
   color: var(--danger);
 }
 
+/* ── 加载动画预览（状态栏入口 + 浮层）─────────────────────────────── */
+
+.boot-demo-button {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 4px 10px;
+  flex: none;
+}
+
+.boot-demo {
+  position: fixed;
+  right: 20px;
+  bottom: 52px;
+  width: 340px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.boot-demo .hint {
+  margin: 0;
+}
+
 /* ── 模板与更正册面板 ─────────────────────────────────────────────── */
 
 .panel-row {

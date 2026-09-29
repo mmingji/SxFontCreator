@@ -1,9 +1,11 @@
 <script setup>
 // 应用骨架（阶段一步骤 1.1）：顶栏（品牌 + 字体族名）+ 制作流程 + 运行环境自检。
 // 本步只打通"界面骨架 + 本地持久化"这一条链路；字表、模板 PDF、切格、识别等模块按后续步骤接入。
-import { computed, defineAsyncComponent, h } from 'vue'
+import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
+import SelectionPanel from './components/SelectionPanel.vue'
+import BootAnimation from './components/BootAnimation.vue'
 
 // 模板面板按需加载：它依赖 pdf-lib + fontkit（实测 dev 模式下 2.3MB、构建后仍占大头），
 // 静态引入会让首屏一起下载 —— 实测冷启动白屏 3.5 秒里有一大半是它。
@@ -23,6 +25,9 @@ const TemplatePreview = defineAsyncComponent({
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
+
+// 「加载动画预览」浮层：让用户随时能看到首屏加载时的动画（平时一闪而过看不清）
+const showBootDemo = ref(false)
 
 // 流程步骤：与《需求与技术方案》三、完整用户流程一致；尚未接入模块，当前停在第 1 步
 const STEPS = [
@@ -134,9 +139,12 @@ const saveFailed = computed(() => store.saveState === 'failed')
           </li>
         </ol>
         <p class="hint">
-          当前停留在第 1 步：字表已接入，模板与更正册可以直接生成打印；扫描回传与识别按后续步骤接入。
+          当前停留在第 1 步：选字、出模板都已接入 —— 可以先按频次分级挑字（或直接打全量 6919 字），
+          生成模板 PDF 打印手写；扫描回传、识别与字体合成按后续步骤接入。
         </p>
       </section>
+
+      <SelectionPanel />
 
       <TemplatePreview />
 
@@ -160,6 +168,21 @@ const saveFailed = computed(() => store.saveState === 'failed')
       <span v-if="store.recoveredFromSnapshot" class="recover-note">
         上次关闭前有一次改动没写完，已从本机快照恢复到最新状态
       </span>
+      <button class="boot-demo-button" @click="showBootDemo = !showBootDemo">
+        {{ showBootDemo ? '收起动画预览' : '加载动画预览' }}
+      </button>
     </footer>
+
+    <!-- 加载动画预览：首屏加载时它一闪而过，这里可以慢慢看；将来长任务（切格 / 识别 / 矢量化）
+         会复用同一个动画，把扫描线换成真实进度（BootAnimation 组件已支持 progress 入参） -->
+    <div v-if="showBootDemo" class="boot-demo">
+      <BootAnimation />
+      <p class="hint">
+        加载动画演示的是本产品的三件事：四角定位块 → 按已知网格切格 → 扫描线逐格识别。
+        首次打开时它在页面最早期就显示（写在 index.html 里、不依赖脚本，所以不会有白屏）；
+        将来上传扫描件做识别时，同一条扫描线会按真实进度从上往下走。
+      </p>
+      <button @click="showBootDemo = false">关闭</button>
+    </div>
   </div>
 </template>

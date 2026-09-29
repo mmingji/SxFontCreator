@@ -7,12 +7,18 @@ import { computed, ref } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
 import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadFontFromFile } from '../lib/referenceFont.js'
+import { useProjectStore } from '../store/project.js'
 
+const store = useProjectStore()
 const meta = getCharsetMeta()
 const totalPages = Math.ceil(meta.total / LAYOUT.perPage)
 
-// 范围：单页试打（先确认版式与打印设置）或全量
-const scope = ref('single')
+// 字形测试页的 12 个字：覆盖"极简 → 极繁、方框 → 凹形 → 多部件"，专测清单三-2 的细笔画分辨率
+// 与决策 二-2 里"口形被误判成红圈"的样本；已逐个核对都在字表内（字表外的字会印成方块）
+const TEST_PAGE_CHARS = ['一', '十', '口', '日', '国', '永', '凹', '凸', '瓣', '囊', '霸', '懿']
+
+// 范围：单页试打（先确认版式与打印设置）/ 当前选字 / 全量；有选字时默认按选字出
+const scope = ref(store.selectedCount ? 'selection' : 'full')
 // 字体来源：内置子集 / 用户选的本机字体
 const fontSource = ref('builtin')
 const localFontName = ref('')
@@ -25,11 +31,24 @@ const messageType = ref('info') // info | error | done
 const progress = ref({ done: 0, total: 0 })
 const lastResult = ref(null) // { name, pages, bytes }
 
-const scopeHint = computed(() =>
-  scope.value === 'single'
-    ? '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字），先打印确认版式与打印设置'
-    : '全量：' + meta.total + ' 字／' + totalPages + ' 页'
-)
+const scopeHint = computed(() => {
+  if (scope.value === 'single') {
+    return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字），先打印确认版式与打印设置'
+  }
+  if (scope.value === 'selection') {
+    return store.selectedCount
+      ? '当前选字：' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
+      : '还没有选字 —— 请先在上面「选字」面板里挑字；不选字时按全量出'
+  }
+  return '全量：' + meta.total + ' 字／' + totalPages + ' 页'
+})
+
+// 实际要排的字：试打取字表前 136 字；选字取当前选字（空则全量）；全量取全部
+function charsForScope() {
+  if (scope.value === 'single') return getAllChars().slice(0, LAYOUT.perPage)
+  if (scope.value === 'selection') return Array.from(store.charsForTemplate)
+  return getAllChars()
+}
 
 function setMessage(text, type) {
   message.value = text
@@ -86,7 +105,7 @@ async function generateTemplate() {
   try {
     setMessage('正在读取字体…', 'info')
     const font = await resolveFont()
-    const chars = scope.value === 'single' ? getAllChars().slice(0, LAYOUT.perPage) : getAllChars()
+    const chars = charsForScope()
     progress.value = { done: 0, total: Math.ceil(chars.length / LAYOUT.perPage) }
     setMessage('正在生成模板 PDF…', 'info')
     const out = await buildTemplatePdf({
@@ -96,6 +115,13 @@ async function generateTemplate() {
         progress.value = { done, total }
       }
     })
+    // 单页试打只为确认版式，不记批次（否则批次列表会被试打记录塞满）；
+    // 正式出模板则记一个批次：字序 + 页数 + 校验码都要留痕，上传扫描件时按它比对（八-6、八-10）
+    let batchNote = ''
+    if (scope.value !== 'single') {
+      const batch = store.addBatch({ pageCount: out.sheetPages, chars: chars.join('') })
+      batchNote = '；已记为批次，校验码 ' + batch.batchCode
+    }
     const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
     download(out.bytes, name)
     lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label, batchCode: out.batchCode }
@@ -103,7 +129,34 @@ async function generateTemplate() {
     const selfNote = out.selfCheck ? '；最后 1 页是打印自检页，先用尺子量 1cm 方框再开始手写' : ''
     setMessage(
       '模板已生成并开始下载：' + out.sheetPages + ' 字表页' + (out.selfCheck ? ' + 1 页自检' : '') +
-        '（' + mb + ' MB），参考字用' + font.label + '，批次校验码 ' + out.batchCode + selfNote,
+        '（' + mb + ' MB），参考字用' + font.label + '，批次校验码 ' + out.batchCode + batchNote + selfNote,
+      'done'
+    )
+  } catch (e) {
+    setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    busy.value = false
+  }
+}
+
+// 字形测试页：12 个字，专供打印实测（细笔画是否断续、方框与凹形结构、多笔画是否糊成一团）
+// 它不是正式书写页、不记批次，但页脚仍带自己的校验码，便于确认这份 PDF 的身份
+async function generateTestPage() {
+  if (busy.value) return
+  busy.value = true
+  progress.value = { done: 0, total: 0 }
+  lastResult.value = null
+  try {
+    setMessage('正在读取字体…', 'info')
+    const font = await resolveFont()
+    setMessage('正在生成字形测试页…', 'info')
+    const out = await buildTemplatePdf({ chars: TEST_PAGE_CHARS, fontBytes: font.bytes })
+    const name = 'SxFontCreator-字形测试页-12字.pdf'
+    download(out.bytes, name)
+    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label, batchCode: out.batchCode }
+    setMessage(
+      '字形测试页已生成并开始下载：' + TEST_PAGE_CHARS.join('、') + '，共 ' + out.pageCount +
+        ' 页（含自检页），校验码 ' + out.batchCode,
       'done'
     )
   } catch (e) {
@@ -148,6 +201,7 @@ async function generateCorrectionBook() {
       <div class="panel-field">
         <span class="field-label">生成范围</span>
         <label class="radio"><input v-model="scope" type="radio" value="single" :disabled="busy" />单页试打</label>
+        <label class="radio"><input v-model="scope" type="radio" value="selection" :disabled="busy" />当前选字</label>
         <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全量</label>
         <span class="panel-hint">{{ scopeHint }}</span>
       </div>
@@ -173,6 +227,7 @@ async function generateCorrectionBook() {
 
     <div class="panel-actions">
       <button class="primary" :disabled="busy" @click="generateTemplate">生成模板 PDF</button>
+      <button :disabled="busy" @click="generateTestPage">生成字形测试页（12 字）</button>
       <button :disabled="busy" @click="generateCorrectionBook">生成更正册（空白 5 页）</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
     </div>
@@ -185,6 +240,20 @@ async function generateCorrectionBook() {
     <p class="panel-hint">
       打印要求：彩色喷墨打印机、按「实际大小 / 100%」打印（不要选「适合页面」）；黑白激光打印会把灰格线打成黑色，混进字形。
       每格 1cm×1cm 是实际尺寸；<strong>先打最后一页自检页</strong>，用尺子量方框是否为 1cm，确认后再打印全部。
+    </p>
+
+    <p class="panel-hint">
+      <strong>建议用平板扫描仪</strong>（实测设备：EPSON L4266 一体机自带平板扫描，光学 1200×2400dpi，用彩色 300dpi 即可，只用到它约四分之一的能力；
+      扫描软件里的锐化 / 自动曝光 / 去网纹建议关掉，避免它改写格线与笔迹的灰度关系）。
+      没有扫描仪时也可以用手机拍，但要满足四条：① 打开相机的「文档矫正 / 扫描」模式；② 从正上方拍、尽量对正；
+      ③ 让纸占满画面（宽度 70% 以上）—— 否则页脚那排 6pt 小方块会糊在一起，页序与批次校验就读不出来；
+      ④ 把纸压平，翘边属于非平面变形，透视校正救不回来。
+    </p>
+
+    <p class="panel-hint">
+      <strong>用扫描类 App（如扫描全能王）时，务必选保留颜色的模式</strong>：实测「原图 / 增亮 / 增强锐化 / 智能高清 / 去阴影」都能保留红圈的红色，可以用；
+      「黑白 / 省墨 / 灰度」会把红色压成灰黑，红圈识别随之明显变差（只能靠后面的人工确认环节逐个核对）。
+      原因：红圈识别靠颜色通道差值（红墨水的红通道明显高于绿、蓝通道），一旦转成灰度，这个信息就没有了。
     </p>
 
     <p class="panel-hint">
