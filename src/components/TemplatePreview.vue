@@ -13,10 +13,11 @@ const totalPages = Math.ceil(meta.total / LAYOUT.perPage)
 
 // 范围：单页试打（先确认版式与打印设置）或全量
 const scope = ref('single')
-// 字体来源：内置子集 / 用户选的本机 ttf
+// 字体来源：内置子集 / 用户选的本机字体
 const fontSource = ref('builtin')
 const localFontName = ref('')
-let localFontBytes = null
+// 本机字体的规整结果：{ bytes, format, label, note }（ttc 会被提取出单个字体、woff 会解包，见 lib/fontFormat.js）
+let localFont = null
 
 const busy = ref(false)
 const message = ref('')
@@ -39,12 +40,14 @@ async function pickLocalFont(event) {
   const file = event.target.files && event.target.files[0]
   if (!file) return
   try {
-    localFontBytes = await loadFontFromFile(file)
+    localFont = await loadFontFromFile(file)
     localFontName.value = file.name
     fontSource.value = 'local'
-    setMessage('已选用本机字体：' + file.name + '（只在本机内存中使用）', 'info')
+    // note 说明"格式被怎么处理了"（如从字体集合里取用了第几个），有就带上
+    const note = localFont.note ? '，' + localFont.note : ''
+    setMessage('已选用本机字体：' + file.name + '（' + localFont.label + note + '；只在本机内存中使用）', 'info')
   } catch (e) {
-    localFontBytes = null
+    localFont = null
     localFontName.value = ''
     fontSource.value = 'builtin'
     setMessage(e.message, 'error')
@@ -55,8 +58,8 @@ async function pickLocalFont(event) {
 }
 
 async function resolveFont() {
-  if (fontSource.value === 'local' && localFontBytes) {
-    return { bytes: localFontBytes, label: '本机字体（' + localFontName.value + '）' }
+  if (fontSource.value === 'local' && localFont) {
+    return { bytes: localFont.bytes, label: '本机字体（' + localFontName.value + '）' }
   }
   return { bytes: await loadBuiltinFont(), label: BUILTIN_FONT_LABEL }
 }
@@ -154,13 +157,19 @@ async function generateCorrectionBook() {
       <div class="panel-field">
         <span class="field-label">参考字字体</span>
         <label class="radio"><input v-model="fontSource" type="radio" value="builtin" :disabled="busy" />{{ BUILTIN_FONT_LABEL }}</label>
-        <label class="radio"><input v-model="fontSource" type="radio" value="local" :disabled="busy || !localFontBytes" />本机 ttf{{ localFontName ? '（' + localFontName + '）' : '' }}</label>
+        <label class="radio"><input v-model="fontSource" type="radio" value="local" :disabled="busy || !localFont" />本机字体{{ localFontName ? '（' + localFontName + '）' : '' }}</label>
         <label class="file-button">
           选择本机字体
-          <input type="file" accept=".ttf,font/ttf" :disabled="busy" @change="pickLocalFont" />
+          <input type="file" accept=".ttf,.otf,.ttc,.woff,font/ttf,font/otf" :disabled="busy" @change="pickLocalFont" />
         </label>
       </div>
     </div>
+
+    <p class="panel-hint">
+      选不到 <code>C:\Windows\Fonts</code>？该目录带「系统」属性，Windows 的文件选择框默认不显示它（目录本身可读，只是被当成受保护的系统项）。
+      两个办法：① 在选择框下方的「文件名」输入框里直接粘贴完整路径（例如 <code>C:\Windows\Fonts\simkai.ttf</code>）再回车；② 先在资源管理器里进入该目录，把字体文件复制到桌面，再从这里选。
+      Windows 字体目录为 <code>C:\Windows\Fonts</code>（楷体 <code>simkai.ttf</code>、华文楷体 <code>STKAITI.TTF</code>）；macOS 为 <code>/System/Library/Fonts</code>、<code>/Library/Fonts</code> 与 <code>~/Library/Fonts</code>。
+    </p>
 
     <div class="panel-actions">
       <button class="primary" :disabled="busy" @click="generateTemplate">生成模板 PDF</button>

@@ -13,8 +13,9 @@
     "test:smoke": "node test/smoke-app.mjs",
     "test:charset": "node test/charset.mjs",
     "test:template": "node test/template-pdf.mjs",
+    "test:font": "node test/font-format.mjs",
     "test:render": "node test/render-pdf.mjs",
-    "test": "npm run test:charset && npm run test:template && npm run test:render && npm run build && npm run test:smoke"
+    "test": "npm run test:charset && npm run test:template && npm run test:font && npm run test:render && npm run build && npm run test:smoke"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
