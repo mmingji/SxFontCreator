@@ -1,10 +1,25 @@
 <script setup>
 // 应用骨架（阶段一步骤 1.1）：顶栏（品牌 + 字体族名）+ 制作流程 + 运行环境自检。
 // 本步只打通"界面骨架 + 本地持久化"这一条链路；字表、模板 PDF、切格、识别等模块按后续步骤接入。
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, h } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
-import TemplatePreview from './components/TemplatePreview.vue'
+
+// 模板面板按需加载：它依赖 pdf-lib + fontkit（实测 dev 模式下 2.3MB、构建后仍占大头），
+// 静态引入会让首屏一起下载 —— 实测冷启动白屏 3.5 秒里有一大半是它。
+// 拆成异步组件后，首屏只加载骨架；用户第一次看到模板面板时再加载（有 loading 提示）。
+const PanelLoading = {
+  render: () => h('section', { class: 'card' }, [
+    h('h2', null, '模板与更正册'),
+    h('p', { class: 'hint' }, '正在加载模板面板（首次需要准备 PDF 组件与字体，约 1 秒）…')
+  ])
+}
+const TemplatePreview = defineAsyncComponent({
+  loader: () => import('./components/TemplatePreview.vue'),
+  loadingComponent: PanelLoading,
+  delay: 120,
+  timeout: 60000
+})
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
@@ -33,9 +48,11 @@ function onFamilyNameInput(event) {
   }, 300)
 }
 
-// 环境自检：这三项是后续步骤真实依赖的浏览器能力，检测结果决定后续步骤能否开工
+// 环境自检：这几项是后续步骤真实依赖的浏览器能力，检测结果决定后续步骤能否开工
 // （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取）
-const fontPickerSupported = typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function'
+// 判据要与实现一致：界面用的是 <input type="file"> + File.arrayBuffer()，不是 File System Access API
+const fontPickerSupported =
+  typeof window !== 'undefined' && typeof File !== 'undefined' && typeof File.prototype.arrayBuffer === 'function'
 const canvas2dSupported = (() => {
   try {
     return !!document.createElement('canvas').getContext('2d')

@@ -18,9 +18,29 @@ window.addEventListener('pagehide', () => {
   markPendingSnapshot({ rev: store.rev, meta: store.meta, template: store.template })
 })
 
+// 首屏加载层（写在 index.html 里，纯 HTML + CSS）：挂在 Vue 挂载完成后移除。
+// 为什么要有它：JS（含 pdf-lib 等依赖）下载执行期间页面本来是白屏，实测冷启动约 3.5 秒；
+// 加载层不依赖任何 JS，所以在最早期就能显示，用户看到的是"正在加载"而不是空白。
+function dismissBootLayer() {
+  const boot = document.getElementById('boot')
+  if (!boot) return
+  boot.classList.add('boot-done')
+  // 淡出 300ms 后再删，避免动画被截断
+  setTimeout(() => boot.remove(), 400)
+}
+
 // 先读盘再挂载：避免界面先渲染默认族名、随后被读出的数据覆盖（会闪一下）
 // load() 内部已吞掉存储异常，这里的 catch 只兜底未预料的错误，保证界面一定能起来
-store
-  .load()
-  .catch((e) => console.error('读取本机数据失败，按新项目启动', e))
-  .finally(() => app.mount('#app'))
+// 另加 6 秒超时兜底：万一 IndexedDB 卡住（隐私模式、存储损坏），也要让用户进得去界面，而不是对着加载动画干等
+const loadOrTimeout = Promise.race([
+  store.load().catch((e) => console.error('读取本机数据失败，按新项目启动', e)),
+  new Promise((resolve) => setTimeout(() => {
+    console.warn('读取本机数据超过 6 秒未返回，先进入界面（数据可能未恢复）')
+    resolve('timeout')
+  }, 6000))
+])
+
+loadOrTimeout.finally(() => {
+  app.mount('#app')
+  dismissBootLayer()
+})
