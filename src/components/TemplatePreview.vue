@@ -95,12 +95,12 @@ async function generateTemplate() {
     })
     const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
     download(out.bytes, name)
-    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label }
+    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label, batchCode: out.batchCode }
     const mb = (out.bytes.length / 1024 / 1024).toFixed(2)
     const selfNote = out.selfCheck ? '；最后 1 页是打印自检页，先用尺子量 1cm 方框再开始手写' : ''
     setMessage(
       '模板已生成并开始下载：' + out.sheetPages + ' 字表页' + (out.selfCheck ? ' + 1 页自检' : '') +
-        '（' + mb + ' MB），参考字用' + font.label + selfNote,
+        '（' + mb + ' MB），参考字用' + font.label + '，批次校验码 ' + out.batchCode + selfNote,
       'done'
     )
   } catch (e) {
@@ -170,12 +170,17 @@ async function generateCorrectionBook() {
 
     <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
     <p v-if="lastResult" class="panel-hint">
-      最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}）
+      最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}，批次校验码 {{ lastResult.batchCode }}）
     </p>
 
     <p class="panel-hint">
       打印要求：彩色喷墨打印机、按「实际大小 / 100%」打印（不要选「适合页面」）；黑白激光打印会把灰格线打成黑色，混进字形。
       每格 1cm×1cm 是实际尺寸；<strong>先打最后一页自检页</strong>，用尺子量方框是否为 1cm，确认后再打印全部。
+    </p>
+
+    <p class="panel-hint">
+      批次校验码印在每页页脚（20 个小方块）：它由这一批要写的字算出来，扫描识别时用来确认「这批纸和当前的选字清单是不是同一批」。
+      重新选了字之后必须重新生成模板，旧模板印出来的纸会被判为不匹配。
     </p>
   </section>
 </template>

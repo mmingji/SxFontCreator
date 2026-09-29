@@ -46,13 +46,21 @@ export const LAYOUT = (() => {
   const blockHeight = referenceLineHeight + writingBox
   const blockBottom = (cellHeight - blockHeight) / 2
 
-  // 页脚页码编码标记：一个锚点方块 + 8 个数据位方块（位置对应二进制位）
+  // 页脚编码标记：一个锚点方块 + 20 个数据位方块（位置对应二进制位）
+  // 20 位 = 低 8 位页号 + 高 12 位批次校验码（《决策记录》八-10 把一-9 原来的 8 位扩成了 20 位）：
+  //   页号告诉切格端"这是第几页"，校验码告诉切格端"这批扫描件是不是当前选字清单生成的模板"，
+  //   不符即整批拦下。总宽 = 8pt 锚点 + 4pt 间隙 + 20×6pt 方块 + 19×5pt 间隔 = 227pt ≈ 8.01cm，
+  //   A4 横向（可用宽 27.2cm）放得下，也不碰左右下角的定位块。
+  const pageBits = 8
+  const batchBits = 12
   const pageMark = {
     anchorSize: 8,
     bitSize: 6,
     bitGap: 5,
     anchorGap: 4,
-    bits: 8,
+    pageBits, // 低 8 位：页号
+    batchBits, // 高 12 位：批次校验码
+    bits: pageBits + batchBits,
     y: markOffset + 4 // 距纸边约 0.63cm，落在可打印区内
   }
   pageMark.totalWidth = pageMark.anchorSize + pageMark.anchorGap +
@@ -78,12 +86,41 @@ export const LAYOUT = (() => {
   }
 })()
 
-// 页码编码：第 n 页（从 1 开始）→ 8 位二进制（bit0 在最左），编码 n-1 以保证第 1 页也有标记
-export function encodePageCode(pageNumber) {
-  const value = Math.max(0, Math.min(255, (pageNumber | 0) - 1))
+// 页脚编码 → 20 位数组（bit0 在最左，与印在纸上的方块排布顺序一致）
+// 前 8 位是页号（第 n 页编码 n−1，保证第 1 页也有标记，支持 256 页），后 12 位是批次校验码。
+// **这是模板生成与切格识别之间的契约**：解码端按同样顺序读位；改这里就必须同步改解码端（决策记录 一-9、八-10）
+export function encodePageCode(pageNumber, batchCode = 0) {
+  const { pageBits, batchBits } = LAYOUT.pageMark
+  const page = Math.max(0, Math.min((1 << pageBits) - 1, (pageNumber | 0) - 1))
+  const batch = Math.max(0, Math.min((1 << batchBits) - 1, batchCode | 0))
   const bits = []
-  for (let i = 0; i < LAYOUT.pageMark.bits; i++) bits.push((value >> i) & 1)
+  for (let i = 0; i < pageBits; i++) bits.push((page >> i) & 1)
+  for (let i = 0; i < batchBits; i++) bits.push((batch >> i) & 1)
   return bits
+}
+
+// FNV-1a 32 位哈希的一步：先与一个字节异或，再乘质数（Math.imul 保证 32 位乘法不丢精度，>>> 0 保持无符号）
+function fnv1aStep(hash, byte) {
+  return Math.imul((hash ^ byte) >>> 0, 0x01000193) >>> 0
+}
+
+// 批次校验码：对"这一批要写的字"的字符序列算 FNV-1a 32 位哈希，取低 12 位（决策记录 八-10）。
+// 为什么用 FNV-1a：同步、零依赖，在 file:// 下也确定可用（crypto.subtle 的 SHA-256 要求安全上下文，
+//   而 file:// 下的能力还没实测，见清单三-8）；12 位的碰撞率上限本就是 1/4096，换更强的哈希并不降低它。
+// 为什么输入字符而不是字表索引：字表顺序一旦调整，同一个索引会指向别的字，索引算出的码会造成假匹配。
+// 传空值 = 全量字表：默认模板也带自己的校验码，切格端一律比对，不留"无批次"的豁免口。
+// 契约：生成端（这里）与解码端（切格模块）必须用同一算法与同一字序（字序即批次字序，八-6）
+export function computeBatchCode(chars) {
+  const list = chars && chars.length ? chars : getAllChars()
+  let hash = 0x811c9dc5 // FNV-1a 32 位的偏移基准
+  for (const ch of list) {
+    const cp = ch.codePointAt(0)
+    // 按码位的三个字节依次喂入（顺序固定即可；字表全在 BMP 内，第三字节恒为 0）
+    hash = fnv1aStep(hash, cp & 0xff)
+    hash = fnv1aStep(hash, (cp >> 8) & 0xff)
+    hash = fnv1aStep(hash, (cp >> 16) & 0xff)
+  }
+  return hash & 0xfff
 }
 
 // 某一页上第 index 个格子（从左到右、从上到下）的坐标；越界返回 null
@@ -118,8 +155,9 @@ export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize) {
   return centerY - 0.38 * fontSize
 }
 
-// 画一页的公共部分：四角定位块 + 页脚页码编码标记
-function drawRegisterMarks(page, pageNumber) {
+// 画一页的公共部分：四角定位块 + 页脚编码标记
+// batchCode：该批次的校验码（低 12 位进页脚）；更正册这类还没有清单的产物传 0
+function drawRegisterMarks(page, pageNumber, batchCode = 0) {
   const { markSize, markOffset, pageWidth, pageHeight, markColor, pageMark } = LAYOUT
   const corners = [
     { x: markOffset, y: markOffset },
@@ -131,8 +169,8 @@ function drawRegisterMarks(page, pageNumber) {
     page.drawRectangle({ x: c.x, y: c.y, width: markSize, height: markSize, color: markColor })
   }
 
-  // 页码标记：锚点方块（识别时的基准）+ 8 个数据位方块（bit=1 才画）
-  const bits = encodePageCode(pageNumber)
+  // 编码标记：锚点方块（识别时的基准）+ 20 个数据位方块（bit=1 才画）
+  const bits = encodePageCode(pageNumber, batchCode)
   const { anchorSize, bitSize, bitGap, anchorGap, y, startX } = pageMark
   page.drawRectangle({ x: startX, y, width: anchorSize, height: anchorSize, color: markColor })
   const bitsStart = startX + anchorSize + anchorGap
@@ -189,10 +227,10 @@ function drawCenteredText(page, text, centerX, y, size, font, color) {
 
 // 打印自检页：放在文末，用户拿尺子量方框与标尺即可自证"打印缩放 = 100%"，
 // 黑白激光或按"适合页面"打印这类错误，能在浪费 51 页纸之前发现（决策记录 一-12）
-function drawSelfCheckPage(page, pageNumber, font) {
+function drawSelfCheckPage(page, pageNumber, font, batchCode = 0) {
   const { pageWidth, pageHeight, markColor, gridColor } = LAYOUT
   const centerX = pageWidth / 2
-  drawRegisterMarks(page, pageNumber)
+  drawRegisterMarks(page, pageNumber, batchCode)
   drawCenteredText(page, SELF_CHECK_TEXTS.title, centerX, pageHeight - 70, 18, font, markColor)
 
   // 1cm 标准方框
@@ -291,7 +329,8 @@ function drawReferenceChar(page, cell, char, font) {
  * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（TTF）
  * @param {boolean} [options.includeSelfCheck] 是否在文末附一页打印自检页（默认附）
  * @param {(done:number,total:number)=>void} [options.onProgress] 进度回调（按字表页）
- * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number}>}
+ * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, batchCode:number}>}
+ *   batchCode 是这一批选字清单的 12 位校验码：它同时印在页脚，识别时用来发现"扫描件与所选批次不匹配"（决策记录 八-10）
  */
 export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, onProgress }) {
   const list = chars && chars.length ? chars : getAllChars()
@@ -299,6 +338,8 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   const sheetPages = Math.max(1, Math.ceil(list.length / perPage))
   const selfCheck = includeSelfCheck !== false
   const pageCount = sheetPages + (selfCheck ? 1 : 0)
+  // 校验码由"这一批要写的字"决定：改了选字清单，码就变，旧模板印出来的扫描件会被识别端拦下（八-9、八-10）
+  const batchCode = computeBatchCode(list)
 
   const pdf = await PDFDocument.create()
   pdf.setTitle('SxFontCreator 手写模板')
@@ -309,7 +350,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   for (let p = 0; p < sheetPages; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
-    drawRegisterMarks(page, p + 1)
+    drawRegisterMarks(page, p + 1, batchCode)
     drawPrintHint(page, font)
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     for (let i = 0; i < slice.length; i++) {
@@ -323,10 +364,11 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   }
 
   // 自检页放文末：不打乱字表页的编号（第 n 页编码 n−1 保持成立，切格模块只需忽略超出字表页数的页）
-  if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font)
+  // 它属于同一份模板 PDF，所以带上同一批次校验码；页号超出字表页数，识别端据此判定"这不是字表页"
+  if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, batchCode)
 
   const bytes = await pdf.save()
-  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage }
+  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, batchCode }
 }
 
 /**
@@ -349,6 +391,8 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
   for (let p = 0; p < pageCount; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
+    // 更正册暂不带批次校验码（0）：它的字序要等红圈识别给出"被圈字清单"才确定，
+    // 到那时才能算出属于它的校验码并在界面上与主区并排核对（决策记录 一-6、一-7）
     drawRegisterMarks(page, p + 1)
     drawPrintHint(page, font)
     for (let i = 0; i < LAYOUT.perPage; i++) {
