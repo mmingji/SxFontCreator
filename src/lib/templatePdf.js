@@ -9,6 +9,9 @@ import { PDFDocument, rgb } from 'pdf-lib'
 // 注意是**实例方法**（pdf-lib 1.17 的 PDFDocument 上没有静态 registerFontkit）：每个文档创建后注册一次。
 import fontkit from '@pdf-lib/fontkit'
 import { getAllChars } from './charset.js'
+// 批次校验码抽在 lib/batchCode.js（零依赖纯函数）：store 给批次记账时也用它，若留在本文件里，
+// store 就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
+import { computeBatchCode } from './batchCode.js'
 
 const CM = 28.3464567 // 1cm = 28.3465pt
 const TWIP = 1 / 20 // Word 的 twip：1/20 pt
@@ -99,29 +102,8 @@ export function encodePageCode(pageNumber, batchCode = 0) {
   return bits
 }
 
-// FNV-1a 32 位哈希的一步：先与一个字节异或，再乘质数（Math.imul 保证 32 位乘法不丢精度，>>> 0 保持无符号）
-function fnv1aStep(hash, byte) {
-  return Math.imul((hash ^ byte) >>> 0, 0x01000193) >>> 0
-}
-
-// 批次校验码：对"这一批要写的字"的字符序列算 FNV-1a 32 位哈希，取低 12 位（决策记录 八-10）。
-// 为什么用 FNV-1a：同步、零依赖，在 file:// 下也确定可用（crypto.subtle 的 SHA-256 要求安全上下文，
-//   而 file:// 下的能力还没实测，见清单三-8）；12 位的碰撞率上限本就是 1/4096，换更强的哈希并不降低它。
-// 为什么输入字符而不是字表索引：字表顺序一旦调整，同一个索引会指向别的字，索引算出的码会造成假匹配。
-// 传空值 = 全量字表：默认模板也带自己的校验码，切格端一律比对，不留"无批次"的豁免口。
-// 契约：生成端（这里）与解码端（切格模块）必须用同一算法与同一字序（字序即批次字序，八-6）
-export function computeBatchCode(chars) {
-  const list = chars && chars.length ? chars : getAllChars()
-  let hash = 0x811c9dc5 // FNV-1a 32 位的偏移基准
-  for (const ch of list) {
-    const cp = ch.codePointAt(0)
-    // 按码位的三个字节依次喂入（顺序固定即可；字表全在 BMP 内，第三字节恒为 0）
-    hash = fnv1aStep(hash, cp & 0xff)
-    hash = fnv1aStep(hash, (cp >> 8) & 0xff)
-    hash = fnv1aStep(hash, (cp >> 16) & 0xff)
-  }
-  return hash & 0xfff
-}
+// 批次校验码：实现见 lib/batchCode.js（本文件已 import，这里再导出以便调用方从一个地方取）
+export { computeBatchCode }
 
 // 某一页上第 index 个格子（从左到右、从上到下）的坐标；越界返回 null
 export function cellRect(index) {
