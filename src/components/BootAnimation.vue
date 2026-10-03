@@ -20,16 +20,18 @@ const props = defineProps({
       <rect class="boot-mark" x="112" y="1" width="7" height="7" style="animation-delay: 0.12s" />
       <rect class="boot-mark" x="1" y="72" width="7" height="7" style="animation-delay: 0.24s" />
       <rect class="boot-mark" x="112" y="72" width="7" height="7" style="animation-delay: 0.36s" />
-      <!-- 按已知网格切格：三条横线 + 五条竖线 -->
+      <!-- 按已知网格切格：三条横线 + 五条竖线。
+           每条带 pathLength="100"：把 96 长的横线与 52 长的竖线归一化到同一尺度，
+           否则固定的 dasharray 会让线端残留、横竖线进度不一致（详见 style 里的说明） -->
       <g class="boot-grid">
-        <line x1="12" y1="14" x2="108" y2="14" style="animation-delay: 0s" />
-        <line x1="12" y1="34" x2="108" y2="34" style="animation-delay: 0.12s" />
-        <line x1="12" y1="54" x2="108" y2="54" style="animation-delay: 0.24s" />
-        <line x1="12" y1="14" x2="12" y2="66" style="animation-delay: 0.06s" />
-        <line x1="36" y1="14" x2="36" y2="66" style="animation-delay: 0.18s" />
-        <line x1="60" y1="14" x2="60" y2="66" style="animation-delay: 0.3s" />
-        <line x1="84" y1="14" x2="84" y2="66" style="animation-delay: 0.42s" />
-        <line x1="108" y1="14" x2="108" y2="66" style="animation-delay: 0.54s" />
+        <line x1="12" y1="14" x2="108" y2="14" pathLength="100" style="animation-delay: 0s" />
+        <line x1="12" y1="34" x2="108" y2="34" pathLength="100" style="animation-delay: 0.12s" />
+        <line x1="12" y1="54" x2="108" y2="54" pathLength="100" style="animation-delay: 0.24s" />
+        <line x1="12" y1="14" x2="12" y2="66" pathLength="100" style="animation-delay: 0.06s" />
+        <line x1="36" y1="14" x2="36" y2="66" pathLength="100" style="animation-delay: 0.18s" />
+        <line x1="60" y1="14" x2="60" y2="66" pathLength="100" style="animation-delay: 0.3s" />
+        <line x1="84" y1="14" x2="84" y2="66" pathLength="100" style="animation-delay: 0.42s" />
+        <line x1="108" y1="14" x2="108" y2="66" pathLength="100" style="animation-delay: 0.54s" />
       </g>
       <!-- 扫描线：逐格识别。传 progress 时按进度定位（0=顶部，100=底部） -->
       <line
@@ -50,12 +52,15 @@ const props = defineProps({
   height: 160px;
 }
 
-/* 网格线：先按虚线偏移"画"出来，再保持 */
+/* 网格线：按虚线偏移"画"出来，再保持。
+   每条线带 pathLength="100"，所以这里的 dasharray / dashoffset 都用 100 这个归一化尺度 ——
+   若写死成实际线长（横线 96、竖线 52 各不相同），会出现：保持期横线右端缺一截、
+   动画首尾两端残留小段、横竖线进度不一致导致缩回时碎成短段（已逐帧核查确认）。 */
 .boot-grid line {
   stroke: #c9cfdb;
   stroke-width: 0.8;
-  stroke-dasharray: 92;
-  stroke-dashoffset: 92;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
   animation: comp-draw 3.6s ease-in-out infinite;
 }
 
@@ -85,11 +90,12 @@ const props = defineProps({
 }
 
 @keyframes comp-draw {
-  0%, 12% { stroke-dashoffset: 92; }
+  0%, 12% { stroke-dashoffset: 100; }
   38%, 88% { stroke-dashoffset: 0; }
-  96%, 100% { stroke-dashoffset: 92; }
+  96%, 100% { stroke-dashoffset: 100; }
 }
 
+/* 扫描线位移 52 = 网格高度（y 从 14 到 66）；与 index.html 的 boot-scan 保持一致 */
 @keyframes comp-scan {
   0%, 34% { opacity: 0; transform: translateY(0); }
   40% { opacity: 1; }
