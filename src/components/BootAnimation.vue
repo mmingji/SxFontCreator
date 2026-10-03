@@ -20,13 +20,15 @@ const props = defineProps({
       <rect class="boot-mark" x="112" y="1" width="7" height="7" style="animation-delay: 0.12s" />
       <rect class="boot-mark" x="1" y="72" width="7" height="7" style="animation-delay: 0.24s" />
       <rect class="boot-mark" x="112" y="72" width="7" height="7" style="animation-delay: 0.36s" />
-      <!-- 按已知网格切格：三条横线 + 五条竖线。
+      <!-- 按已知网格切格：**四条横线 + 五条竖线**，围成闭合的 3 行 × 4 列网格
+           （横线 14 / 31.3 / 48.7 / 66 等距，与竖线上下端对齐；只画 3 条横线会导致底部不封口）。
            每条带 pathLength="100"：把 96 长的横线与 52 长的竖线归一化到同一尺度，
            否则固定的 dasharray 会让线端残留、横竖线进度不一致（详见 style 里的说明） -->
       <g class="boot-grid">
         <line x1="12" y1="14" x2="108" y2="14" pathLength="100" style="animation-delay: 0s" />
-        <line x1="12" y1="34" x2="108" y2="34" pathLength="100" style="animation-delay: 0.12s" />
-        <line x1="12" y1="54" x2="108" y2="54" pathLength="100" style="animation-delay: 0.24s" />
+        <line x1="12" y1="31.3" x2="108" y2="31.3" pathLength="100" style="animation-delay: 0.12s" />
+        <line x1="12" y1="48.7" x2="108" y2="48.7" pathLength="100" style="animation-delay: 0.24s" />
+        <line x1="12" y1="66" x2="108" y2="66" pathLength="100" style="animation-delay: 0.36s" />
         <line x1="12" y1="14" x2="12" y2="66" pathLength="100" style="animation-delay: 0.06s" />
         <line x1="36" y1="14" x2="36" y2="66" pathLength="100" style="animation-delay: 0.18s" />
         <line x1="60" y1="14" x2="60" y2="66" pathLength="100" style="animation-delay: 0.3s" />
