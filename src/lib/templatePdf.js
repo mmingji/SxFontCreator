@@ -44,14 +44,29 @@ export const LAYOUT = (() => {
   const tableBottom = markOffset + markSize + gap
   const cellHeight = (tableTop - tableBottom) / rows // 8 行铺满可用高度
 
-  // 参考字所在区域的高度：「参考字区域 + 书写格」作为整体块在字位内垂直居中（V4.0 的实际排法，一-4），
-  // 但高度不再沿用 V4.0 的固定行距 360 twips（18pt）—— 18pt 时参考字的字底离书写格顶只有约 2pt（0.7mm），
-  // 视觉上像"贴着格子"，用户反馈挨得太近（2026-10-03）。
-  // 加大到 24pt 后，因整体仍居中，多出的 6pt 上下各分 3pt：**参考字位置不动、书写格下移 3pt**，
-  // 字底与格顶之间从约 2pt 拉到约 5pt（1.8mm）。
-  const referenceLineHeight = 24
+  // 参考字区域：**边长 = 参考字的最大外形尺寸**，做成一个正方形区域，每个参考字在区域内**居中展示**
+  // （逐字按各自的墨迹外框居中，见 referenceBaselineY / drawReferenceChar）。2026-10-03 用户规则。
+  // 1.02em 来自实测：遍历字表 6919 字，最大墨迹宽 0.988em、最高上缘 0.845em、最低下缘 -0.176em，
+  //   跨度 1.021em（14pt 下约 5.04mm）。换用外框更大的字体时这个比值要跟着调。
+  const referenceAreaRatio = 1.02
+  const referenceAreaSize = referenceAreaRatio * referenceFontSize
+  // 三段留白（外框顶↔参考字区域 / 区域↔书写格 / 书写格↔外框底）按 **4 : 2 : 4** 分配（用户指定）；
+  // 注意"上/下"同为 4 份，所以「参考字区域 + 书写格」这个整块在字位内仍然垂直居中。
+  const gapTopUnits = 4
+  const gapMidUnits = 2
+  const gapBottomUnits = 4
+  const gapUnits = gapTopUnits + gapMidUnits + gapBottomUnits
+  const freeSpace = cellHeight - referenceAreaSize - writingBox
+  const gapTop = (freeSpace * gapTopUnits) / gapUnits
+  const gapMid = (freeSpace * gapMidUnits) / gapUnits
+  const gapBottom = (freeSpace * gapBottomUnits) / gapUnits
+  const blockBottom = gapBottom // 书写格底边距字位底
+  const referenceAreaBottom = gapBottom + writingBox + gapMid // 参考字区域底边距字位底
+  // 典型外框（em）：字体外框解析不出来时的退路（此时所有参考字等价于共用一条基线）
+  const referenceTypicalTop = 0.8
+  const referenceTypicalBottom = -0.09
+  const referenceLineHeight = referenceAreaSize // = 参考字区域高度（供测试与文档引用）
   const blockHeight = referenceLineHeight + writingBox
-  const blockBottom = (cellHeight - blockHeight) / 2
 
   // 页脚编码标记：一个锚点方块 + 20 个数据位方块（位置对应二进制位）
   // 20 位 = 低 8 位页号 + 高 12 位批次校验码（《决策记录》八-10 把一-9 原来的 8 位扩成了 20 位）：
@@ -77,7 +92,8 @@ export const LAYOUT = (() => {
   return {
     pageWidth, pageHeight, cols, rows,
     cellWidth, cellHeight, writingBox, referenceFontSize, lineWidth,
-    referenceLineHeight, blockHeight, blockBottom,
+    referenceLineHeight, referenceTypicalTop, referenceTypicalBottom, blockHeight, blockBottom,
+    referenceAreaSize, referenceAreaBottom, gapTop, gapMid, gapBottom,
     tableWidth, tableLeft, tableTop, tableBottom,
     markSize, markOffset, pageMark,
     perPage: cols * rows,
@@ -140,12 +156,15 @@ export function writingBoxRect(cell) {
   }
 }
 
-// 参考字的基线位置：在书写格上方那一段固定高度的区域里做视觉居中
-// （汉字在字体里大致占 em 的 -0.12~0.88，视觉中心约在基线以上 0.38em）
-export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize) {
-  const box = writingBoxRect(cell)
-  const centerY = box.y + box.height + LAYOUT.referenceLineHeight / 2
-  return centerY - 0.38 * fontSize
+// 参考字的基线：字在**参考字区域内居中** —— 按该字自己的墨迹外框（glyphBox）算，
+// 所以不同字的基线会上下浮动（这正是"外形居中"的必然结果，2026-10-03 用户规则）。
+// glyphBox 为 null（字体外框解析不出来）时退回典型外框，此时等价于所有字共用一条基线。
+export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize, glyphBox = null) {
+  const centerY = cell.y + LAYOUT.referenceAreaBottom + LAYOUT.referenceAreaSize / 2
+  const mid = glyphBox
+    ? (glyphBox.top + glyphBox.bottom) / 2
+    : (LAYOUT.referenceTypicalTop + LAYOUT.referenceTypicalBottom) / 2
+  return centerY - mid * fontSize
 }
 
 // 画一页的公共部分：四角定位块 + 页脚编码标记
@@ -307,13 +326,46 @@ function drawGrid(page) {
   }
 }
 
-// 在字位里画参考字（水平居中、淡灰）
-function drawReferenceChar(page, cell, char, font) {
+// 参考字外框表：字符 → 墨迹四边（em 单位），供"把参考字放进参考字区域并居中"使用。
+// 为什么需要：每个字的墨迹在 em 框里占的位置不同（"一"很扁、"囊"很满、拉丁字母还往下伸），
+//   要做到"每个字都在同一块方形区域里视觉居中"，只能按各自的外框定位（2026-10-03 用户规则）。
+// 字体解析不了（本机字体格式异常等）时返回 null，调用方退回典型外框（等价于共用一条基线）。
+export function buildGlyphBoxTable(fontBytes) {
+  try {
+    const f = fontkit.create(fontBytes)
+    const em = f.unitsPerEm || 1000
+    const cache = new Map()
+    return {
+      get(ch) {
+        let box = cache.get(ch)
+        if (!box) {
+          const g = f.glyphForCodePoint(ch.codePointAt(0))
+          const b = g && g.bbox
+          box = b && (b.maxX > b.minX || b.maxY > b.minY)
+            ? { left: b.minX / em, right: b.maxX / em, top: b.maxY / em, bottom: b.minY / em }
+            : { left: 0, right: 1, top: LAYOUT.referenceTypicalTop, bottom: LAYOUT.referenceTypicalBottom }
+          cache.set(ch, box)
+        }
+        return box
+      }
+    }
+  } catch {
+    return null
+  }
+}
+
+// 在字位里画参考字：放进"参考字区域"，按**墨迹外框**居中（水平也按外框，不是按 advance 宽度），
+// 这样"一"与"囊"看起来都端坐在同一块方形区域的正中。
+function drawReferenceChar(page, cell, char, font, glyphBoxes) {
   const size = LAYOUT.referenceFontSize
-  const width = font.widthOfTextAtSize(char, size)
+  const box = glyphBoxes ? glyphBoxes.get(char) : null
+  const centerX = cell.x + cell.width / 2
+  const x = box
+    ? centerX - ((box.left + box.right) / 2) * size
+    : centerX - font.widthOfTextAtSize(char, size) / 2
   page.drawText(char, {
-    x: cell.x + (cell.width - width) / 2,
-    y: referenceBaselineY(cell, size),
+    x,
+    y: referenceBaselineY(cell, size, box),
     size,
     font,
     color: LAYOUT.gridColor
@@ -344,6 +396,8 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   pdf.setCreator('SxFontCreator')
   pdf.registerFontkit(fontkit)
   const font = await pdf.embedFont(fontBytes, { subset: true })
+  // 参考字外框表：让每个字在"参考字区域"里按自己的墨迹外形居中（解析失败时为 null，退回典型外框）
+  const glyphBoxes = buildGlyphBoxTable(fontBytes)
 
   for (let p = 0; p < sheetPages; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
@@ -352,7 +406,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     drawPageHint(page, font)
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     for (let i = 0; i < slice.length; i++) {
-      drawReferenceChar(page, cellRect(i), slice[i], font)
+      drawReferenceChar(page, cellRect(i), slice[i], font, glyphBoxes)
     }
     if (onProgress) {
       onProgress(p + 1, sheetPages)
