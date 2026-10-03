@@ -44,9 +44,12 @@ export const LAYOUT = (() => {
   const tableBottom = markOffset + markSize + gap
   const cellHeight = (tableTop - tableBottom) / rows // 8 行铺满可用高度
 
-  // 参考字所在区域的高度：沿用 V4.0 的固定行距 360 twips（18pt），
-  // 「参考字区域 + 书写格」作为整体块在字位内垂直居中 —— 这也是 V4.0 的实际排法（一-4）
-  const referenceLineHeight = 18
+  // 参考字所在区域的高度：「参考字区域 + 书写格」作为整体块在字位内垂直居中（V4.0 的实际排法，一-4），
+  // 但高度不再沿用 V4.0 的固定行距 360 twips（18pt）—— 18pt 时参考字的字底离书写格顶只有约 2pt（0.7mm），
+  // 视觉上像"贴着格子"，用户反馈挨得太近（2026-10-03）。
+  // 加大到 24pt 后，因整体仍居中，多出的 6pt 上下各分 3pt：**参考字位置不动、书写格下移 3pt**，
+  // 字底与格顶之间从约 2pt 拉到约 5pt（1.8mm）。
+  const referenceLineHeight = 24
   const blockHeight = referenceLineHeight + writingBox
   const blockBottom = (cellHeight - blockHeight) / 2
 
@@ -87,8 +90,12 @@ export const LAYOUT = (() => {
     //   黑/蓝黑笔迹（灰度约 166 对笔迹约 60~90），字形提取的分离余量不受影响。
     gridColor: rgb(0.651, 0.651, 0.651),
     crossColor: rgb(0.851, 0.851, 0.851), // #D9D9D9：十字辅助线，比格线更淡
+    // #808080 中灰：表格上方那行书写与打印要求 —— 比格线（166）深、比笔迹（60~90）浅，
+    //   纸面上看得见又不抢眼。8pt 是"看得清又不占地方"的折中（需求里的最小字号约束针对界面，纸面另计）
+    hintColor: rgb(0.502, 0.502, 0.502),
+    hintFontSize: 8,
     // #2E6E7E 中深青：定位块与页码标记用它，替代原来的纯黑 ——
-    // ① 红度 R − max(G,B) = −80（负值），不会被红圈识别误判；② 灰度约 93，灰度扫描下仍远深于灰格线（191）
+    // ① 红度 R − max(G,B) = −80（负值），不会被红圈识别误判；② 灰度约 93，灰度扫描下仍远深于灰格线（166）
     markColor: rgb(0.18, 0.431, 0.494)
   }
 })()
@@ -175,27 +182,32 @@ function drawRegisterMarks(page, pageNumber, batchCode = 0) {
 // 印在 PDF 上的所有文案集中在这里：**每个字符都必须落在字表 6919 字内**，
 // 否则嵌入子集字体没有该字形，会印成方块（踩过两次：`·`、`%`，以及 ASCII 空格都不在字表里）。
 // 中文与数字之间也不要加空格 —— 空格同样不在字表内。测试里有断言兜住。
-export const FOOTER_HINT = '彩色喷墨，按实际大小打印'
+// 表格上方那一行提示（**每页都印**）：把"扫描之前"的关键点压成一行 —— 打印设置、用笔、顶满格、
+// 不描不改、压平纸。原来只在页脚左侧印一句打印要求，位置偏、容量只有约 40 字（2026-10-03 按用户要求
+// 改为顶部一行、并删掉页脚那句，避免同一件事在纸上说两遍）。
+export const PAGE_HINT = '按实际大小彩色打印、不勾无边框；建议用0.5mm黑色中性笔，居中书写，笔画最好顶着田字格、不描不改，防止纸张变形(翘边、折叠、受潮)'
 export const SELF_CHECK_TEXTS = {
   title: '打印自检',
   boxLabel: '此处方框应为1cm',
   rulerLabel: '此处标尺应为10cm',
   lines: [
     '请用尺子量上面的方框与标尺',
-    '尺寸不对，就检查打印设置：选实际大小，不要选适合页面',
+    '尺寸不对，就检查打印设置：选实际大小，不要选适合页面，也不要勾无边框',
     '本页是自检页，不用于书写；正式书写页从第1页开始'
   ]
 }
 
-// 页脚左侧印一行极简打印要求：纸面上的提醒比界面提示更容易被看到（清单四-5），
-// 位置避开左下定位块；切格只取字位区域，不会干扰识别
-function drawPrintHint(page, font) {
-  page.drawText(FOOTER_HINT, {
-    x: LAYOUT.markOffset + LAYOUT.markSize + 10,
-    y: LAYOUT.markOffset + 5,
-    size: 7,
+// 表格上方居中印一行书写与打印要求：纸面上的提醒比界面提示更容易被看到（清单四-5）。
+// 位置：与上排两个定位块同一水平带（定位块在左右两侧、这行居中，水平方向不会重叠），
+//   基线取表格顶边上方 6pt，避免贴住表格；切格只取字位区域，不会干扰识别。
+function drawPageHint(page, font) {
+  const width = font.widthOfTextAtSize(PAGE_HINT, LAYOUT.hintFontSize)
+  page.drawText(PAGE_HINT, {
+    x: (LAYOUT.pageWidth - width) / 2,
+    y: LAYOUT.tableTop + 6,
+    size: LAYOUT.hintFontSize,
     font,
-    color: LAYOUT.gridColor
+    color: LAYOUT.hintColor
   })
 }
 
@@ -337,7 +349,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
     drawRegisterMarks(page, p + 1, batchCode)
-    drawPrintHint(page, font)
+    drawPageHint(page, font)
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     for (let i = 0; i < slice.length; i++) {
       drawReferenceChar(page, cellRect(i), slice[i], font)
@@ -380,7 +392,7 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
     // 更正册暂不带批次校验码（0）：它的字序要等红圈识别给出"被圈字清单"才确定，
     // 到那时才能算出属于它的校验码并在界面上与主区并排核对（决策记录 一-6、一-7）
     drawRegisterMarks(page, p + 1)
-    drawPrintHint(page, font)
+    drawPageHint(page, font)
     for (let i = 0; i < LAYOUT.perPage; i++) {
       const label = String(startIndex + p * LAYOUT.perPage + i)
       const cell = cellRect(i)
