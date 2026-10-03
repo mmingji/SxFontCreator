@@ -5,7 +5,6 @@ import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
 import SelectionPanel from './components/SelectionPanel.vue'
-import BootAnimation from './components/BootAnimation.vue'
 
 // 模板面板按需加载：它依赖 pdf-lib + fontkit（实测 dev 模式下 2.3MB、构建后仍占大头），
 // 静态引入会让首屏一起下载 —— 实测冷启动白屏 3.5 秒里有一大半是它。
@@ -25,9 +24,6 @@ const TemplatePreview = defineAsyncComponent({
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
-
-// 「加载动画预览」浮层：让用户随时能看到首屏加载时的动画（平时一闪而过看不清）
-const showBootDemo = ref(false)
 
 // 流程步骤：与《需求与技术方案》三、完整用户流程一致；尚未接入模块，当前停在第 1 步
 const STEPS = [
@@ -89,15 +85,12 @@ const checks = computed(() => [
   }
 ])
 
-// 状态栏文案：保存状态来自 store.saveState（persist 的真实返回值）
-const SAVE_TEXT = {
-  idle: '数据保存在本机浏览器里，未做任何上传',
-  saving: '正在保存…',
-  saved: '已保存到本机',
-  failed: '保存失败：浏览器可能禁用了本地存储（改动仍在当前页面内存中）'
-}
-const saveText = computed(() => SAVE_TEXT[store.saveState] || SAVE_TEXT.idle)
+// 保存状态与快照恢复：**只在异常时提示**。
+// 原来底部状态栏常驻一句"数据保存在本机浏览器里，未做任何上传"，属于噪音，已随状态栏一并去掉；
+// 但"保存失败"与"上次改动没写完、已从快照恢复"这两种情况必须让用户知道，否则数据出了问题无感知 ——
+// 所以它们改成按需出现的提示条（见模板里的 .notice），平时不占位置。
 const saveFailed = computed(() => store.saveState === 'failed')
+const recoverDismissed = ref(false)
 </script>
 
 <template>
@@ -124,6 +117,21 @@ const saveFailed = computed(() => store.saveState === 'failed')
         />
       </label>
     </header>
+
+    <!-- 异常提示条：只在「保存失败」或「上次改动没写完、已从快照恢复」时出现，平时不占位置。
+         原来这两条信息挂在底部状态栏里常驻显示，随状态栏一并去掉了 —— 但数据异常必须让用户看见 -->
+    <div
+      v-if="saveFailed || (store.recoveredFromSnapshot && !recoverDismissed)"
+      class="notice"
+      :class="saveFailed ? 'danger' : 'info'"
+    >
+      <span>
+        {{ saveFailed
+          ? '保存失败：浏览器可能禁用了本地存储，改动仍在当前页面内存中（重新加载会丢失）'
+          : '上次关闭前有一次改动没写完，已从本机快照恢复到最新状态' }}
+      </span>
+      <button v-if="!saveFailed" @click="recoverDismissed = true">知道了</button>
+    </div>
 
     <main class="content">
       <section class="card">
@@ -162,27 +170,5 @@ const saveFailed = computed(() => store.saveState === 'failed')
         </p>
       </section>
     </main>
-
-    <footer class="statusbar">
-      <span class="save-state" :class="{ failed: saveFailed }">{{ saveText }}</span>
-      <span v-if="store.recoveredFromSnapshot" class="recover-note">
-        上次关闭前有一次改动没写完，已从本机快照恢复到最新状态
-      </span>
-      <button class="boot-demo-button" @click="showBootDemo = !showBootDemo">
-        {{ showBootDemo ? '收起动画预览' : '加载动画预览' }}
-      </button>
-    </footer>
-
-    <!-- 加载动画预览：首屏加载时它一闪而过，这里可以慢慢看；将来长任务（切格 / 识别 / 矢量化）
-         会复用同一个动画，把扫描线换成真实进度（BootAnimation 组件已支持 progress 入参） -->
-    <div v-if="showBootDemo" class="boot-demo">
-      <BootAnimation />
-      <p class="hint">
-        加载动画演示的是本产品的三件事：四角定位块 → 按已知网格切格 → 扫描线逐格识别。
-        首次打开时它在页面最早期就显示（写在 index.html 里、不依赖脚本，所以不会有白屏）；
-        将来上传扫描件做识别时，同一条扫描线会按真实进度从上往下走。
-      </p>
-      <button @click="showBootDemo = false">关闭</button>
-    </div>
   </div>
 </template>
