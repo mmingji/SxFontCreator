@@ -4,7 +4,7 @@
 // 版面依据：全部来自做字体网 V4.0 模板的实测（《决策记录》一-3、一-4）——A4 横向、每行 17 格（1.6cm）、
 //   每页 8 行、书写格 1cm 灰色点线、参考字楷体 14pt、字位框灰色实线；另加自研的四角定位块与页脚页码编码标记（一-9）。
 // 为什么用 pdf-lib：页面尺寸与每个格子的坐标完全可控，用户按 100% 打印即与设计一致（一-10）。
-import { PDFDocument, rgb } from 'pdf-lib'
+import { PDFDocument } from 'pdf-lib'
 // pdf-lib 嵌入自定义字体（TTF + 子集化）必须先注册 fontkit；@pdf-lib/fontkit 是它配套的 fork。
 // 注意是**实例方法**（pdf-lib 1.17 的 PDFDocument 上没有静态 registerFontkit）：每个文档创建后注册一次。
 import fontkit from '@pdf-lib/fontkit'
@@ -12,149 +12,15 @@ import { getAllChars } from './charset.js'
 // 批次校验码抽在 lib/batchCode.js（零依赖纯函数）：store 给批次记账时也用它，若留在本文件里，
 // store 就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
 import { computeBatchCode } from './batchCode.js'
+import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode } from './layout.js'
 
-const CM = 28.3464567 // 1cm = 28.3465pt
-const TWIP = 1 / 20 // Word 的 twip：1/20 pt
-
-// 版面常量（导出给测试与切格模块共用；改这里就等于改印出来的版面）
-// 注意：下面全是"取值型参数"（颜色、尺寸、行列数、页脚编码位宽）。**改任何一个值，都要全文搜索
-//   旧值并同步文档**（本项目规则见《决策记录》六-8）：《决策记录》一-3 / 一-4 / 一-9、
-//   《实施计划》步骤 1.3 关键参数、《需求与技术方案》5.1 / 5.4、《待办与风险清单》四-6 / 四-8、
-//   《打印实测记录表》表一 / 表二。
-//   旧值的**同义说法也要搜**（如把纯黑改中深青后，`#000000`、纯黑、黑色、黑方块都要搜）。
-//   为什么写这条：曾发生定位块改色后三份文档仍写"黑方块"，照旧文档实现就会印成黑色。
-export const LAYOUT = (() => {
-  const pageWidth = 29.7 * CM // A4 横向
-  const pageHeight = 21 * CM
-  const cols = 17
-  const rows = 8
-  const cellWidth = 907 * TWIP // V4.0 实测：字位宽 1.6cm
-  const writingBox = 567 * TWIP // V4.0 实测：书写格 1cm
-  const referenceFontSize = 14 // V4.0 实测：参考字楷体 14pt
-  const lineWidth = 4 * TWIP // V4.0 实测：边框 0.5pt
-  const tableWidth = cols * cellWidth
-  const tableLeft = (pageWidth - tableWidth) / 2 // 表格居中（与 V4.0 的 jc=center 一致）
-
-  // 四角定位块：0.5cm 见方，距纸边 0.5cm（打印机的不可打印区通常 3~5mm，必须留够）
-  const markSize = 0.5 * CM
-  const markOffset = 0.5 * CM
-  const gap = 2 // 定位块与表格之间的间隙
-  // 上下边距由定位块决定（V4.0 的 0.8cm 上下边距放不下定位块，这里按需要放大）
-  const tableTop = pageHeight - (markOffset + markSize + gap)
-  const tableBottom = markOffset + markSize + gap
-  const cellHeight = (tableTop - tableBottom) / rows // 8 行铺满可用高度
-
-  // 参考字区域：**边长 = 参考字的最大外形尺寸**，做成一个正方形区域，每个参考字在区域内**居中展示**
-  // （逐字按各自的墨迹外框居中，见 referenceBaselineY / drawReferenceChar）。2026-10-03 用户规则。
-  // 1.02em 来自实测：遍历字表 6919 字，最大墨迹宽 0.988em、最高上缘 0.845em、最低下缘 -0.176em，
-  //   跨度 1.021em（14pt 下约 5.04mm）。换用外框更大的字体时这个比值要跟着调。
-  const referenceAreaRatio = 1.02
-  const referenceAreaSize = referenceAreaRatio * referenceFontSize
-  // 三段留白（外框顶↔参考字区域 / 区域↔书写格 / 书写格↔外框底）按 **4 : 2 : 4** 分配（用户指定）；
-  // 注意"上/下"同为 4 份，所以「参考字区域 + 书写格」这个整块在字位内仍然垂直居中。
-  const gapTopUnits = 4
-  const gapMidUnits = 2
-  const gapBottomUnits = 4
-  const gapUnits = gapTopUnits + gapMidUnits + gapBottomUnits
-  const freeSpace = cellHeight - referenceAreaSize - writingBox
-  const gapTop = (freeSpace * gapTopUnits) / gapUnits
-  const gapMid = (freeSpace * gapMidUnits) / gapUnits
-  const gapBottom = (freeSpace * gapBottomUnits) / gapUnits
-  const blockBottom = gapBottom // 书写格底边距字位底
-  const referenceAreaBottom = gapBottom + writingBox + gapMid // 参考字区域底边距字位底
-  // 典型外框（em）：字体外框解析不出来时的退路（此时所有参考字等价于共用一条基线）
-  const referenceTypicalTop = 0.8
-  const referenceTypicalBottom = -0.09
-  const referenceLineHeight = referenceAreaSize // = 参考字区域高度（供测试与文档引用）
-  const blockHeight = referenceLineHeight + writingBox
-
-  // 页脚编码标记：一个锚点方块 + 20 个数据位方块（位置对应二进制位）
-  // 20 位 = 低 8 位页号 + 高 12 位批次校验码（《决策记录》八-10 把一-9 原来的 8 位扩成了 20 位）：
-  //   页号告诉切格端"这是第几页"，校验码告诉切格端"这批扫描件是不是当前选字清单生成的模板"，
-  //   不符即整批拦下。总宽 = 8pt 锚点 + 4pt 间隙 + 20×6pt 方块 + 19×5pt 间隔 = 227pt ≈ 8.01cm，
-  //   A4 横向（可用宽 27.2cm）放得下，也不碰左右下角的定位块。
-  const pageBits = 8
-  const batchBits = 12
-  const pageMark = {
-    anchorSize: 8,
-    bitSize: 6,
-    bitGap: 5,
-    anchorGap: 4,
-    pageBits, // 低 8 位：页号
-    batchBits, // 高 12 位：批次校验码
-    bits: pageBits + batchBits,
-    y: markOffset + 4 // 距纸边约 0.63cm，落在可打印区内
-  }
-  pageMark.totalWidth = pageMark.anchorSize + pageMark.anchorGap +
-    pageMark.bits * pageMark.bitSize + (pageMark.bits - 1) * pageMark.bitGap
-  pageMark.startX = (pageWidth - pageMark.totalWidth) / 2
-
-  return {
-    pageWidth, pageHeight, cols, rows,
-    cellWidth, cellHeight, writingBox, referenceFontSize, lineWidth,
-    referenceLineHeight, referenceTypicalTop, referenceTypicalBottom, blockHeight, blockBottom,
-    referenceAreaSize, referenceAreaBottom, gapTop, gapMid, gapBottom,
-    tableWidth, tableLeft, tableTop, tableBottom,
-    markSize, markOffset, pageMark,
-    perPage: cols * rows,
-    // 书写格内的十字辅助线（田字格）：极淡虚线，只做书写参考；识别时按灰度滤掉（笔迹是黑的，优先级最高）
-    crossGuide: true,
-    crossLineWidth: 0.4,
-    // 颜色
-    // #A6A6A6：字位框、书写格、参考字（三者共用）。2026-10-03 打印实测反馈"参考字与格线都偏浅、
-    //   照着写略吃力"，由 #BFBFBF 调深一档；扫描件里格线与参考字本就很浅，调深一档后仍远浅于
-    //   黑/蓝黑笔迹（灰度约 166 对笔迹约 60~90），字形提取的分离余量不受影响。
-    gridColor: rgb(0.651, 0.651, 0.651),
-    crossColor: rgb(0.851, 0.851, 0.851), // #D9D9D9：十字辅助线，比格线更淡
-    // #808080 中灰：表格上方那行书写与打印要求 —— 比格线（166）深、比笔迹（60~90）浅，
-    //   纸面上看得见又不抢眼。8pt 是"看得清又不占地方"的折中（需求里的最小字号约束针对界面，纸面另计）
-    hintColor: rgb(0.502, 0.502, 0.502),
-    hintFontSize: 8,
-    // #2E6E7E 中深青：定位块与页码标记用它，替代原来的纯黑 ——
-    // ① 红度 R − max(G,B) = −80（负值），不会被红圈识别误判；② 灰度约 93，灰度扫描下仍远深于灰格线（166）
-    markColor: rgb(0.18, 0.431, 0.494)
-  }
-})()
-
-// 页脚编码 → 20 位数组（bit0 在最左，与印在纸上的方块排布顺序一致）
-// 前 8 位是页号（第 n 页编码 n−1，保证第 1 页也有标记，支持 256 页），后 12 位是批次校验码。
-// **这是模板生成与切格识别之间的契约**：解码端按同样顺序读位；改这里就必须同步改解码端（决策记录 一-9、八-10）
-export function encodePageCode(pageNumber, batchCode = 0) {
-  const { pageBits, batchBits } = LAYOUT.pageMark
-  const page = Math.max(0, Math.min((1 << pageBits) - 1, (pageNumber | 0) - 1))
-  const batch = Math.max(0, Math.min((1 << batchBits) - 1, batchCode | 0))
-  const bits = []
-  for (let i = 0; i < pageBits; i++) bits.push((page >> i) & 1)
-  for (let i = 0; i < batchBits; i++) bits.push((batch >> i) & 1)
-  return bits
-}
-
-// 批次校验码：实现见 lib/batchCode.js（本文件已 import，这里再导出以便调用方从一个地方取）
-export { computeBatchCode }
-
-// 某一页上第 index 个格子（从左到右、从上到下）的坐标；越界返回 null
-export function cellRect(index) {
-  if (index < 0 || index >= LAYOUT.perPage) return null
-  const col = index % LAYOUT.cols
-  const row = Math.floor(index / LAYOUT.cols)
-  return {
-    x: LAYOUT.tableLeft + col * LAYOUT.cellWidth,
-    y: LAYOUT.tableTop - (row + 1) * LAYOUT.cellHeight,
-    width: LAYOUT.cellWidth,
-    height: LAYOUT.cellHeight
-  }
-}
-
-// 字位内的书写格位置：水平居中；垂直方向上，「参考字区域 + 书写格」整体在字位内居中
-// （V4.0 的实际排法是参考字紧贴书写格上方、整体居中，见《决策记录》一-4）
-export function writingBoxRect(cell) {
-  return {
-    x: cell.x + (cell.width - LAYOUT.writingBox) / 2,
-    y: cell.y + LAYOUT.blockBottom,
-    width: LAYOUT.writingBox,
-    height: LAYOUT.writingBox
-  }
-}
+// 版面常量（LAYOUT、格位换算、页脚编码）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
+// 但不能为此把 pdf-lib + fontkit（构建后约 1.16MB）拖进首屏 —— 与 computeBatchCode 抽到 lib/batchCode.js
+// 是同一个理由。这里 import 后再导出，保持既有引用（测试、界面、切格模块）不变。
+// 注意 `export { x } from './y'` 是再导出、不会在当前模块创建绑定，本文件内部要用就必须先 import（踩过这个坑）。
+// computeBatchCode 一并再导出：它是"生成端印在页脚、切格端拿去比对"的同一个算法，
+// 调用方（store、测试）历来从这里取，保持引用不变。
+export { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, computeBatchCode }
 
 // 参考字的基线：字在**参考字区域内居中** —— 按该字自己的墨迹外框（glyphBox）算，
 // 所以不同字的基线会上下浮动（这正是"外形居中"的必然结果，2026-10-03 用户规则）。
