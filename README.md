@@ -16,7 +16,7 @@ npm run frequency      # 重新生成频次分级数据（GB2312 本地推算 + 
 npm run charrank       # 重新生成频序数据（Jun Da 字频表，源文件是 GBK、缓存于 .font-sources/ 不入库）
 npm run font-subset    # 重新生成参考字字体子集（读 .font-sources/ 下的霞鹜文楷，源字体不入库）
 npm run inspect:os2    # 字体 OS/2 表体检（量"Word 认不认它当中文字体"，可传系统字体做对照）
-npm test               # 全套：字表 + 频次 + 频序 + 选字 + 流程 + 图像算子 + 扫描预处理 + 切格 + 字形提取 + 红圈识别 + 更正对应 + 字体构建 + 模板 + 渲染 + 构建 + 冒烟
+npm test               # 全套：字表 + 频次 + 频序 + 选字 + 流程 + 图像算子 + 扫描预处理 + 切格 + 字形提取 + 红圈识别 + 上传识别 + 更正对应 + 字体构建 + 模板 + 渲染 + 构建 + 冒烟
 npm run test:charset   # 只跑字表校验
 npm run test:flow      # 只跑制作流程的状态推导（向导界面的判断来源）
 npm run test:template  # 只跑模板 PDF 校验（版面几何 + 产物读回）
@@ -24,6 +24,7 @@ npm run test:render    # 只跑渲染验证（把 PDF 渲染成图做像素断�
 npm run test:grid      # 只跑自动切格验证（合成件 + 真实样本夹具，夹具缺失时 SKIP）
 npm run test:extract   # 只跑字形提取验证（分离参考字与手写笔迹，夹具缺失时 SKIP）
 npm run test:marks     # 只跑红圈识别验证（真实红圈件 + 合成件，夹具缺失时 SKIP）
+npm run test:scanflow  # 只跑上传识别的编排与收批闸门（纯逻辑 + 真件夹具整条跑，夹具缺失时只跑纯逻辑）
 npm run test:correction # 只跑更正对应验证（纯逻辑 + 真件端到端，夹具缺失时跳过真件）
 npm run test:fontbuild # 只跑矢量化 + 字体构建（会先用 vite 打一个测试专用 bundle）
 npm run test:smoke     # 只跑冒烟验证（需先 build）

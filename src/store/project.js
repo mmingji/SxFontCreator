@@ -12,6 +12,7 @@ import { loadProject, saveProject, getStorageState } from '../lib/persist.js'
 import { getAllChars } from '../lib/charset.js'
 import { normalizeSelection } from '../lib/frequency.js'
 import { computeBatchCode } from '../lib/batchCode.js'
+import { collectGlyphStats } from '../lib/scanMeta.js'
 
 // 默认字体族名：产品命名（决策记录 七-1）。名称表其余字段在阶段三接入时补默认值。
 const DEFAULT_FAMILY_NAME = 'SxFontCreator'
@@ -41,6 +42,24 @@ export const useProjectStore = defineStore('project', {
     //   printed   —— 是否已生成过模板（"未写"这一态的判据之一，八-8）
     //   uploads   —— 已绑定的扫描件（八-7：上传时手选批次；阶段一后半接入）
     batches: [],
+    // 扫描识别（阶段一「界面串联」B2）：只存**轻量记录**，掩膜与缩略图在 lib/scanCache.js 的内存缓存里
+    //   batchId         —— 这批扫描件所属批次（决策 八-7：上传时手选）
+    //   batchConfirmed  —— 是否显式确认"这批扫描件属于该批次"（决策 二-7：页脚读不出时批次码失效，必须显式确认）
+    //   allowVoidBatch  —— 明知是作废批次仍要继续（决策 八-10 的"禁传"要留一个显式放行口）
+    //   pages           —— 每页的轻量记录（页码 / 校验码 / 计数 / 每格判定，不含掩膜与图）
+    //   orderOverrides  —— 用户手选的页序 `{ [fileIndex]: pageNumber }`（只对页脚读不出的页有效）
+    //   chars           —— 这一批的字序（识别时按它把"页内格号"映射成字）
+    //   summary         —— 最近一次批次汇总判定（轻量：problems / ok / message）
+    scan: {
+      batchId: null,
+      batchConfirmed: false,
+      allowVoidBatch: false,
+      pages: [],
+      orderOverrides: {},
+      chars: '',
+      summary: null,
+      lastRunAt: null
+    },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -54,13 +73,22 @@ export const useProjectStore = defineStore('project', {
     // 出模板时要排的字：没选字就是全量（默认体验：零配置也能直接打全量模板）
     charsForTemplate: (state) => (state.selection.chars.length ? state.selection.chars : getAllChars().join('')),
     activeBatches: (state) => state.batches.filter((batch) => batch.status === 'active'),
-    // 最近一个仍可上传的批次（将来的上传界面默认选它）
+    // 最近一个仍可上传的批次（上传界面默认选它）
     latestActiveBatch: (state) => {
       for (let i = state.batches.length - 1; i >= 0; i--) {
         if (state.batches[i].status === 'active') return state.batches[i]
       }
       return null
-    }
+    },
+    // 这批扫描件所属的批次（决策 八-7）
+    scanBatch: (state) => state.batches.find((item) => item.id === state.scan.batchId) || null,
+    // 所选批次是不是已作废（八-10 的"禁传"要留一个显式放行口）
+    scanBatchIsVoid: (state) => {
+      const batch = state.batches.find((item) => item.id === state.scan.batchId)
+      return !!batch && batch.status === 'void'
+    },
+    // 这批识别结果能拿出多少字形（页数 / 写了多少格 / 可疑多少 / 被圈多少 / 去重字数）
+    scanGlyphStats: (state) => collectGlyphStats(state.scan.pages)
   },
 
   actions: {
@@ -74,6 +102,7 @@ export const useProjectStore = defineStore('project', {
         if (data.template && typeof data.template === 'object') this.template = data.template
         if (data.selection && typeof data.selection === 'object') Object.assign(this.selection, data.selection)
         if (Array.isArray(data.batches)) this.batches = data.batches
+        if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
       }
       this.loadSource = source
       this.storage = await getStorageState()
@@ -93,7 +122,8 @@ export const useProjectStore = defineStore('project', {
         glyphs: this.glyphs,
         template: this.template,
         selection: this.selection,
-        batches: this.batches
+        batches: this.batches,
+        scan: this.scan
       })
       if (res.ok) {
         this.rev = res.rev
@@ -203,6 +233,64 @@ export const useProjectStore = defineStore('project', {
         }
       }
       return count
+    },
+
+    // ── 扫描识别（阶段一「界面串联」B2）────────────────────────────────────
+    // 选批次（决策 八-7：上传时手选）：换批次要把"已确认"与"作废放行"一起复位 ——
+    // 这两个勾选是针对上一批扫描件的确认，换批次后必须重新确认，不能沿用
+    setScanBatch(batchId) {
+      if (this.scan.batchId === batchId) return
+      this.scan.batchId = batchId || null
+      this.scan.batchConfirmed = false
+      this.scan.allowVoidBatch = false
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 显式确认"这批扫描件属于所选批次"（决策 二-7：页脚读不出时批次码失效，只能靠这一步）
+    setScanBatchConfirmed(confirmed) {
+      this.scan.batchConfirmed = !!confirmed
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 明知是作废批次仍要继续（决策 八-10 的显式放行口）
+    setScanAllowVoid(allow) {
+      this.scan.allowVoidBatch = !!allow
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 写入一批识别结果（只存轻量记录：掩膜与缩略图在 lib/scanCache.js 的内存缓存里，不落盘）
+    setScanResult({ pages, summary, chars }) {
+      this.scan.pages = Array.isArray(pages) ? pages : []
+      this.scan.summary = summary || null
+      this.scan.chars = typeof chars === 'string' ? chars : ''
+      this.scan.orderOverrides = {}
+      this.scan.lastRunAt = new Date().toISOString()
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 用户手选页序（决策 二-7）：只对页脚读不出的页有效，重排后字与汇总判定都由组件算好再写回来
+    setScanPageOrder({ overrides, pages, summary }) {
+      this.scan.orderOverrides = overrides || {}
+      this.scan.pages = Array.isArray(pages) ? pages : this.scan.pages
+      if (summary) this.scan.summary = summary
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 清掉识别结果（重新上传前调用；内存缓存由组件一并清）
+    clearScan() {
+      this.scan.pages = []
+      this.scan.summary = null
+      this.scan.chars = ''
+      this.scan.orderOverrides = {}
+      this.scan.batchConfirmed = false
+      this.scan.lastRunAt = null
+      this.markDirty()
+      schedulePersist(this)
     }
   }
 })
