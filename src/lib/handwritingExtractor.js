@@ -10,6 +10,9 @@
 // 实测依据（2026-10-04 三份真实样本，详见《提交历史》第 42 条）：笔迹 0~119（当前版笔迹在 0~39 段最密）、
 //   田字格与格线 220~239、参考字 200~219；空白格书写格内 <180 的像素为 0、最大噪点块 21 像素；
 //   写字格连通块平均 2.5~3.9 块、最大 2991 像素 → 面积过滤下限 20 像素既不漏噪点也不伤笔画。
+// 与红圈识别（1.7）的分工（决策 二-12）：红笔灰度约 76 也低于阈值 150，所以**红圈必须显式剔除** ——
+//   1.7 产出红圈掩膜，切格时作为附加图层切出来，本模块收到 `redMask` 后把这些像素跳过（见 extractHandwriting）。
+//   本模块不碰彩色像素：颜色分离只归 1.7，一套标准只放一处。
 import { closeMask, connectedComponents } from './imageOps.js'
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
@@ -75,7 +78,9 @@ function measureMask(mask, slice, box) {
  * 提取单格的手写笔迹。
  * @param {{data:Uint8ClampedArray|Uint8Array,width:number,height:number}} slice 切格产出的切片（去噪灰度）
  * @param {{x:number,y:number,width:number,height:number}} boxInSlice 书写格在切片内的像素矩形（切格给的坐标）
- * @param {object} [options] 见 EXTRACT_DEFAULTS
+ * @param {object} [options] 见 EXTRACT_DEFAULTS；另可传 `redMask`（切片尺寸、1 = 红圈像素）——
+ *   红笔灰度约 76 低于提取阈值 150，不剔除就会被当成笔画写进字形（实测占被圈格掩膜的 17%~26%）；
+ *   红圈掩膜由 1.7 产出、经切格作为附加图层切出来（决策 二-12）
  * @returns {{mask:Uint8Array,bbox:object|null,overflow:object,hasInk:boolean,verdict:string}} mask 为 1 = 笔迹；
  *   bbox 用切片坐标；overflow 是四向越界量（像素，正数表示超出书写格多少）；verdict 为 empty / suspect / ok
  */
@@ -83,23 +88,31 @@ export function extractHandwriting(slice, boxInSlice, options = {}) {
   if (!slice || !slice.data) throw new Error('字形提取需要切格产出的切片（{ data, width, height }）')
   const opt = { ...EXTRACT_DEFAULTS, ...options }
   const { width, height } = slice
+  const redMask = opt.redMask && opt.redMask.length === slice.data.length ? opt.redMask : null
   // boxInSlice 缺省时退化成"整张切片都算书写格"：手工调用（测试、将来的单图调试）不必先算版面坐标
   const box = boxInSlice && boxInSlice.width
     ? boxInSlice
     : { x: 0, y: 0, width, height }
 
-  // ① 灰度分层：手写候选进 raw；同时统计全切片最暗值，以及"书写格之外的浅灰像素"（参考字残留的诊断口径）
+  // ① 灰度分层：手写候选进 raw；同时统计全切片最暗值，以及"书写格之外的浅灰像素"（参考字残留的诊断口径）。
+  //    红圈像素（redMask = 1）直接跳过：它是红笔画的圈，不是手写笔迹
   const raw = new Uint8Array(width * height)
   let darkest = 255
   let guidePixels = 0
+  let redPixelsRemoved = 0
   for (let y = 0; y < height; y++) {
     const row = y * width
     const insideRow = y >= box.y && y < box.y + box.height
     for (let x = 0; x < width; x++) {
-      const g = slice.data[row + x]
+      const i = row + x
+      const g = slice.data[i]
       if (g < darkest) darkest = g
       if (g < opt.inkThreshold) {
-        raw[row + x] = 1
+        if (redMask && redMask[i]) {
+          redPixelsRemoved++ // 这一像素是红圈的深色像素：记下来供诊断，不进笔迹掩膜
+          continue
+        }
+        raw[i] = 1
       } else if (g < opt.guideThreshold && (!insideRow || x < box.x || x >= box.x + box.width)) {
         guidePixels++
       }
@@ -165,6 +178,7 @@ export function extractHandwriting(slice, boxInSlice, options = {}) {
     inkP50: m.inkP50,
     darkest,
     guidePixels, // 书写格之外的浅灰像素（参考字残留 / 格线边缘），量大说明参考字被带进了切片
+    redPixelsRemoved, // 被红圈掩膜挡掉的深色像素数（诊断：确认红圈确实被剔除了）
     blobsKept,
     blobsRemoved,
     removedPixels,
@@ -185,7 +199,11 @@ export function extractPage(boxes, options = {}) {
     index: b.index,
     pageNumber: b.pageNumber,
     charIndex: b.charIndex,
-    ...extractHandwriting(b.slice, b.boxInSlice, options)
+    ...extractHandwriting(b.slice, b.boxInSlice, {
+      ...options,
+      // 切格切出来的红圈图层（1.7 的产物）默认直接用于剔除；调用方传了 redMask 则以它为准
+      redMask: options.redMask || (b.layers && b.layers.red ? b.layers.red.data : null)
+    })
   }))
   const summary = { count: cells.length, written: 0, empty: 0, suspect: 0, inkPixels: 0, ms: Math.round(now() - t0) }
   for (const c of cells) {

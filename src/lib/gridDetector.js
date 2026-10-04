@@ -415,6 +415,9 @@ export function verifyBatchCode(decodedBatchCode, expectedBatchCode) {
  * 只有包含进来，1.6 的提取与阶段三 3.2 的越界检测才有依据；外扩量由中缝推导，不会碰到参考字区域。
  * @returns {{boxes:Array, padPt:number, sliceSize:object}} boxes 里的 slice 是**拷贝**（调用方持有后
  *   即可释放整页灰度图；批量处理必须逐页释放，清单 三-5）
+ * @param {Array} [options.layers] 附加图层 `[{ name, gray }]`（与设计坐标灰度同尺寸），
+ *   例如红圈识别（1.7）产出的红掩膜 —— 切格时一并切出来，boxes[i].layers[name] 就是切片尺寸的该图层，
+ *   1.6 用它把红圈像素从手写笔迹里剔除。图层可省，省了 boxes[i].layers 为 null
  */
 export function sliceWritingBoxes(designGray, options = {}) {
   const opt = { ...DETECT_DEFAULTS, ...options }
@@ -425,6 +428,9 @@ export function sliceWritingBoxes(designGray, options = {}) {
   const padPt = typeof opt.cellPadPt === 'number' ? opt.cellPadPt : CELL_PAD_PT
   // 页脚读不出时上层传 0：表示"页码未知、等界面手选"，不要在这里退回 1（那等于编造页序）
   const pageNumber = typeof opt.pageNumber === 'number' ? opt.pageNumber : 1
+  // 附加图层：只接受与设计坐标灰度同尺寸的层，尺寸对不上的直接跳过（宁缺勿错位）
+  const layers = (opt.layers || []).filter((l) => l && l.gray && l.gray.width === designGray.width &&
+    l.gray.height === designGray.height)
   // 切片尺寸**统一按版面常量算**，不用每格的实际像素边界：像素栅格上书写格的边界会因取整在
   // 118 / 119 之间抖动，逐格裁剪会让切片在 146 / 147 之间抖动。位置仍按每格的实际边界（相邻格之间
   // 那 1 像素的差异落在外扩区里，对识别无影响），这样每个切片都是同一尺寸、书写格在切片内的位置也恒定。
@@ -458,6 +464,19 @@ export function sliceWritingBoxes(designGray, options = {}) {
       const src = (y0 + y) * designGray.width + x0
       data.set(designGray.data.subarray(src, src + w), y * w)
     }
+    // 附加图层走完全相同的裁剪范围，保证与切片逐像素对齐
+    let slicedLayers = null
+    if (layers.length) {
+      slicedLayers = {}
+      for (const layer of layers) {
+        const ld = new Uint8ClampedArray(w * h)
+        for (let y = 0; y < h; y++) {
+          const src = (y0 + y) * layer.gray.width + x0
+          ld.set(layer.gray.data.subarray(src, src + w), y * w)
+        }
+        slicedLayers[layer.name] = { data: ld, width: w, height: h }
+      }
+    }
     sliceSize = { width: w, height: h }
     boxes.push({
       index: i, // 页内格号 0~135（从左到右、从上到下）
@@ -470,7 +489,8 @@ export function sliceWritingBoxes(designGray, options = {}) {
       // 书写格在切片内的像素矩形：1.9 的"按书写格线性映射到 900×900 占位"要用它，
       // 这样无论外扩多少、切成多大，映射基准都不变
       boxInSlice: { x: at.x - x0, y: at.y - y0, width: boxPx, height: boxPx },
-      slice: { data, width: w, height: h }
+      slice: { data, width: w, height: h },
+      layers: slicedLayers
     })
   }
   return { boxes, padPt, sliceSize }
