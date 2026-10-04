@@ -10,6 +10,10 @@ import { computed, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { FREQUENCY_SETS, getFrequencySet, getLevelChars, searchChars } from '../lib/frequency.js'
 
+// nested：作为「选字与出模板」步骤的下级出现（用户 2026-10-04 拍板的两级结构）——
+// 下级形态用更轻的边框与 h3 标题，避免与步骤卡片抢层级
+defineProps({ nested: { type: Boolean, default: false } })
+
 const store = useProjectStore()
 const PAGE_SIZE = 340
 
@@ -71,7 +75,10 @@ function reportChange(result, what) {
 }
 
 function onToggleChar(char) {
-  reportChange(store.toggleChar(char), selectedSet.value.has(char) ? '取消「' + char + '」' : '加入「' + char + '」')
+  // **先读"点之前"是否已选，再 toggle**：两个实参的求值顺序是从左到右，若把 store.toggleChar(char) 写在前面，
+  // 后面的 selectedSet 已经是"点完"的新状态 —— 消息文案会正好说反（实测：加入却显示"取消"）
+  const wasSelected = selectedSet.value.has(char)
+  reportChange(store.toggleChar(char), (wasSelected ? '取消「' : '加入「') + char + '」')
 }
 
 function onLevelAll(select) {
@@ -117,8 +124,9 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
 </script>
 
 <template>
-  <section class="card">
-    <h2>选字</h2>
+  <section class="card" :class="{ nested }">
+    <h2 v-if="!nested">选字</h2>
+    <h3 v-else>自定义选字</h3>
 
     <div class="panel-row">
       <div class="panel-field">

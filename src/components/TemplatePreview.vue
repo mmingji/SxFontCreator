@@ -1,25 +1,29 @@
 <script setup>
-// 模板与更正册生成面板（阶段一步骤 1.3）
-// 职责：选参考字字体来源 → 生成模板 / 更正册 PDF → 交给浏览器下载
-// 数据来源：字表来自 src/lib/charset.js（6919 字，顺序即模板字序）；字体来自 referenceFont.js
-// 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+// 第 1 步：选字与出模板（阶段一步骤 1.3 的界面；2026-10-04 按用户要求改造成向导的第一步）
+// 职责：① 选字（当前选字 / 自定义选字两级，选字面板是它的下级）② 选排列方式与参考字字体
+//   ③ **先看到模板第一页的真实预览**（pdf.js 渲染真实 PDF）④ 生成模板 PDF / 更正册并下载。
+// 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
+// 数据来源：字表来自 src/lib/charset.js（6919 字）；字体来自 referenceFont.js（内置子集或本机字体）。
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
 import { CHAR_RANK_META, getRankOrder, sortByRank } from '../lib/charRank.js'
 import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadFontFromFile } from '../lib/referenceFont.js'
 import { useProjectStore } from '../store/project.js'
+import SelectionPanel from './SelectionPanel.vue'
+import PdfPreview from './PdfPreview.vue'
 
 const store = useProjectStore()
 const meta = getCharsetMeta()
 const totalPages = Math.ceil(meta.total / LAYOUT.perPage)
 
-// 字形测试页的 12 个字：覆盖"极简 → 极繁、方框 → 凹形 → 多部件"，专测清单三-2 的细笔画分辨率
-// 与决策 二-2 里"口形被误判成红圈"的样本；已逐个核对都在字表内（字表外的字会印成方块）
-const TEST_PAGE_CHARS = ['一', '十', '口', '日', '国', '永', '凹', '凸', '瓣', '囊', '霸', '懿']
+// 选字方式（两级里的上级）：用现有选字 / 展开选字面板重新挑（用户 2026-10-04 拍板的口径）
+// 选字面板是这一项的下级 —— 只有选「自定义选字」时才展开，避免默认状态就把整个字网格铺在第一步里
+const pickMode = ref('current')
 
-// 范围：单页试打（先确认版式与打印设置）/ 当前选字 / 全量；有选字时默认按选字出
-const scope = ref(store.selectedCount ? 'selection' : 'full')
+// 生成范围：**默认单页试打**（用户 2026-10-04 拍板）—— 先打一页确认版式与打印设置，
+// 再打正式的；正式范围（当前选字 / 全量）出模板时会记一个批次，单页试打不记批次
+const scope = ref('single')
 // 字体来源：内置子集 / 用户选的本机字体
 const fontSource = ref('builtin')
 const localFontName = ref('')
@@ -31,6 +35,11 @@ const message = ref('')
 const messageType = ref('info') // info | error | done
 const progress = ref({ done: 0, total: 0 })
 const lastResult = ref(null) // { name, pages, bytes }
+
+// 预览：存的是**真实生成的模板 PDF 字节**（与点「生成模板 PDF」得到的是同一份内容），
+// 交给 PdfPreview 用 pdf.js 渲染第 1 页 —— 用户下单前就能看到"打出来长什么样"
+const previewBytes = ref(null)
+const previewBusy = ref(false)
 
 // 「本机字体怎么选」的浮窗：这段说明较长（Windows 字体目录带「系统」属性、两条绕开办法、macOS 目录），
 // 常驻会把面板撑长，所以收进问号按钮后面，点击展开；点击别处或按 Esc 收起。
@@ -73,23 +82,29 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocumentKeydown)
 })
 
+const selectionHint = computed(() => {
+  if (store.selectedCount) {
+    return '当前选字：' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
+  }
+  return '还没有选字：不选就按全量 ' + meta.total + ' 字出模板（' + totalPages + ' 页）'
+})
+
 const scopeHint = computed(() => {
   if (scope.value === 'single') {
-    return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字），先打印确认版式与打印设置'
+    return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字）+ 打印自检页，先确认版式与打印设置；不记批次'
   }
   if (scope.value === 'selection') {
     return store.selectedCount
       ? '当前选字：' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
-      : '还没有选字 —— 请先在上面「选字」面板里挑字；不选字时按全量出'
+      : '还没有选字 —— 不选字时按全量出'
   }
   return '全量：' + meta.total + ' 字／' + totalPages + ' 页'
 })
 
-// 排列方式（2026-10-04 按用户要求加）：默认**按使用频率** —— 最常用的字排在最前，
-// 前 2000 字覆盖日常语料 97.1%（约 15 页），整套 51 页里前 28 页就够日常使用；
-// 频序本身也把同偏旁的字打散了（拼音字序会让同偏旁的字挨在一起，一页写下来很疲劳）。
+// 排列方式：默认**按使用频率** —— 最常用的字排在最前，前 2000 字覆盖日常语料 97.1%（约 15 页），
+// 整套 51 页里前 28 页就够日常使用；频序本身也把同偏旁的字打散了（拼音字序会让同偏旁的字挨在一起，很疲劳）。
 // 「字表顺序」保留给想跟做字体网 V4.0 模板对齐的人；两种顺序都能被识别 —— 批次记的是实际字序，
-// 页脚校验码也是按字序算的（决策 八-6、八-10），所以换顺序不会影响"扫描件与批次匹配"的判定。
+// 页脚校验码也是按字序算的（决策 八-6、八-10），换顺序不会影响"扫描件与批次匹配"的判定。
 const orderMode = ref('rank')
 const orderHint = computed(() => {
   if (orderMode.value === 'rank') {
@@ -160,24 +175,52 @@ function download(bytes, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000)
 }
 
+// 生成"当前设置下的模板 PDF"（试打是 1 页字表 + 自检页；正式范围是全部页 + 自检页）。
+// 生成模板与刷新预览共用这一份，保证"预览的就是要下载的那份内容"
+async function buildCurrentPdf(onStep) {
+  const font = await resolveFont()
+  const chars = charsForScope()
+  progress.value = { done: 0, total: Math.ceil(chars.length / LAYOUT.perPage) }
+  const out = await buildTemplatePdf({
+    chars,
+    fontBytes: font.bytes,
+    onProgress: onStep || ((done, total) => { progress.value = { done, total } })
+  })
+  return { out, font, chars }
+}
+
+// 预览：防抖 300ms —— 连续切换范围 / 排列方式时不至于每点一下都重算一遍整份 PDF
+let previewTimer = null
+function schedulePreview() {
+  clearTimeout(previewTimer)
+  previewTimer = setTimeout(() => { refreshPreview() }, 300)
+}
+async function refreshPreview() {
+  if (previewBusy.value) return
+  previewBusy.value = true
+  try {
+    const { out } = await buildCurrentPdf()
+    previewBytes.value = out.bytes
+  } catch (e) {
+    setMessage('预览生成失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    previewBusy.value = false
+    progress.value = { done: 0, total: 0 }
+  }
+}
+onBeforeUnmount(() => { clearTimeout(previewTimer) })
+// 影响版面的输入一变就重出预览；打开这一步时先出一次（用户不用先点按钮才能看到东西）
+watch([scope, orderMode, () => store.selectedCount, () => fontSource.value, () => localFontName.value], () => { schedulePreview() })
+onMounted(() => { schedulePreview() })
+
 async function generateTemplate() {
   if (busy.value) return
   busy.value = true
-  progress.value = { done: 0, total: 0 }
   lastResult.value = null
   try {
     setMessage('正在读取字体…', 'info')
-    const font = await resolveFont()
-    const chars = charsForScope()
-    progress.value = { done: 0, total: Math.ceil(chars.length / LAYOUT.perPage) }
     setMessage('正在生成模板 PDF…', 'info')
-    const out = await buildTemplatePdf({
-      chars,
-      fontBytes: font.bytes,
-      onProgress: (done, total) => {
-        progress.value = { done, total }
-      }
-    })
+    const { out, font, chars } = await buildCurrentPdf()
     // 单页试打只为确认版式，不记批次（否则批次列表会被试打记录塞满）；
     // 正式出模板则记一个批次：字序 + 页数 + 校验码都要留痕，上传扫描件时按它比对（八-6、八-10）
     let batchNote = ''
@@ -187,6 +230,8 @@ async function generateTemplate() {
     }
     const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
     download(out.bytes, name)
+    // 下载用的就是刚生成的那份，顺手把它给预览，省一次重算
+    previewBytes.value = out.bytes
     lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label, batchCode: out.batchCode }
     const mb = (out.bytes.length / 1024 / 1024).toFixed(2)
     const selfNote = out.selfCheck ? '；最后 1 页是打印自检页，先用尺子量 1cm 方框再开始手写' : ''
@@ -199,33 +244,7 @@ async function generateTemplate() {
     setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
     busy.value = false
-  }
-}
-
-// 字形测试页：12 个字，专供打印实测（细笔画是否断续、方框与凹形结构、多笔画是否糊成一团）
-// 它不是正式书写页、不记批次，但页脚仍带自己的校验码，便于确认这份 PDF 的身份
-async function generateTestPage() {
-  if (busy.value) return
-  busy.value = true
-  progress.value = { done: 0, total: 0 }
-  lastResult.value = null
-  try {
-    setMessage('正在读取字体…', 'info')
-    const font = await resolveFont()
-    setMessage('正在生成字形测试页…', 'info')
-    const out = await buildTemplatePdf({ chars: TEST_PAGE_CHARS, fontBytes: font.bytes })
-    const name = 'SxFontCreator-字形测试页-12字.pdf'
-    download(out.bytes, name)
-    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label, batchCode: out.batchCode }
-    setMessage(
-      '字形测试页已生成并开始下载：' + TEST_PAGE_CHARS.join('、') + '，共 ' + out.pageCount +
-        ' 页（含自检页），校验码 ' + out.batchCode,
-      'done'
-    )
-  } catch (e) {
-    setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
-  } finally {
-    busy.value = false
+    progress.value = { done: 0, total: 0 }
   }
 }
 
@@ -253,19 +272,24 @@ async function generateCorrectionBook() {
     setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
     busy.value = false
+    progress.value = { done: 0, total: 0 }
   }
 }
 </script>
 
 <template>
-  <section class="card">
-    <div class="panel-head">
-      <h2>模板与更正册</h2>
-      <div class="panel-head-actions">
-        <button class="text" :disabled="busy" @click="generateTestPage">生成字形测试页（12 字）</button>
-        <button class="text" :disabled="busy" @click="generateCorrectionBook">生成更正册（空白 5 页）</button>
+  <div class="step-body">
+    <!-- 选字：两级里的上级。选字面板是它的下级，只有选「自定义选字」时才展开 -->
+    <div class="panel-row">
+      <div class="panel-field">
+        <span class="field-label">选字</span>
+        <label class="radio"><input v-model="pickMode" type="radio" value="current" :disabled="busy" />当前选字</label>
+        <label class="radio"><input v-model="pickMode" type="radio" value="custom" :disabled="busy" />自定义选字</label>
+        <span class="panel-hint">{{ selectionHint }}</span>
       </div>
     </div>
+    <SelectionPanel v-if="pickMode === 'custom'" nested />
+
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">生成范围</span>
@@ -324,8 +348,23 @@ async function generateCorrectionBook() {
       </div>
     </div>
 
+    <!-- 预览：真实 PDF 渲染（与点「生成模板 PDF」得到的内容完全一致） -->
+    <div class="panel-row">
+      <div class="panel-field">
+        <span class="field-label">打印预览</span>
+        <span class="panel-hint">
+          按当前设置生成的模板、第 1 页的真实渲染；改范围 / 排列方式 / 选字后会自动重出。
+          <span v-if="previewBusy">正在生成预览…</span>
+        </span>
+        <button class="text" type="button" :disabled="previewBusy || busy" @click="refreshPreview">更新预览</button>
+      </div>
+    </div>
+    <!-- 预览画布单独占一整行：塞进上面的 flex 行会让它被挤在右侧、左边留一大片空白 -->
+    <PdfPreview :bytes="previewBytes" :loading="previewBusy" />
+
     <div class="panel-actions">
       <button class="primary" :disabled="busy" @click="generateTemplate">生成模板 PDF</button>
+      <button class="text" :disabled="busy" @click="generateCorrectionBook">生成更正册（空白 5 页）</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
     </div>
 
@@ -365,5 +404,5 @@ async function generateCorrectionBook() {
       批次校验码印在每页页脚（20 个小方块）：它由这一批要写的字算出来，扫描识别时用来确认「这批纸和当前的选字清单是不是同一批」。
       重新选了字之后必须重新生成模板，旧模板印出来的纸会被判为不匹配。
     </p>
-  </section>
+  </div>
 </template>

@@ -174,33 +174,43 @@ small {
   font-size: 14px;
 }
 
-.steps {
+/* ── 向导步骤条（2026-10-04 由"平铺 7 步流程"改为向导：一次只显示一步）─────
+   状态由 src/lib/flow.js 的 buildFlowState() 算出来，这里只负责长相：
+   done 已完成（绿勾）/ current 当前（蓝底）/ todo 未开始（灰）/ pending 待接入（虚线） */
+.wizard-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wizard-head h2 {
+  margin: 0;
+}
+
+.wizard-steps {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   list-style: none;
-  margin: 0;
+  margin: 10px 0 0;
   padding: 0;
 }
 
-.steps li {
-  display: flex;
+.wizard-step-button {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
+  background: #fff;
   font-size: 12px;
   color: var(--text-2);
 }
 
-.steps li.current {
-  border-color: var(--primary);
-  color: var(--primary-dark);
-  background: #eff6ff;
-}
-
-.step-index {
+.wizard-step-index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -208,13 +218,42 @@ small {
   height: 16px;
   border-radius: 50%;
   background: #eef1f6;
-  color: var(--text-2);
+  color: inherit;
   font-size: 12px;
 }
 
-.steps li.current .step-index {
+.wizard-step.status-done .wizard-step-button {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: var(--success);
+}
+
+.wizard-step.status-done .wizard-step-index {
+  background: #dcfce7;
+}
+
+.wizard-step.status-current .wizard-step-button {
+  border-color: var(--primary);
+  background: #eff6ff;
+  color: var(--primary-dark);
+}
+
+.wizard-step.status-current .wizard-step-index {
   background: var(--primary);
   color: #fff;
+}
+
+.wizard-step.status-pending .wizard-step-button {
+  border-style: dashed;
+}
+
+.wizard-step.clickable .wizard-step-button {
+  cursor: pointer;
+}
+
+.wizard-step-flag {
+  font-size: 12px;
+  color: var(--text-2);
 }
 
 .checklist {
@@ -286,29 +325,7 @@ small {
 
 /* ── 模板与更正册面板 ─────────────────────────────────────────────── */
 
-/* 卡片标题行：标题在左，次要动作（字形测试页 / 更正册）做成文本按钮放最右。
-   为什么另起一个类而不是复用 .panel-actions：这一行是"标题 + 次要入口"，与主体动作区的主次、
-   对齐方式都不同（主体按钮左对齐、这一行右对齐且贴标题基线）。 */
-.panel-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.panel-head h2 {
-  margin: 0;
-}
-
-.panel-head-actions {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-/* 文本按钮：无边框、无底色，字重与颜色都往次要里做（用于标题行上的次要动作） */
+/* 文本按钮：无边框、无底色，字重与颜色都往次要里做（用于「更新预览」「生成更正册」这类次要动作） */
 button.text {
   border: none;
   background: none;
@@ -446,4 +463,125 @@ button.text:hover {
 
 .panel-message.info {
   color: var(--text-2);
+}
+
+/* ── 向导的步骤内容（每一步一张卡片，底部是上一步 / 下一步）────────────── */
+
+.step-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.step-head h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.step-number {
+  margin-right: 6px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* 步骤说明条：只在需要解释"这一步为什么进不去 / 还没接入"时出现 */
+.step-note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: var(--primary-dark);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.step-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* 步骤正文里的编号清单（手写与扫描那一步的操作要点） */
+.plain-list {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+/* 下级卡片：选字面板嵌在「选字与出模板」这一步里（两级结构里的下级），
+   用虚线与更浅的底色与步骤卡片拉开层级 */
+.card.nested {
+  margin: 8px 0 12px;
+  background: #fafbfd;
+  border-style: dashed;
+}
+
+.card.nested h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+/* ── 模板 PDF 预览（pdf.js 渲染真实 PDF 的第一页）────────────────────── */
+
+.pdf-preview {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f1f3f7;
+}
+
+.pdf-preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.pdf-preview-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pdf-preview-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  overflow: auto;
+}
+
+.pdf-preview-canvas {
+  display: block;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(16, 32, 48, 0.12);
+}
+
+.pdf-preview-canvas.hidden {
+  display: none;
+}
+
+.pdf-preview-empty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.pdf-preview-empty.error {
+  color: var(--danger);
 }
