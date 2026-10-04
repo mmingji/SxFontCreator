@@ -6,6 +6,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
+import { CHAR_RANK_META, getRankOrder, sortByRank } from '../lib/charRank.js'
 import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadFontFromFile } from '../lib/referenceFont.js'
 import { useProjectStore } from '../store/project.js'
 
@@ -84,11 +85,32 @@ const scopeHint = computed(() => {
   return '全量：' + meta.total + ' 字／' + totalPages + ' 页'
 })
 
-// 实际要排的字：试打取字表前 136 字；选字取当前选字（空则全量）；全量取全部
+// 排列方式（2026-10-04 按用户要求加）：默认**按使用频率** —— 最常用的字排在最前，
+// 前 2000 字覆盖日常语料 97.1%（约 15 页），整套 51 页里前 28 页就够日常使用；
+// 频序本身也把同偏旁的字打散了（拼音字序会让同偏旁的字挨在一起，一页写下来很疲劳）。
+// 「字表顺序」保留给想跟做字体网 V4.0 模板对齐的人；两种顺序都能被识别 —— 批次记的是实际字序，
+// 页脚校验码也是按字序算的（决策 八-6、八-10），所以换顺序不会影响"扫描件与批次匹配"的判定。
+const orderMode = ref('rank')
+const orderHint = computed(() => {
+  if (orderMode.value === 'rank') {
+    return '按使用频率：最常用的字在最前（前 2000 字覆盖语料 ' + CHAR_RANK_META.cumAt2000 + '%，约 ' +
+      Math.ceil(2000 / LAYOUT.perPage) + ' 页即可日常使用）；' + CHAR_RANK_META.missing +
+      ' 个未被字频表收录的字（部首、超纲字与符号）排在最后'
+  }
+  return '字表顺序（拼音）：与做字体网 V4.0 模板一致，同偏旁的字容易挨在一起'
+})
+
+// 实际要排的字：先按"排列方式"定全序，再按范围取子集
+// （试打取前 136 字 —— 频序下就是最常用的 136 字；选字取当前选字；全量取全部）
 function charsForScope() {
-  if (scope.value === 'single') return getAllChars().slice(0, LAYOUT.perPage)
-  if (scope.value === 'selection') return Array.from(store.charsForTemplate)
-  return getAllChars()
+  const base = orderMode.value === 'rank' ? getRankOrder() : getAllChars()
+  if (scope.value === 'single') return base.slice(0, LAYOUT.perPage)
+  if (scope.value === 'selection') {
+    const picked = Array.from(store.charsForTemplate)
+    if (!picked.length) return base
+    return orderMode.value === 'rank' ? sortByRank(picked) : picked
+  }
+  return base
 }
 
 function setMessage(text, type) {
@@ -160,7 +182,7 @@ async function generateTemplate() {
     // 正式出模板则记一个批次：字序 + 页数 + 校验码都要留痕，上传扫描件时按它比对（八-6、八-10）
     let batchNote = ''
     if (scope.value !== 'single') {
-      const batch = store.addBatch({ pageCount: out.sheetPages, chars: chars.join('') })
+      const batch = store.addBatch({ pageCount: out.sheetPages, chars: chars.join(''), order: orderMode.value })
       batchNote = '；已记为批次，校验码 ' + batch.batchCode
     }
     const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
@@ -251,6 +273,15 @@ async function generateCorrectionBook() {
         <label class="radio"><input v-model="scope" type="radio" value="selection" :disabled="busy" />当前选字</label>
         <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全量</label>
         <span class="panel-hint">{{ scopeHint }}</span>
+      </div>
+    </div>
+
+    <div class="panel-row">
+      <div class="panel-field">
+        <span class="field-label">排列方式</span>
+        <label class="radio"><input v-model="orderMode" type="radio" value="rank" :disabled="busy" />按使用频率</label>
+        <label class="radio"><input v-model="orderMode" type="radio" value="charset" :disabled="busy" />字表顺序（拼音）</label>
+        <span class="panel-hint">{{ orderHint }}</span>
       </div>
     </div>
 

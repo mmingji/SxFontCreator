@@ -154,15 +154,18 @@ export const useProjectStore = defineStore('project', {
      * @param {object} info
      * @param {number} info.pageCount 该批模板的字表页数
      * @param {string} [info.chars] 指定字序（默认取当前选字；空选字 = 全量）
+     * @param {string} [info.order] 排列方式：'rank' 按使用频率 / 'charset' 字表顺序（八-6 的修订）
      * @returns {object} 新建的批次
      */
-    addBatch({ pageCount, chars } = {}) {
+    addBatch({ pageCount, chars, order } = {}) {
       const list = chars === undefined ? this.charsForTemplate : chars
       const batch = {
         id: 'b' + (this.batches.length + 1) + '-' + Date.now().toString(36),
         chars: list,
         charCount: list.length,
         standard: this.selection.standard,
+        // 排列方式要留痕：同一批重新生成模板时必须用同一种顺序，否则字序变了、校验码也变，已打印的纸作废
+        order: order || 'charset',
         pageCount: pageCount || Math.max(1, Math.ceil(list.length / 136)),
         batchCode: computeBatchCode(list),
         createdAt: new Date().toISOString(),
