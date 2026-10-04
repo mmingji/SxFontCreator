@@ -12,6 +12,7 @@
     "frequency": "node scripts/build-frequency.mjs",
     "charrank": "node scripts/build-char-rank.mjs",
     "font-subset": "node scripts/build-font-subset.mjs",
+    "inspect:os2": "node scripts/inspect-font-os2.mjs",
     "test:smoke": "node test/smoke-app.mjs",
     "test:charset": "node test/charset.mjs",
     "test:frequency": "node test/frequency.mjs",

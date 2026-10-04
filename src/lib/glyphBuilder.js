@@ -50,6 +50,60 @@ function escapeXml(s) {
   return String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]))
 }
 
+// ── Windows 认中文字体所需的 OS/2 字段（清单 三-12，口径见《决策记录》四-5）──────────
+// 为什么必须补：Windows（Word / GDI / DirectWrite）判断"这个字体能不能用于中文"看的是 OS/2 表的**代码页位**。
+//   我们的字体原来 `ulCodePageRange1 = 1`（只声明 Latin-1）→ Word 的「中文字体」下拉里选不中它、
+//   输入中文一律回退宋体，而同一份字体在 PS 里中英文都正常（2026-10-04 装机实测，清单 三-4 / 三-12）。
+// 实测对照（零依赖探针直接解析 OS/2 二进制，2026-10-04）：
+//   SimSun 宋体   usWeightClass 400、fsSelection 0x0040、ulUnicodeRange2 含第 59 位、ulCodePageRange1 0x00040001
+//   SimHei 黑体 / KaiTi 楷体 / Microsoft YaHei 微软雅黑 同前（雅黑为 0x0004001F）
+//   我们的字体      usWeightClass 0（**非法值**，规范要求 100~900）、fsSelection 0x00C0、无第 59 位、代码页位只有 Latin-1
+// 位号依据：OpenType 规范 OS/2 表的 ulUnicodeRange 位表 —— 第 48 位 = CJK 符号和标点（U+3000–303F）、
+//   第 59 位 = **CJK 统一表意文字**（U+4E00–9FFF）。要小心：第 59 位落在 ulUnicodeRange2 的 bit27，
+//   不是 bit16（bit16 只是"中日韩符号和标点"）。下面这几个位都对应字表**实际覆盖**的字符块。
+const OS2_UNICODE_RANGE1 = 1 << 31 // 第 31 位：常用标点（字表内 6 个：“”‘’—…）
+const OS2_UNICODE_RANGE2 = (1 << 16) | (1 << 27) // 第 48 位中日韩符号和标点（14 个）+ 第 59 位 CJK 统一表意文字
+const OS2_UNICODE_RANGE3 = 1 << 4 // 第 68 位：半角及全角形式（字表内 8 个：？！，；：（）～）
+const OS2_PUA_BIT_IN_RANGE2 = 1 << 28 // 第 60 位：专用区（PUA）—— 我们没有 PUA 字形，要清掉（见下面的"接管"）
+const OS2_CODE_PAGE_GB2312 = 1 << 18 // 第 18 位：936 简体中文 GB2312 —— Windows 判定"能用于中文"的那一位
+
+/**
+ * 补 Windows 认中文字体所需的 OS/2 字段。必须在 `fonteditor.svg2ttfobject()` 之后、
+ * `createFont().write()` 之前调用（否则会被写盘逻辑改写，见下面 ulUnicodeRange2 的说明）。
+ *
+ * 四处改动：
+ *   ① `usWeightClass`（字重级）= 400 —— 原来 0 是非法值，根因是生成的 SVG font-face 没声明 font-weight，
+ *      fonteditor 解析时取到 0。常规体按规范是 400。
+ *   ② `fsSelection`（字体选择标志）= 0x0040 —— 原来 0x00C0 = REGULAR | USE_TYPO_METRICS，两位都合法，
+ *      但设了 USE_TYPO_METRICS 后行距改用 sTypoAscender−Descender+LineGap = 1.116em；改成只留 REGULAR
+ *      后与四个系统中文字体一致，行距改用 usWinAscent+usWinDescent = 1.024em（字形只占 800 ~ −100，切不到）。
+ *   ③ `ulCodePageRange1` / `ulUnicodeRange1` / `ulUnicodeRange3`：写盘时不会被改写，直接按位补。
+ *   ④ `ulUnicodeRange2`：**必须用访问器（getter/setter）接管** —— fonteditor 的 OS/2 表在写盘时会硬写
+ *      `ulUnicodeRange2 = 0x10000000`（第 60 位 = 专用区 PUA），直接赋值会被它抹掉（实测：赋完产物里仍是
+ *      0x10000000、CJK 位为假）。用 setter 在它硬写之后把我们的位补回去（实测产物 = 0x08010000）。
+ *
+ * @param {object} ttfObj `fonteditor.svg2ttfobject()` 的返回值（就地修改）
+ * @returns {object} 同一个对象，便于链式调用
+ */
+export function patchOs2ForWindows(ttfObj) {
+  const os2 = ttfObj && ttfObj['OS/2']
+  if (!os2) return ttfObj
+  os2.usWeightClass = 400
+  os2.fsSelection = 0x40
+  os2.ulCodePageRange1 = (os2.ulCodePageRange1 | OS2_CODE_PAGE_GB2312) >>> 0
+  os2.ulUnicodeRange1 = (os2.ulUnicodeRange1 | OS2_UNICODE_RANGE1) >>> 0
+  os2.ulUnicodeRange3 = (os2.ulUnicodeRange3 | OS2_UNICODE_RANGE3) >>> 0
+  let range2 = (((os2.ulUnicodeRange2 | 0) & ~OS2_PUA_BIT_IN_RANGE2) | OS2_UNICODE_RANGE2) >>> 0
+  Object.defineProperty(os2, 'ulUnicodeRange2', {
+    get: () => range2,
+    // 写盘方 set 时把我们的位补回去、并清掉不成立的 PUA 位：既保住 CJK 位，也不谎报有专用区字形
+    set: (value) => { range2 = (((value | 0) & ~OS2_PUA_BIT_IN_RANGE2) | OS2_UNICODE_RANGE2) >>> 0 },
+    enumerable: true,
+    configurable: true
+  })
+  return ttfObj
+}
+
 // 汉字字形的 PostScript 名（uniXXXX 是惯例写法，Word / PS 的字符映射表按名字查找时能看到）
 function glyphName(char) {
   const cp = charToCodePoint(char)
@@ -205,7 +259,11 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     glyphsXml.join('\n') + '\n</font></defs>\n</svg>'
   const ttfObj = fonteditor.svg2ttfobject(svgFont, { combinePath: false })
 
-  // ② name 表（决策 四-1）：中英并列写在同一字段里 —— fonteditor 的 name 表按 platform/language 写记录
+  // ② OS/2 字段补位：Word 靠它认"这是中文字体"（清单 三-12）。位置很关键 —— 必须在写盘之前，
+  //   而且 ulUnicodeRange2 是用访问器接管的（fonteditor 写盘时会硬写这个字段，见 patchOs2ForWindows）
+  patchOs2ForWindows(ttfObj)
+
+  // ③ name 表（决策 四-1）：中英并列写在同一字段里 —— fonteditor 的 name 表按 platform/language 写记录
   //   （Mac 一条 + Windows 一条，同一字符串），塞不进两套语言；若要严格的双语双记录得自己拼 name 表二进制
   const psName = toPostScriptName(familyName)
   ttfObj.name = {
@@ -225,7 +283,7 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     sampleText: meta.sampleText || built.slice(0, 12).map((g) => g.char).join('')
   }
 
-  // ③ 写 TTF → woff → woff2
+  // ④ 写 TTF → woff → woff2
   const font = fonteditor.createFont(ttfObj)
   const ttf = font.write({ type: 'ttf', toBuffer: false })
   const woff = fonteditor.ttf2woff(ttf)
