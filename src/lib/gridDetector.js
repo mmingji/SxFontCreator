@@ -411,7 +411,7 @@ export function verifyBatchCode(decodedBatchCode, expectedBatchCode) {
 
 /**
  * 按 LAYOUT 的已知网格坐标切出整页 136 格。
- * 每格切的是**书写格外扩 CELL_PAD_PT** 的范围：纸面提示写的是"笔画别出田字格"，但手写总会有越界的起收笔与长撇长捺，
+ * 每格切的是**书写格外扩 CELL_PAD_PT** 的范围：纸面提示写的是"笔画贴到格子边、别出格"，但手写总会有越界的起收笔与长撇长捺，
  * 只有包含进来，1.6 的提取与阶段三 3.2 的越界检测才有依据；外扩量由中缝推导，不会碰到参考字区域。
  * @returns {{boxes:Array, padPt:number, sliceSize:object}} boxes 里的 slice 是**拷贝**（调用方持有后
  *   即可释放整页灰度图；批量处理必须逐页释放，清单 三-5）
@@ -486,7 +486,7 @@ export function sliceWritingBoxes(designGray, options = {}) {
       boxRect: box, // 书写格（设计 pt）
       sliceRect, // 切片矩形（设计 pt，含外扩）
       slicePx: { x: x0, y: y0, width: w, height: h }, // 切片在设计坐标图里的位置
-      // 书写格在切片内的像素矩形：1.9 的"按书写格线性映射到 900×900 占位"要用它，
+      // 书写格在切片内的像素矩形：1.9 的"按书写格线性映射到 1000×1000 占位"要用它，
       // 这样无论外扩多少、切成多大，映射基准都不变
       boxInSlice: { x: at.x - x0, y: at.y - y0, width: boxPx, height: boxPx },
       slice: { data, width: w, height: h },

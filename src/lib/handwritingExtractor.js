@@ -168,7 +168,7 @@ export function extractHandwriting(slice, boxInSlice, options = {}) {
     mask, // 1 = 手写笔迹（已去噪），交给 1.9 的位图 → 矢量
     boxInSlice: { x: box.x, y: box.y, width: box.width, height: box.height },
     inkPixels: m.inkPixels,
-    inkPixelsOutside: m.inkPixelsOutside, // 越界笔迹像素数（"笔画别出田字格"的量化指标）
+    inkPixelsOutside: m.inkPixelsOutside, // 越界笔迹像素数（纸面提示"笔画贴到格子边、别出格"的量化指标）
     bbox: m.bbox,
     overflow,
     hasInk,

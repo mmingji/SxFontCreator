@@ -5,7 +5,7 @@
 //   按 bbox 铺满的坐标映射，汉字一样都用不上（用标准 Unicode、advanceWidth 分全角半角、按书写格线性映射）。
 //   本项目只借它的骨架：走 SVG font 中间格式 → `fonteditor.svg2ttfobject` → 修 name 表 → `createFont().write()`。
 // 关键参数（决策 四-2、四-3、四-4）：
-//   em 方格 1000；字形占位 900×900（左右各留 50，顶部到 800、底部到 -100）；
+//   em 方格 1000；字形占位 1000×1000（字面率 100%，书写格横向 0~1000、竖向 −100~900 —— 2026-10-04 由 900×900 抬高，清单 一-5）；
 //   汉字与中文标点全角 1000、数字与拉丁字母半角 500（笔迹水平居中收进 500 宽的格子）；
 //   映射按**书写格线性映射**（用户写多大就是多大），**不按包围盒铺满** —— 否则"一"和"国"会一样大。
 // 运行环境：需要打包器（fonteditor-core 的发布产物是 CJS 包装，浏览器不能直接加载）；
@@ -22,12 +22,16 @@ import { charToCodePoint, classifyChar } from './charset.js'
 export const DEFAULT_WOFF2_WASM_URL = '/woff2.wasm'
 
 // 字体几何参数（取值型参数：改这里要同步《决策记录》四-2 / 四-3 与《实施计划》1.9）
+// 2026-10-04 调整（清单 一-5：装机实测"同等字号观感偏小"）：书写格的映射上限由 900 抬到 1000。
+//   实测依据：79 字样本的字面高度中位只有 0.734em，而宋体 0.910em、楷体 0.859em、雅黑 0.956em ——
+//   两个原因叠加：① 书写占格率中位只有书写格的 81.6%（主因，属用户书写习惯，见模板那行要点）；
+//   ② 映射上限 0.9em（旧值 900）。抬到 1000 后同样的笔迹字面 +11%，且**对已经手写好的纸也生效**（重扫即可）。
 export const FONT_DEFAULTS = {
   unitsPerEm: 1000, // em 方格
-  glyphBox: 900, // 字形占位边长（占 em 的 90%）
-  glyphLeft: 50, // 占位框左边距（右边距同为 50）
-  glyphTop: 800, // 书写格顶边映射到 y=800
-  glyphBottom: -100, // 书写格底边映射到 y=-100（上伸 800 / 下伸 -200 的口径）
+  glyphBox: 1000, // 书写格映射到的边长 = 1em（字面率 100%，与宋体/雅黑的字面率 0.91/0.96 同档）
+  glyphLeft: 0, // 占位框左边距：书写格左边落在 x = 0、右边落在 x = 1000
+  glyphTop: 900, // 书写格顶边映射到 y = 900
+  glyphBottom: -100, // 书写格底边映射到 y = -100（基线在格底上方 0.1em，与旧口径一致：字可以略微下探到基线下）
   fullWidth: 1000, // 汉字与中文标点的 advanceWidth
   halfWidth: 500, // 数字与拉丁字母的 advanceWidth
   turdsize: 2, // 透传给 potrace 的去噪点（1.6 已按面积过滤过，这里只兜底）
@@ -126,7 +130,7 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
   })
   if (traced.empty) return { empty: true, d: '', advanceWidth, clamped: false, bbox: null }
 
-  // ① 按书写格线性映射：书写格（118 像素见方）→ 占位框（900×900），y 轴同时翻转（图像向下 → 字体向上）。
+  // ① 按书写格线性映射：书写格（118 像素见方）→ 占位框（1000×1000 = 1em，字面率 100%），y 轴同时翻转（图像向下 → 字体向上）。
   //    注意要**合并 potrace 自己的 transform**：它的 path 坐标是"像素 × 10"且 y 反向（见 traceImage 的说明），
   //    所以像素坐标 = (c·x + a, d·y + b)。漏掉这一步会让坐标差 10 倍、上下颠倒（实测踩到）。
   const box = boxInSlice
@@ -135,14 +139,23 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
   const sy = -opt.glyphBox / box.height
   const oxFull = (tr.a - box.x) * sx + opt.glyphLeft // 全角时字形左边落在 x = glyphLeft
   const oy = (tr.b - box.y) * sy + opt.glyphTop // 书写格顶边落在 y = glyphTop
-  // ② 半角字形（数字、拉丁字母）：水平再压一半并居中到 500 宽的格子，垂直不变（决策 四-3）。
-  //    推导：全角映射 x_tt = x·sx + oxFull；半角 x_half = (x_tt − 500)·0.5 + 500 = x·(sx·0.5) + (oxFull·0.5 + 250)
+  // ② 半角字形（数字、拉丁字母）：水平压一半，落进 500 宽的格子（决策 四-3）。垂直不变。
+  //    推导：全角映射 x_tt = x·sx + oxFull；半角 x_half = x_tt·0.5 = x·(sx·0.5) + oxFull·0.5，
+  //    即整个书写格 [0,1000] 压成 [0,500] —— 在格子里居中写的数字／字母就落在半角格中心 250，
+  //    与系统字体一致（实测 SimSun：'1' advance 500、墨迹 x 113~398，'a' x 43~480，都在 0~500 内）。
+  //    **踩过的坑（2026-10-04 修）**：原式写成 (x_tt − 500)·0.5 + 500 = x·(sx·0.5) + oxFull·0.5 + 250，
+  //    等于以 em 中心 500 为缩放中心，墨迹落在 250~750 —— 每个半角字都右移 0.25em、字距全乱；
+  //    因为样本里全是汉字（没有一个半角字形），这条错误一直没被真件暴露出来。
   const scaleX = (half ? 0.5 : 1) * tr.c * sx
-  const offsetX = half ? oxFull * 0.5 + opt.halfWidth / 2 : oxFull
+  const offsetX = half ? oxFull * 0.5 : oxFull
   const scaleY = tr.d * sy
   const offsetY = oy
 
-  // ③ 越界裁剪：映射后若超出 0~1000（越界笔画），按"只裁不放大"收缩并平移回框内（决策 四-2）
+  // ③ 越界处理：**以"书写格映射出来的设计框"为界**（横向 boxL~boxR、竖向 glyphBottom~glyphTop），
+  //    越出设计框的笔画按"只裁不放大"等比收缩并平移回框内（决策 四-2 ④、四-4）。
+  //    为什么界要用设计框、不用"0~1000 的 em 方格"：书写格底边落在基线下方 0.1em（glyphBottom = −100），
+  //    按 0~1000 判会把**格内**那一段合法笔迹当成越界、把整个字上移 0.1em —— 破坏基线一致性
+  //    （2026-10-04 实测发现：60/79 个字形被"处理"过，其中多数只是被平移、并非真的越界）。
   const bb = pathBBox(traced.cmds)
   const mappedMinX = bb.minX * scaleX + offsetX
   const mappedMaxX = bb.maxX * scaleX + offsetX
@@ -150,24 +163,28 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
   const y2 = bb.maxY * scaleY + offsetY
   const mappedMinY = Math.min(y1, y2)
   const mappedMaxY = Math.max(y1, y2)
+  const boxL = half ? 0 : opt.glyphLeft
+  const boxR = half ? opt.halfWidth : opt.glyphLeft + opt.glyphBox
   const outTol = 0.5
   let k = 1
   let dx = 0
   let dy = 0
   let clamped = false
-  if (mappedMinX < -outTol || mappedMinY < -outTol || mappedMaxX > opt.unitsPerEm + outTol || mappedMaxY > opt.unitsPerEm + outTol) {
+  if (mappedMinX < boxL - outTol || mappedMaxX > boxR + outTol ||
+      mappedMinY < opt.glyphBottom - outTol || mappedMaxY > opt.glyphTop + outTol) {
     const w = mappedMaxX - mappedMinX
     const h = mappedMaxY - mappedMinY
-    const boxSize = opt.unitsPerEm
-    k = Math.min(1, boxSize / Math.max(w, boxSize), boxSize / Math.max(h, boxSize))
+    const boxW = boxR - boxL
+    const boxH = opt.glyphTop - opt.glyphBottom
+    k = Math.min(1, boxW / Math.max(w, boxW), boxH / Math.max(h, boxH))
     const x0 = mappedMinX * k
     const x1 = mappedMaxX * k
     const yy0 = mappedMinY * k
     const yy1 = mappedMaxY * k
-    if (x0 < 0) dx = -x0
-    if (x1 + dx > boxSize) dx = boxSize - x1
-    if (yy0 < 0) dy = -yy0
-    if (yy1 + dy > boxSize) dy = boxSize - yy1
+    if (x0 < boxL) dx = boxL - x0
+    if (x1 + dx > boxR) dx = boxR - x1
+    if (yy0 < opt.glyphBottom) dy = opt.glyphBottom - yy0
+    if (yy1 + dy > opt.glyphTop) dy = opt.glyphTop - yy1
     clamped = true
   }
   const d = commandsToPathData(traced.cmds, scaleX * k, scaleY * k, offsetX * k + dx, offsetY * k + dy)
