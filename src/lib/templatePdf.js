@@ -73,6 +73,13 @@ function drawRegisterMarks(page, pageNumber, batchCode = 0) {
 // （2026-10-03 按用户要求改为顶部一行、并删掉页脚那句，避免同一件事在纸上说两遍）；
 // 2026-10-04 按用户要求换成现在这句：补上扫描设置，并要求"笔画别出田字格"（原来写"最好顶着田字格"）。
 export const PAGE_HINT = 'A4彩色打印、不缩放、不勾无边框；建议用0.5mm黑色中性笔，居中书写，笔画别出田字格、不描不改，防止纸张变形(翘边、折叠、受潮)；扫描用照片模式、图像类型彩色、300dpi。'
+
+// 更正册顶部那一行（**只更正册印，模板不印**）：更正册是空白册，用户要自己按顺序写，
+// 所以顶部必须把配对规则讲清楚 —— 三条压成一行：顺序重写 / 坏格红圈后补写 / 留空即不更正。
+// 规则口径见《决策记录》一-6、一-7 与二-13（2026-10-04 拍板）：更正册主段第 k 格对应第 k 个被圈字，
+// 留空的格表示"这个字保留主区原字形"，写坏的格用红笔圈掉后该字进补写队列、在册子后面按顺序补写。
+// 注意：文案只能用字表内的字符（半角空格、% 、/ 等不在字表里，会印成方块，清单四-7）
+export const CORRECTION_HINT = '按被圈字的顺序从第1格起每格写一个字；写坏的格用红笔圈掉，在后面按顺序补写；留空的格表示这个字不更正。'
 export const SELF_CHECK_TEXTS = {
   title: '打印自检',
   boxLabel: '此处方框应为1cm',
@@ -84,12 +91,14 @@ export const SELF_CHECK_TEXTS = {
   ]
 }
 
-// 表格上方居中印一行书写与打印要求：纸面上的提醒比界面提示更容易被看到（清单四-5）。
+// 表格上方居中印一行提示：纸面上的提醒比界面提示更容易被看到（清单四-5）。
 // 位置：与上排两个定位块同一水平带（定位块在左右两侧、这行居中，水平方向不会重叠），
 //   基线取表格顶边上方 6pt，避免贴住表格；切格只取字位区域，不会干扰识别。
-function drawPageHint(page, font) {
-  const width = font.widthOfTextAtSize(PAGE_HINT, LAYOUT.hintFontSize)
-  page.drawText(PAGE_HINT, {
+// 模板印书写与打印要点（PAGE_HINT）、更正册印它自己的配对规则（CORRECTION_HINT）——
+//   两件事互不相干，所以按调用方传入的文案画，而不是写死一句话。
+function drawHint(page, font, text) {
+  const width = font.widthOfTextAtSize(text, LAYOUT.hintFontSize)
+  page.drawText(text, {
     x: (LAYOUT.pageWidth - width) / 2,
     y: LAYOUT.tableTop + 6,
     size: LAYOUT.hintFontSize,
@@ -271,7 +280,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
     drawRegisterMarks(page, p + 1, batchCode)
-    drawPageHint(page, font)
+    drawHint(page, font, PAGE_HINT)
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     for (let i = 0; i < slice.length; i++) {
       drawReferenceChar(page, cellRect(i), slice[i], font, glyphBoxes)
@@ -314,7 +323,7 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
     // 更正册暂不带批次校验码（0）：它的字序要等红圈识别给出"被圈字清单"才确定，
     // 到那时才能算出属于它的校验码并在界面上与主区并排核对（决策记录 一-6、一-7）
     drawRegisterMarks(page, p + 1)
-    drawPageHint(page, font)
+    drawHint(page, font, CORRECTION_HINT)
     for (let i = 0; i < LAYOUT.perPage; i++) {
       const label = String(startIndex + p * LAYOUT.perPage + i)
       const cell = cellRect(i)
