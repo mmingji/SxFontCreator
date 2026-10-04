@@ -17,8 +17,12 @@
 //      将来改 4 : 2 : 4 的比例或参考字区域大小，外扩量自动跟着变，测试里还有一条断言钉住。
 //   ④ **失败即整页放弃**（决策 二-6）：定位块找不到、页脚读不出都明确失败并给中文提示，不做手动标四角；
 //      拿不准的坐标切出来的是一整批错位字形，比拒绝处理糟得多。
+//   ⑤ **方向自动纠正**（2026-10-04 补，决策 二-11）：扫描件整页被转着扫进来是常见操作（实测用户把 A4 横向的
+//      纸竖着放进平板扫描仪），而这时**四个定位块依然落在图的四角附近**，找四角照样"成功"、校正也照样"成功"，
+//      只有页脚解码会失败 —— 也就是说方向错了会静默切出整页错位的格子。所以页脚解不出时依次试 0/90/180/270
+//      （竖版图先试 90/270），取第一个"页脚能解出且校正残差在限内"的方向；四个都不成才明确失败。
 import {
-  adaptiveThreshold, connectedComponents, globalThreshold, invert3x3, solveHomography, warpGray
+  adaptiveThreshold, connectedComponents, globalThreshold, invert3x3, rotateQuarterTurns, solveHomography, warpGray
 } from './imageOps.js'
 import { LAYOUT, cellRect, writingBoxRect, decodePageBits } from './layout.js'
 
@@ -118,7 +122,10 @@ export const DETECT_DEFAULTS = {
   // 校正后的自检
   cornerErrorWarn: 6, // 超过它给 warn（实测真实件 < 6px）
   cornerErrorLimit: 15, // 超过它判本页不可用：再切下去大概率整页错位
-  verifyRectified: true
+  verifyRectified: true,
+  // 方向自动纠正：页脚解不出时依次试其它 90° 方向（决策 二-11）。
+  // 关掉它 = 只按送进来的方向处理（测试里用它验证"方向错了会明确失败、不会静默切错"）
+  autoOrient: true
 }
 
 // ── 找四角定位块 ──────────────────────────────────────────────────────────
@@ -469,30 +476,24 @@ export function sliceWritingBoxes(designGray, options = {}) {
   return { boxes, padPt, sliceSize }
 }
 
-// ── 单页总入口 ────────────────────────────────────────────────────────────
+// 方向尝试顺序（决策 二-11）：竖版图（高 > 宽）说明纸很可能是竖着放进去扫的，先试 90 与 270；
+// 横版图先按送进来的方向，再试 180（整页上下颠倒时定位块仍在四角，但页脚会跑到纸的"上方"）。
+function orientationOrder(gray) {
+  return gray.height > gray.width ? [1, 3, 0, 2] : [0, 2, 3, 1]
+}
 
-/**
- * 处理一页扫描件：找四角 → 透视校正 → 页脚解码 → 切格。
- * 注意 ok 的含义是"这一页被机器可靠处理了"（含页脚解码成功、校正误差在限内）；
- *   批次是否匹配单独放在 batch 字段 —— 整批拦下的判定在 summarizeBatch 里做（决策 八-10）。
- * @param {{data:Uint8ClampedArray,width:number,height:number}} gray 预处理后的灰度图（已去噪）
- * @param {object} [options] DETECT_DEFAULTS + { expectedBatchCode, slice, verifyRectified, keepDesignGray }
- */
-export function analyzePage(gray, options = {}) {
-  const opt = { ...DETECT_DEFAULTS, ...options }
-  const t0 = now()
+// 在**一个方向**上跑完整条链路：找四角 → 透视校正 → 校正自检 → 页脚解码。
+// 切格不在这里做：方向定下来之后，要切的是**选定方向**校正出来的那张设计坐标图，只切一次。
+// 复用调用方给的 opt.mask 只在原方向成立 —— 旋转后坐标全变，必须重算（调用方置空）。
+function analyzeOrientation(gray, opt) {
   const timings = {}
-  const messages = []
-
   const tMarks = now()
-  const markMask = opt.mask || buildMarkMask(gray, opt)
-  const marks = findRegisterMarks(gray, { ...opt, mask: markMask })
+  const marks = findRegisterMarks(gray, { ...opt, mask: opt.mask })
   timings.marks = Math.round(now() - tMarks)
   if (!marks.ok) {
     return {
       ok: false, stage: 'marks', marks, matrix: null, cornerErrors: null,
-      designGray: null, footer: null, batch: null, boxes: [], messages: [{ level: 'error', text: marks.message }],
-      timings
+      designGray: null, footer: null, timings, reason: marks.message
     }
   }
 
@@ -502,8 +503,7 @@ export function analyzePage(gray, options = {}) {
   if (!transform.ok) {
     return {
       ok: false, stage: 'transform', marks, matrix: null, cornerErrors: null,
-      designGray: null, footer: null, batch: null, boxes: [], messages: [{ level: 'error', text: transform.message }],
-      timings
+      designGray: null, footer: null, timings, reason: transform.message
     }
   }
 
@@ -516,18 +516,108 @@ export function analyzePage(gray, options = {}) {
     const tVerify = now()
     cornerErrors = measureCornerError(designGray, opt)
     timings.verify = Math.round(now() - tVerify)
-    if (cornerErrors.max > opt.cornerErrorWarn) {
-      messages.push({
-        level: cornerErrors.max > opt.cornerErrorLimit ? 'error' : 'warn',
-        text: '校正后定位块离设计位置最大偏差 ' + cornerErrors.max + ' 像素' +
-          (cornerErrors.max > opt.cornerErrorLimit ? '（超过 ' + opt.cornerErrorLimit + ' 像素，这一页几何不可信）' : '（略大，但仍小于切片外扩量）')
-      })
-    }
   }
 
   const tFooter = now()
   const footer = decodeFooterCode(designGray, opt)
   timings.footer = Math.round(now() - tFooter)
+
+  const geometryOk = !cornerErrors || cornerErrors.max <= opt.cornerErrorLimit
+  return {
+    ok: footer.ok && geometryOk, // "这一页被可靠处理了" = 页脚解得出 且 几何在限内
+    stage: 'done',
+    marks,
+    matrix: transform.matrix,
+    cornerErrors,
+    designGray,
+    footer,
+    timings,
+    reason: footer.ok ? null : footer.message
+  }
+}
+
+// ── 单页总入口 ────────────────────────────────────────────────────────────
+
+/**
+ * 处理一页扫描件：方向纠正 → 找四角 → 透视校正 → 页脚解码 → 切格。
+ * 注意 ok 的含义是"这一页被机器可靠处理了"（含页脚解码成功、校正误差在限内）；
+ *   批次是否匹配单独放在 batch 字段 —— 整批拦下的判定在 summarizeBatch 里做（决策 八-10）。
+ * @param {{data:Uint8ClampedArray,width:number,height:number}} gray 预处理后的灰度图（已去噪）
+ * @param {object} [options] DETECT_DEFAULTS + { expectedBatchCode, slice, verifyRectified, keepDesignGray }
+ */
+export function analyzePage(gray, options = {}) {
+  const opt = { ...DETECT_DEFAULTS, ...options }
+  const t0 = now()
+  const timings = { marks: 0, transform: 0, rectify: 0, verify: 0, footer: 0 }
+  const messages = []
+
+  // ── 方向纠正（决策 二-11）───────────────────────────────────────────────
+  // 页脚解不出就换方向再试：**方向错了也会"找得到四角、校正得成"**，唯一识破它的是页脚编码，
+  //   所以这里以"页脚能解出 且 校正残差在限内"为成功的判据，四个方向都不成才明确失败。
+  const order = opt.autoOrient ? orientationOrder(gray) : [0]
+  const tried = []
+  let picked = null
+  let pickedTurns = 0
+  for (const turns of order) {
+    const input = turns === 0 ? gray : rotateQuarterTurns(gray, turns)
+    const res = analyzeOrientation(input, turns === 0 ? opt : { ...opt, mask: null })
+    for (const k of Object.keys(timings)) timings[k] += res.timings[k] || 0
+    tried.push({
+      turns,
+      markOk: res.marks.ok,
+      cornerMax: res.cornerErrors ? res.cornerErrors.max : null,
+      footerOk: !!(res.footer && res.footer.ok),
+      pageNumber: res.footer && res.footer.ok ? res.footer.pageNumber : null
+    })
+    if (!picked) {
+      picked = res // 全部方向都失败时，保留第一个方向的结果作为返回（照旧切格、页码置 0）
+      pickedTurns = turns
+    }
+    if (res.ok) {
+      picked = res
+      pickedTurns = turns
+      break
+    }
+  }
+  const orientation = {
+    turns: pickedTurns, // 实际采用的顺时针旋转（0 = 送进来的方向本身就是正的）
+    corrected: pickedTurns !== 0,
+    attempts: tried.length,
+    tried
+  }
+
+  if (picked.stage === 'marks' || picked.stage === 'transform') {
+    return {
+      ok: false, stage: picked.stage, marks: picked.marks, matrix: null, cornerErrors: null,
+      designGray: null, footer: null, batch: null, boxes: [], orientation,
+      messages: [{ level: 'error', text: picked.reason }], timings
+    }
+  }
+
+  if (orientation.corrected) {
+    messages.push({
+      level: 'info',
+      text: '这张扫描件的方向不对（整页被转了 ' + (pickedTurns * 90) + ' 度），已自动转正后继续处理（共试了 ' +
+        tried.length + ' 个方向）'
+    })
+  } else if (opt.autoOrient && !picked.ok && tried.length > 1) {
+    messages.push({
+      level: 'error',
+      text: '这张扫描件在 ' + tried.length + ' 个方向上都读不出页脚编码：请确认打印时选的是实际大小、纸面平整没有翘边，' +
+        '或把纸按横向放正后重扫一次'
+    })
+  }
+
+  const { marks, matrix, cornerErrors, designGray, footer } = picked
+
+  if (cornerErrors && cornerErrors.max > opt.cornerErrorWarn) {
+    messages.push({
+      level: cornerErrors.max > opt.cornerErrorLimit ? 'error' : 'warn',
+      text: '校正后定位块离设计位置最大偏差 ' + cornerErrors.max + ' 像素' +
+        (cornerErrors.max > opt.cornerErrorLimit ? '（超过 ' + opt.cornerErrorLimit + ' 像素，这一页几何不可信）' : '（略大，但仍小于切片外扩量）')
+    })
+  }
+
   messages.push({ level: footer.ok ? 'info' : 'error', text: footer.message })
   if (!footer.ok) {
     messages.push({
@@ -550,7 +640,7 @@ export function analyzePage(gray, options = {}) {
     ok: footer.ok && geometryOk,
     stage: 'done',
     marks,
-    matrix: transform.matrix,
+    matrix,
     cornerErrors,
     designGray: opt.keepDesignGray === false ? null : designGray,
     footer,
@@ -558,6 +648,7 @@ export function analyzePage(gray, options = {}) {
     boxes: sliced.boxes,
     padPt: sliced.padPt,
     sliceSize: sliced.sliceSize,
+    orientation, // 方向纠正的过程留痕：turns / corrected / attempts / tried（界面提示与测试都用它）
     messages,
     timings
   }

@@ -455,6 +455,39 @@ export function rotateGray(gray, radians) {
   return warpGray(gray, m, width, height)
 }
 
+// 90° 整数倍旋转（无损：整数像素搬移，不做插值）。
+// 方向约定与 rotateGray 一致：**正数 = 图像内容顺时针转**（turns = 1 → 顺时针 90°）。
+// 用途：扫描件整页被转着扫进来（实测用户把 A4 横向的纸竖着放到平板扫描仪上，得到 2400 × 3428 的竖版件），
+//   切格需要先把图转正 —— 这种情形必须用无损旋转，用角度旋转插值会白白糊掉细笔画。
+// 返回值：turns 为奇数时宽高互换。
+export function rotateQuarterTurns(gray, turns = 1) {
+  const t = ((turns % 4) + 4) % 4
+  const { data, width: w, height: h } = gray
+  if (t === 0) return { data: data.slice(), width: w, height: h }
+  const swap = t % 2 === 1
+  const outW = swap ? h : w
+  const outH = swap ? w : h
+  const out = new Uint8ClampedArray(outW * outH)
+  for (let y = 0; y < outH; y++) {
+    for (let x = 0; x < outW; x++) {
+      let sx
+      let sy
+      if (t === 1) {
+        sx = y
+        sy = h - 1 - x // 顺时针 90°：源图左上角转到目标右上角
+      } else if (t === 2) {
+        sx = w - 1 - x
+        sy = h - 1 - y // 180°：中心对称
+      } else {
+        sx = w - 1 - y
+        sy = x // 顺时针 270°（= 逆时针 90°）：源图左上角转到目标左下角
+      }
+      out[y * outW + x] = data[sy * w + sx]
+    }
+  }
+  return { data: out, width: outW, height: outH }
+}
+
 // ── 质量评估用的统计量 ────────────────────────────────────────────────────
 
 // 拉普拉斯方差：清晰度的常用代理指标 —— 越模糊，边缘越少，方差越小。
