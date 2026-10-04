@@ -404,7 +404,7 @@ export function verifyBatchCode(decodedBatchCode, expectedBatchCode) {
 
 /**
  * 按 LAYOUT 的已知网格坐标切出整页 136 格。
- * 每格切的是**书写格外扩 CELL_PAD_PT** 的范围：用户被要求"笔画顶着田字格"，越界的起收笔与长撇长捺
+ * 每格切的是**书写格外扩 CELL_PAD_PT** 的范围：纸面提示写的是"笔画别出田字格"，但手写总会有越界的起收笔与长撇长捺，
  * 只有包含进来，1.6 的提取与阶段三 3.2 的越界检测才有依据；外扩量由中缝推导，不会碰到参考字区域。
  * @returns {{boxes:Array, padPt:number, sliceSize:object}} boxes 里的 slice 是**拷贝**（调用方持有后
  *   即可释放整页灰度图；批量处理必须逐页释放，清单 三-5）
