@@ -3,7 +3,7 @@
 // 职责：选参考字字体来源 → 生成模板 / 更正册 PDF → 交给浏览器下载
 // 数据来源：字表来自 src/lib/charset.js（6919 字，顺序即模板字序）；字体来自 referenceFont.js
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
 import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadFontFromFile } from '../lib/referenceFont.js'
@@ -30,6 +30,47 @@ const message = ref('')
 const messageType = ref('info') // info | error | done
 const progress = ref({ done: 0, total: 0 })
 const lastResult = ref(null) // { name, pages, bytes }
+
+// 「本机字体怎么选」的浮窗：这段说明较长（Windows 字体目录带「系统」属性、两条绕开办法、macOS 目录），
+// 常驻会把面板撑长，所以收进问号按钮后面，点击展开；点击别处或按 Esc 收起。
+const fontHelpOpen = ref(false)
+// 浮窗位置在打开时按按钮位置算，并夹进视口：实测固定的 left / right 都不行 ——
+// 1180px 视口下向左展开会把文字裁在视口外（左边缘到 -53px），900px 视口下向右展开又顶出右边界。
+const fontHelpStyle = ref({ left: '0px', top: 'calc(100% + 8px)' })
+function toggleFontHelp(e) {
+  if (fontHelpOpen.value) {
+    fontHelpOpen.value = false
+    return
+  }
+  const holder = e.currentTarget.closest('.font-help')
+  const btnRect = e.currentTarget.getBoundingClientRect()
+  const holderRect = holder.getBoundingClientRect()
+  const width = Math.min(560, window.innerWidth - 48)
+  const minLeft = 12 - holderRect.left
+  const maxLeft = window.innerWidth - width - 12 - holderRect.left
+  // 相对 .font-help 的偏移，三级优先：① 右对齐到按钮右边缘（浮窗贴问号左下）② 放不下就左对齐到按钮
+  // ③ 仍放不下（窄窗口）再夹进视口 —— 这样 1180px 下浮窗正好落在问号下方，900px 下贴着右边界也不溢出
+  let left = btnRect.right - holderRect.left - width
+  if (left < minLeft) left = btnRect.left - holderRect.left
+  left = Math.max(minLeft, Math.min(maxLeft, left))
+  fontHelpStyle.value = { left: Math.round(left) + 'px', top: 'calc(100% + 8px)', width: Math.round(width) + 'px' }
+  fontHelpOpen.value = true
+}
+function onDocumentClick(e) {
+  // 点在任何 .font-help 区域（问号或浮窗）内都不关闭 —— 否则"点问号展开"会被同一次冒泡立刻收掉
+  if (!e.target || !e.target.closest || !e.target.closest('.font-help')) fontHelpOpen.value = false
+}
+function onDocumentKeydown(e) {
+  if (e.key === 'Escape') fontHelpOpen.value = false
+}
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onDocumentKeydown)
+})
 
 const scopeHint = computed(() => {
   if (scope.value === 'single') {
@@ -196,7 +237,13 @@ async function generateCorrectionBook() {
 
 <template>
   <section class="card">
-    <h2>模板与更正册</h2>
+    <div class="panel-head">
+      <h2>模板与更正册</h2>
+      <div class="panel-head-actions">
+        <button class="text" :disabled="busy" @click="generateTestPage">生成字形测试页（12 字）</button>
+        <button class="text" :disabled="busy" @click="generateCorrectionBook">生成更正册（空白 5 页）</button>
+      </div>
+    </div>
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">生成范围</span>
@@ -216,19 +263,38 @@ async function generateCorrectionBook() {
           选择本机字体
           <input type="file" accept=".ttf,.otf,.ttc,.woff,font/ttf,font/otf" :disabled="busy" @change="pickLocalFont" />
         </label>
+        <span class="font-help">
+          <button
+            class="help-button"
+            type="button"
+            :aria-expanded="fontHelpOpen ? 'true' : 'false'"
+            aria-label="本机字体怎么选"
+            @click="toggleFontHelp"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M6.1 6.2a1.9 1.9 0 0 1 3.7.6c0 1.1-1.8 1.2-1.8 2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+              <circle cx="8" cy="11.4" r="0.8" fill="currentColor" />
+            </svg>
+          </button>
+          <div v-if="fontHelpOpen" class="help-popover" :style="fontHelpStyle" role="dialog" aria-label="本机字体怎么选">
+            <p>
+              选不到 <code>C:\Windows\Fonts</code>？该目录带「系统」属性，Windows 的文件选择框默认不显示它（目录本身可读，只是被当成受保护的系统项）。
+              两个办法：① 在选择框下方的「文件名」输入框里直接粘贴完整路径（例如 <code>C:\Windows\Fonts\simkai.ttf</code>）再回车；
+              ② 先在资源管理器里进入该目录，把字体文件复制到桌面，再从这里选。
+            </p>
+            <p>
+              Windows 字体目录为 <code>C:\Windows\Fonts</code>（楷体 <code>simkai.ttf</code>、华文楷体 <code>STKAITI.TTF</code>）；
+              macOS 为 <code>/System/Library/Fonts</code>、<code>/Library/Fonts</code> 与 <code>~/Library/Fonts</code>。
+            </p>
+            <button class="text" type="button" @click="fontHelpOpen = false">关闭</button>
+          </div>
+        </span>
       </div>
     </div>
 
-    <p class="panel-hint">
-      选不到 <code>C:\Windows\Fonts</code>？该目录带「系统」属性，Windows 的文件选择框默认不显示它（目录本身可读，只是被当成受保护的系统项）。
-      两个办法：① 在选择框下方的「文件名」输入框里直接粘贴完整路径（例如 <code>C:\Windows\Fonts\simkai.ttf</code>）再回车；② 先在资源管理器里进入该目录，把字体文件复制到桌面，再从这里选。
-      Windows 字体目录为 <code>C:\Windows\Fonts</code>（楷体 <code>simkai.ttf</code>、华文楷体 <code>STKAITI.TTF</code>）；macOS 为 <code>/System/Library/Fonts</code>、<code>/Library/Fonts</code> 与 <code>~/Library/Fonts</code>。
-    </p>
-
     <div class="panel-actions">
       <button class="primary" :disabled="busy" @click="generateTemplate">生成模板 PDF</button>
-      <button :disabled="busy" @click="generateTestPage">生成字形测试页（12 字）</button>
-      <button :disabled="busy" @click="generateCorrectionBook">生成更正册（空白 5 页）</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
     </div>
 
@@ -244,8 +310,8 @@ async function generateCorrectionBook() {
     </p>
 
     <p class="panel-hint">
-      <strong>书写要求</strong>（模板每页顶部也印了这一行）：用 0.5mm 黑色中性笔；每个字写在书写格正中、大小匀称；
-      <strong>笔画尽量顶着田字格</strong>（把格子写满，别写小）；不描不改、一笔写成；写好的纸别翘边、折叠或受潮
+      <strong>书写要求</strong>（模板每页顶部也印了这些要点）：用 0.5mm 黑色中性笔，<strong>居中书写</strong>、大小匀称；
+      <strong>笔画别出田字格</strong>（把格子写满，但不要写出格）；不描不改、一笔写成；写好的纸别翘边、折叠或受潮
       —— 纸张一旦变形，透视校正也救不回来。
     </p>
 
