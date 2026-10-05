@@ -37,6 +37,19 @@ const CorrectionConfirm = defineAsyncComponent({
   delay: 120,
   timeout: 60000
 })
+// 第 5 步「生成字体」与第 6 步「下载安装」：字体合成要 potrace + fonteditor，打包要 jszip，都按需加载
+const BuildFont = defineAsyncComponent({
+  loader: () => import('./components/BuildFont.vue'),
+  loadingComponent: StepLoading,
+  delay: 120,
+  timeout: 60000
+})
+const ResultDownload = defineAsyncComponent({
+  loader: () => import('./components/ResultDownload.vue'),
+  loadingComponent: StepLoading,
+  delay: 120,
+  timeout: 60000
+})
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
@@ -49,9 +62,11 @@ const progress = computed(() => ({
   activeBatchCount: store.activeBatches.length,
   uploadedPages: scanStats.value.pagesUsable,
   glyphCount: scanStats.value.written,
+  // 有被红笔圈掉的字时，必须先在第 4 步确认更正对应，才允许生成字体（决策 一-7 的最后一道闸）
+  needsCorrection: (store.correction.circled || []).length > 0,
   correctionConfirmed: store.correction.confirmed,
-  fontBuilt: false,
-  exported: false
+  fontBuilt: store.font.built,
+  exported: !!store.font.exportedAt
 }))
 const flow = computed(() => buildFlowState(progress.value))
 // 打开页面时停在"第一个还没做完的步骤"（用户 2026-10-04 的界面形态要求：向导式）
@@ -220,6 +235,8 @@ const recoverDismissed = ref(false)
         <TemplatePreview v-if="currentKey === 'template'" />
         <ScanUpload v-else-if="currentKey === 'upload'" />
         <CorrectionConfirm v-else-if="currentKey === 'correct'" />
+        <BuildFont v-else-if="currentKey === 'build'" />
+        <ResultDownload v-else-if="currentKey === 'download'" />
         <StepContent v-else :step="currentStep" />
 
         <div class="step-actions">

@@ -920,3 +920,33 @@ button.text:hover {
   background: #fff;
   max-width: 100%;
 }
+
+/* ── 生成字体（第 5 步）：名称表表单 ─────────────────────────────────── */
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px 14px;
+  align-items: start;
+  width: 100%;
+}
+
+.meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.meta-field input {
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.meta-field input:focus {
+  border-color: var(--primary);
+  outline: none;
+}

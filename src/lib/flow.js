@@ -41,16 +41,15 @@ export const FLOW_STEPS = [
   }
 ]
 
-// 哪些步骤已经接入实现（2026-10-05：第 1 步「选字与出模板」、第 3 步「上传识别」、第 4 步「更正核对」；
-// 第 5~6 步在后续轮次接入）
-// 「手写与扫描」不需要代码，它是纸面动作 + 说明，所以算已接入
+// 哪些步骤已经接入实现（2026-10-05：**6 步全部接入**）
+// 「手写与扫描」不需要代码，它是纸面动作 + 说明，所以也算已接入
 export const IMPLEMENTED_STEPS = {
   template: true,
   write: true,
   upload: true,
   correct: true,
-  build: false,
-  download: false
+  build: true,
+  download: true
 }
 
 // 空的进度快照：调用方只传它有的字段，其余按"还没做"处理
@@ -60,9 +59,10 @@ export function emptyProgress() {
     activeBatchCount: 0, // 其中仍可上传的批次数
     uploadedPages: 0, // 已识别的扫描页数
     glyphCount: 0, // 已提取到笔迹的字形数
+    needsCorrection: false, // 主区有没有被红笔圈掉的字（有就必须先确认更正对应）
     correctionConfirmed: false, // 更正对应是否已人工确认
     fontBuilt: false, // 字体是否已生成
-    exported: false // 是否已下载过（下载步骤没有"完成"以外的强判据，先留给后续）
+    exported: false // 是否已下载过（下载步骤没有"完成"以外的强判据）
   }
 }
 
@@ -90,9 +90,17 @@ const AVAILABLE_WHEN = {
   correct: (p) => (p.uploadedPages > 0
     ? { ok: true, reason: '' }
     : { ok: false, reason: '还没有上传识别结果（先在第三步上传扫描件）' }),
-  build: (p) => (p.uploadedPages > 0 && p.glyphCount > 0
-    ? { ok: true, reason: '' }
-    : { ok: false, reason: '还没有可用的字形（先完成「上传识别」这一步、提取到笔迹）' }),
+  build: (p) => {
+    if (p.uploadedPages === 0 || p.glyphCount === 0) {
+      return { ok: false, reason: '还没有可用的字形（先完成「上传识别」这一步、提取到笔迹）' }
+    }
+    // 有被红笔圈掉的字时，必须先确认更正对应（决策 一-7 的最后一道闸）：
+    // 没确认就生成，写错的那个字会照样进字体，而用户以为已经改过来了
+    if (p.needsCorrection && !p.correctionConfirmed) {
+      return { ok: false, reason: '主区有被红笔圈掉的字：先到「更正核对」核对并确认，再生成字体' }
+    }
+    return { ok: true, reason: '' }
+  },
   download: (p) => (p.fontBuilt
     ? { ok: true, reason: '' }
     : { ok: false, reason: '还没有生成字体（先在第五步生成字体）' })

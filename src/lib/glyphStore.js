@@ -82,7 +82,9 @@ export async function savePageGlyphs({ batchId, fileIndex, pageNumber = null, gl
       if (!g.mask || !g.char) continue
       encoded.push({
         char: g.char,
-        cellIndex: g.cellIndex,
+        // 格号字段名兜底：提取模块（1.6）的格子叫 `index`，这里对外叫 `cellIndex` ——
+        // 认错字段会让键变成 `0:undefined`、掩膜读不回来（踩过一次），所以两个名字都收
+        cellIndex: g.cellIndex === undefined ? g.index : g.cellIndex,
         width: g.width,
         height: g.height,
         boxInSlice: g.boxInSlice,

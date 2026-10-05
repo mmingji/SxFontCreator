@@ -27,7 +27,17 @@ function schedulePersist(store) {
 export const useProjectStore = defineStore('project', {
   state: () => ({
     rev: 0,
-    meta: { familyName: DEFAULT_FAMILY_NAME },
+    // 字体名称表字段（决策 四-1：**全部给默认值**，零配置也能导出可用字体；想改的在第 5 步页面上改）
+    meta: {
+      familyName: DEFAULT_FAMILY_NAME,
+      fullName: '我的手写体 SxFontCreator',
+      version: '1.0',
+      designer: '',
+      copyright: '',
+      licence: '',
+      licenceUrl: '',
+      description: ''
+    },
     glyphs: {},
     template: {},
     // 选字：standard 是频次标准（gb2312 | tonggui），chars 是选中的字（**按字表顺序**的字符串）。
@@ -77,6 +87,20 @@ export const useProjectStore = defineStore('project', {
       confirmed: false,
       updatedAt: null
     },
+    // 字体产物（步骤 1.9 / 1.10）：只存**元信息**，不存字节（TTF 能由字形重算，全量约 30 秒；
+    // 再存一份只会让体积翻倍。字节暂存在 lib/buildFont.js 的内存里，刷新后按需重建）
+    font: {
+      built: false,
+      fileName: null,
+      familyName: null,
+      sizes: null, // { ttf, woff, woff2 }
+      stats: null, // 构建统计（字形数 / 跳过的 / 被裁的 / 半角数）
+      coverage: null, // { total, fromCorrection, chars }
+      skipped: 0,
+      missing: 0,
+      builtAt: null,
+      exportedAt: null // 是否下载过 zip（决策 五-3 的"字体生成后提醒备份"用）
+    },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -121,6 +145,7 @@ export const useProjectStore = defineStore('project', {
         if (Array.isArray(data.batches)) this.batches = data.batches
         if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
         if (data.correction && typeof data.correction === 'object') Object.assign(this.correction, data.correction)
+        if (data.font && typeof data.font === 'object') Object.assign(this.font, data.font)
       }
       this.loadSource = source
       this.storage = await getStorageState()
@@ -142,7 +167,8 @@ export const useProjectStore = defineStore('project', {
         selection: this.selection,
         batches: this.batches,
         scan: this.scan,
-        correction: this.correction
+        correction: this.correction,
+        font: this.font
       })
       if (res.ok) {
         this.rev = res.rev
@@ -373,6 +399,51 @@ export const useProjectStore = defineStore('project', {
       this.correction = {
         pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
         circled: [], overrides: {}, confirmed: false, updatedAt: null
+      }
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // ── 字体产物（步骤 1.9 / 1.10）────────────────────────────────────────
+    // 改名称表字段（第 5 步的表单）：改了就把"已构建"标记清掉 —— 否则界面会显示上一次的产物，
+    // 而产物里的 name 表其实还是旧值（字体字节在内存里，重建只需点一下按钮）
+    setFontMeta(patch) {
+      Object.assign(this.meta, patch || {})
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 构建成功：写入产物元信息（字节留在内存里，见 lib/buildFont.js）
+    setFontResult({ fileName, familyName, sizes, stats, coverage, skipped, missing }) {
+      this.font.built = true
+      this.font.fileName = fileName
+      this.font.familyName = familyName
+      this.font.sizes = sizes || null
+      this.font.stats = stats || null
+      this.font.coverage = coverage || null
+      this.font.skipped = skipped || 0
+      this.font.missing = missing || 0
+      this.font.builtAt = new Date().toISOString()
+      this.font.exportedAt = null
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 下载过 zip（决策 五-3：在"字体生成后"提醒一次导出项目包备份，用过就不再提醒）
+    markFontExported() {
+      this.font.exportedAt = new Date().toISOString()
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    clearFont() {
+      this.font = {
+        built: false, fileName: null, familyName: null, sizes: null, stats: null,
+        coverage: null, skipped: 0, missing: 0, builtAt: null, exportedAt: null
       }
       this.markDirty()
       schedulePersist(this)
