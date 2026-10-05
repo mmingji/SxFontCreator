@@ -92,7 +92,21 @@ export function evaluateScanGate(input = {}) {
   let needsConfirm = false
   let batchMismatch = 0
 
-  const rowOf = (i) => rows[i] || {}
+  // 判据优先用 summarizeBatch 的 rows，但**只在行数与页数对得上时**才信它 ——
+  // 汇总可能来自上一轮（或还没重算），那时 rows 与 pages 描述的不是同一批件，
+  // 混着用会得出自相矛盾的结论（实测踩到：行说"页脚没读出"、页记录说"页脚读出了第 1 页"）。
+  // 对不上时退回页记录本身：识别是逐页回调的，"这一页刚处理完、摘要还没算"本来就是常态。
+  const useRows = rows.length === pages.length
+  const rowOf = (i) => {
+    if (useRows) return rows[i]
+    const page = pages[i] || {}
+    return {
+      ok: !!page.ok,
+      footerOk: !!page.footerOk,
+      batchMatch: page.batchMatch === undefined ? null : page.batchMatch,
+      pageNumber: page.pageNumber === undefined ? null : page.pageNumber
+    }
+  }
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]
     const row = rowOf(i)

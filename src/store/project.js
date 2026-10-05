@@ -261,12 +261,28 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
-    // 写入一批识别结果（只存轻量记录：掩膜与缩略图在 lib/scanCache.js 的内存缓存里，不落盘）
-    setScanResult({ pages, summary, chars }) {
-      this.scan.pages = Array.isArray(pages) ? pages : []
-      this.scan.summary = summary || null
-      this.scan.chars = typeof chars === 'string' ? chars : ''
+    // 开始一轮识别：清掉上一轮的结果与手选页序，记下这一批的字序（识别时按它把格号映射成字）
+    beginScanRun({ batchId, chars }) {
+      if (batchId) this.scan.batchId = batchId
+      this.scan.pages = []
+      this.scan.summary = null
       this.scan.orderOverrides = {}
+      this.scan.chars = typeof chars === 'string' ? chars : ''
+      this.scan.lastRunAt = null
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 逐页追加（界面要边跑边显示；每页一次，靠防抖合并落盘，不会写出 51 次）
+    appendScanPage(record) {
+      this.scan.pages = [...this.scan.pages, record]
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 一轮识别结束：写入批次汇总判定（整批判定与收批闸门都在界面上算，这里只存结果）
+    finishScanRun({ summary }) {
+      this.scan.summary = summary || null
       this.scan.lastRunAt = new Date().toISOString()
       this.markDirty()
       schedulePersist(this)

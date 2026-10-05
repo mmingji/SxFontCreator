@@ -151,6 +151,10 @@ export async function recognizePage(file, options = {}) {
     batchCode: null,
     batchMatch: null,
     isSheetPage: null,
+    // **页脚的原始结果要一起带上**：summarizeBatch（整批判定）读的是 `p.footer.ok / pageNumber / batchCode`，
+    // 只给 footerOk 这些扁平字段的话，每页都会被当成"页脚读不出"（踩过：汇总里全是"页脚没读出"的警告，
+    // 而页面记录明明读出了第 1 页与校验码 3362 —— 因为那种情形只产生 warn、ok 仍为 true，测试也没抓住）
+    footer: null,
     orientation: page.orientation ? { corrected: !!page.orientation.corrected, turns: page.orientation.turns, tried: page.orientation.tried } : null,
     cornerMaxError: page.cornerErrors ? Math.round(page.cornerErrors.max * 10) / 10 : null,
     counts: { written: 0, empty: 0, suspect: 0, marked: 0, uncertain: 0, inkPixels: 0 },
@@ -158,6 +162,11 @@ export async function recognizePage(file, options = {}) {
     messages: [],
     timings: page.timings ? { ...page.timings } : null
   }
+  // 页脚摘要（喂给 summarizeBatch 的最小形状）：读不出时给 ok:false 与原因，好让整批判定说得清是哪一页的问题
+  const footerShape = (footer) => (footer
+    ? { ok: !!footer.ok, pageNumber: footer.ok ? footer.pageNumber : null, batchCode: footer.ok ? footer.batchCode : null, message: footer.message || '' }
+    : { ok: false, pageNumber: null, batchCode: null, message: '这一页没有页脚结果（切格没走到页脚解码）' })
+  record.footer = footerShape(page.footer)
 
   if (!page.ok || !page.boxes || !page.boxes.length) {
     // 整页失败：按决策 二-6 明确失败 + 中文提示（不静默拿错坐标切格）
@@ -171,6 +180,7 @@ export async function recognizePage(file, options = {}) {
   record.pageNumber = page.footer && page.footer.ok ? page.footer.pageNumber : null
   record.batchCode = page.footer && page.footer.ok ? page.footer.batchCode : null
   record.batchMatch = page.batch ? page.batch.match : null
+  record.footer = footerShape(page.footer)
   if (record.pageNumber === null && typeof opt.pageNumberOverride === 'number') {
     record.pageNumber = opt.pageNumberOverride
     record.orderFromUser = true // 页序是用户手选的（决策 二-7），界面要显式标出来
@@ -301,6 +311,11 @@ export async function recognizeBatch(files, options = {}) {
   const pages = []
   const caches = new Map()
   for (let i = 0; i < files.length; i++) {
+    // 可中止：长任务（51 页约 85 秒）要能让用户停下来；中止后已处理完的页仍然保留（界面照常显示）
+    if (opt.shouldStop && opt.shouldStop()) {
+      opt.stopped = true
+      break
+    }
     if (opt.onStage) opt.onStage('正在预处理第 ' + (i + 1) + ' / ' + files.length + ' 页…')
     const { record, cache } = await recognizePage(files[i], {
       ...opt,
@@ -310,13 +325,15 @@ export async function recognizeBatch(files, options = {}) {
     })
     pages.push(record)
     caches.set(i, cache)
-    if (opt.onPage) opt.onPage(record, i, files.length)
+    // onPage 带上该页的内存缓存（缩略图 / 格子拼图 / 掩膜）：界面要**边跑边显示**，
+    // 不能等整批结束才拿到（51 页要等 85 秒，期间什么都看不到）
+    if (opt.onPage) opt.onPage(record, i, files.length, cache)
   }
   const summary = summarizeBatch(pages, {
     expectedBatchCode,
     sheetPages: batch ? batch.pageCount : undefined
   })
-  return { pages, caches, summary, chars }
+  return { pages, caches, summary, chars, stopped: !!opt.stopped }
 }
 
 /**

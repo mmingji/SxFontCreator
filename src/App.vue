@@ -23,17 +23,25 @@ const TemplatePreview = defineAsyncComponent({
   delay: 120,
   timeout: 60000
 })
+// 第 3 步「上传识别」同样按需加载：它依赖四个识别模块（预处理 / 切格 / 红圈 / 提取），首屏用不到
+const ScanUpload = defineAsyncComponent({
+  loader: () => import('./components/ScanUpload.vue'),
+  loadingComponent: StepLoading,
+  delay: 120,
+  timeout: 60000
+})
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
 
-// 流程进度快照：目前只有批次是真实数据；上传页数 / 字形数 / 更正确认 / 字体产物
-// 由后续步骤（上传识别、更正核对、生成字体）接入后填进来 —— 界面不用改，状态自然跟着变
+// 流程进度快照：批次与识别结果都是真实数据；更正确认 / 字体产物由后续步骤（B3）接入后填进来
+// —— 界面不用改，步骤状态与"下一步能不能走"会跟着变
+const scanStats = computed(() => store.scanGlyphStats)
 const progress = computed(() => ({
   batchCount: store.batches.length,
   activeBatchCount: store.activeBatches.length,
-  uploadedPages: 0,
-  glyphCount: 0,
+  uploadedPages: scanStats.value.pagesUsable,
+  glyphCount: scanStats.value.written,
   correctionConfirmed: false,
   fontBuilt: false,
   exported: false
@@ -203,6 +211,7 @@ const recoverDismissed = ref(false)
         <p v-if="currentStep.note" class="step-note">{{ currentStep.note }}</p>
 
         <TemplatePreview v-if="currentKey === 'template'" />
+        <ScanUpload v-else-if="currentKey === 'upload'" />
         <StepContent v-else :step="currentStep" />
 
         <div class="step-actions">
