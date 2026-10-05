@@ -821,3 +821,102 @@ button.text:hover {
   line-height: 1.8;
   min-width: 0;
 }
+
+/* ── 更正核对（第 4 步）：并排核对表 ───────────────────────────────────── */
+
+.corr-table {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.corr-head,
+.corr-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 1fr 220px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+.corr-head {
+  background: #f4f5f8;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.corr-row {
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.corr-row.replaced {
+  background: #f0fdf4;
+}
+
+.corr-row.removed {
+  background: #fef2f2;
+}
+
+.corr-index {
+  color: var(--text-2);
+}
+
+.corr-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.corr-thumb {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: #fff;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+
+.corr-thumb.empty {
+  background: #f4f5f8;
+}
+
+.corr-text {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.corr-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: var(--primary-dark);
+  font-size: 12px;
+}
+
+.corr-tag.muted {
+  background: #f4f5f8;
+  color: var(--text-2);
+}
+
+.corr-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.corr-actions select {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  max-width: 100%;
+}

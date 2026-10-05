@@ -398,10 +398,11 @@ const zoomIsMarkedLabel = computed(() => {
           <span class="scan-page-name">{{ page.fileName }}</span>
           <span class="scan-page-meta">
             页号：
-            <template v-if="page.footerOk">第 {{ page.pageNumber }} 页（页脚读出）</template>
+            <template v-if="page.kind === 'correction' && page.pageNumber">更正册第 {{ page.pageNumber }} 页（页脚校验码 0）</template>
+            <template v-else-if="page.footerOk">第 {{ page.pageNumber }} 页（页脚读出）</template>
             <template v-else-if="page.pageNumber">第 {{ page.pageNumber }} 页（手选）</template>
             <template v-else>待手选</template>
-            <template v-if="page.footerOk">
+            <template v-if="page.footerOk && page.kind !== 'correction'">
               · 校验码 {{ page.batchCode }}
               <span :class="page.batchMatch === false ? 'error' : 'ok'">{{ page.batchMatch === false ? '（与所选批次不符）' : '（与所选批次一致）' }}</span>
             </template>

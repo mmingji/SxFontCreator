@@ -19,7 +19,18 @@ import { charAtCell, reorderPages, resolveBatchChars } from './scanMeta.js'
 
 // 纯逻辑（页内格号 → 字、页序重排、字形统计）在 scanMeta.js 里，这里再导出一次，
 // 让调用方只记一个入口（组件里 `import { … } from '../lib/scanFlow.js'` 就够）
-export { charAtCell, collectGlyphStats, evaluateScanGate, reorderPages, resolveBatchChars, usableForGlyphs } from './scanMeta.js'
+export {
+  applyCorrectionOverrides,
+  buildCorrectionInputs,
+  buildFinalGlyphPlan,
+  charAtCell,
+  collectGlyphStats,
+  evaluateScanGate,
+  pairCorrections,
+  reorderPages,
+  resolveBatchChars,
+  usableForGlyphs
+} from './scanMeta.js'
 
 export const SCAN_DEFAULTS = {
   autoOrient: true, // 整页方向不对时自动纠正（决策 二-11）
@@ -179,8 +190,11 @@ export async function recognizePage(file, options = {}) {
   record.footerOk = !!(page.footer && page.footer.ok)
   record.pageNumber = page.footer && page.footer.ok ? page.footer.pageNumber : null
   record.batchCode = page.footer && page.footer.ok ? page.footer.batchCode : null
-  record.batchMatch = page.batch ? page.batch.match : null
+  record.batchMatch = record.kind === 'correction' ? null : (page.batch ? page.batch.match : null)
   record.footer = footerShape(page.footer)
+  // 件类型（决策 一-9、二-13）：更正册的页脚校验码为 0、主区是批次校验码、读不出时未知 ——
+  // 与 summarizeBatch 同一口径（那边按 row.kind 分拣重复页与批次比对）
+  record.kind = record.footerOk ? (record.batchCode === 0 ? 'correction' : 'main') : 'unknown'
   if (record.pageNumber === null && typeof opt.pageNumberOverride === 'number') {
     record.pageNumber = opt.pageNumberOverride
     record.orderFromUser = true // 页序是用户手选的（决策 二-7），界面要显式标出来
@@ -213,7 +227,8 @@ export async function recognizePage(file, options = {}) {
   const uncertainSet = new Set(record.uncertainCells || [])
   const items = []
   for (const cell of extracted.cells) {
-    const char = charAtCell(chars, record.pageNumber, cell.index)
+    // 更正册的格不按批次的字序映射：它是"第 k 个更正格"，字由更正核对（1.8）配对时决定（决策 二-13）
+    const char = record.kind === 'correction' ? null : charAtCell(chars, record.pageNumber, cell.index)
     const item = {
       index: cell.index,
       char,

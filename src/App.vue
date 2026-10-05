@@ -30,6 +30,13 @@ const ScanUpload = defineAsyncComponent({
   delay: 120,
   timeout: 60000
 })
+// 第 4 步「更正核对」也按需加载（用到识别记录与格子拼图）
+const CorrectionConfirm = defineAsyncComponent({
+  loader: () => import('./components/CorrectionConfirm.vue'),
+  loadingComponent: StepLoading,
+  delay: 120,
+  timeout: 60000
+})
 
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
@@ -42,7 +49,7 @@ const progress = computed(() => ({
   activeBatchCount: store.activeBatches.length,
   uploadedPages: scanStats.value.pagesUsable,
   glyphCount: scanStats.value.written,
-  correctionConfirmed: false,
+  correctionConfirmed: store.correction.confirmed,
   fontBuilt: false,
   exported: false
 }))
@@ -212,6 +219,7 @@ const recoverDismissed = ref(false)
 
         <TemplatePreview v-if="currentKey === 'template'" />
         <ScanUpload v-else-if="currentKey === 'upload'" />
+        <CorrectionConfirm v-else-if="currentKey === 'correct'" />
         <StepContent v-else :step="currentStep" />
 
         <div class="step-actions">

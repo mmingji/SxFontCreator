@@ -41,13 +41,14 @@ export const FLOW_STEPS = [
   }
 ]
 
-// 哪些步骤已经接入实现（2026-10-04：第 1 步「选字与出模板」与第 3 步「上传识别」；第 4~6 步在后续轮次接入）
+// 哪些步骤已经接入实现（2026-10-05：第 1 步「选字与出模板」、第 3 步「上传识别」、第 4 步「更正核对」；
+// 第 5~6 步在后续轮次接入）
 // 「手写与扫描」不需要代码，它是纸面动作 + 说明，所以算已接入
 export const IMPLEMENTED_STEPS = {
   template: true,
   write: true,
   upload: true,
-  correct: false,
+  correct: true,
   build: false,
   download: false
 }

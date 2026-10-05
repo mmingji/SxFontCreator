@@ -690,31 +690,42 @@ export function summarizeBatch(pages, options = {}) {
   const { expectedBatchCode, sheetPages } = options
   const problems = []
   const duplicates = []
-  const seen = new Map() // pageNumber → 第几个文件（1 起）
+  const seen = new Map() // `${件类型}:${pageNumber}` → 第几个文件（1 起）
   const rows = pages.map((p, i) => {
     const file = i + 1
     const footer = p && p.footer
+    const footerOk = !!(footer && footer.ok)
+    const pageNumber = footerOk ? footer.pageNumber : null
+    const batchCode = footerOk ? footer.batchCode : null
+    // 件类型（决策 一-9、二-13）：**更正册的页脚校验码为 0**、主区是批次校验码；页脚读不出时未知。
+    // 分清件类型是必须的：更正册与主区都从第 1 页开始编号，混在一起会把"更正册第 1 页"当成
+    // "主区第 1 页重复上传"，也会让它的校验码 0 被判成"与所选批次不符"而整批拦下。
+    const kind = !footerOk ? 'unknown' : (batchCode === 0 ? 'correction' : 'main')
     const row = {
       file,
       ok: !!(p && p.ok),
-      pageNumber: footer && footer.ok ? footer.pageNumber : null,
-      batchCode: footer && footer.ok ? footer.batchCode : null,
-      footerOk: !!(footer && footer.ok),
+      pageNumber,
+      batchCode,
+      footerOk,
+      kind,
+      isCorrection: kind === 'correction',
       isSheetPage: null,
       batchMatch: null
     }
     if (row.pageNumber !== null) {
-      if (seen.has(row.pageNumber)) {
+      const dupKey = kind + ':' + row.pageNumber
+      if (seen.has(dupKey)) {
         duplicates.push(row.pageNumber)
         problems.push({
           level: 'error',
-          text: '第 ' + seen.get(row.pageNumber) + ' 个文件与第 ' + file + ' 个文件的页脚都写着第 ' + row.pageNumber + ' 页，' +
-            '请确认有没有重复上传同一页'
+          text: '第 ' + seen.get(dupKey) + ' 个文件与第 ' + file + ' 个文件的页脚都写着' +
+            (kind === 'correction' ? '更正册第 ' : '第 ') + row.pageNumber + ' 页，请确认有没有重复上传同一页'
         })
       } else {
-        seen.set(row.pageNumber, file)
+        seen.set(dupKey, file)
       }
-      if (typeof sheetPages === 'number') row.isSheetPage = row.pageNumber <= sheetPages
+      // 非字表页判定只对主区有意义：更正册的页号是它自己的（1 起），与字表页数无关
+      if (kind === 'main' && typeof sheetPages === 'number') row.isSheetPage = row.pageNumber <= sheetPages
     }
     if (footer && !footer.ok) {
       problems.push({ level: 'error', text: '第 ' + file + ' 个文件：' + footer.message })
@@ -722,8 +733,8 @@ export function summarizeBatch(pages, options = {}) {
     return row
   })
 
-  // 批次校验：只统计"能确认是字表页"的页 —— 打印自检页与更正册的页脚校验码本就与主区不同
-  const codeRows = rows.filter((r) => r.footerOk && r.isSheetPage !== false)
+  // 批次校验：只统计**主区**的"字表页" —— 更正册的校验码本就是 0，打印自检页也不参与
+  const codeRows = rows.filter((r) => r.kind === 'main' && r.isSheetPage !== false)
   if (typeof expectedBatchCode === 'number' && codeRows.length) {
     for (const r of codeRows) r.batchMatch = r.batchCode === (expectedBatchCode | 0)
     const bad = codeRows.filter((r) => !r.batchMatch)
@@ -735,10 +746,20 @@ export function summarizeBatch(pages, options = {}) {
           '）。已整批拦下：请确认批次选对了，或重新生成模板、重印重写'
       })
     }
-  } else if (codeRows.length === 0 && rows.length) {
+  } else if (codeRows.length === 0 && rows.some((r) => r.kind !== 'correction')) {
+    // 只有"非更正册的件"全都读不出页脚时才提醒手选页序：全是更正册的话本来就没有主区批次码可比
     problems.push({
       level: 'warn',
       text: '所有扫描件的页脚都没能读出页序：请手选页序，并显式确认这批扫描件属于哪个批次'
+    })
+  }
+
+  const correctionRows = rows.filter((r) => r.kind === 'correction')
+  if (correctionRows.length) {
+    problems.push({
+      level: 'info',
+      text: '第 ' + correctionRows.map((r) => r.file).join('、') + ' 个文件是更正册（页脚校验码 0）：' +
+        '它不参与批次校验码比对，用于覆盖被红笔圈掉的字'
     })
   }
 
@@ -748,11 +769,11 @@ export function summarizeBatch(pages, options = {}) {
       problems.push({
         level: 'info',
         text: '第 ' + extra.map((r) => r.file).join('、') + ' 个文件的页号超出字表页数（' + sheetPages +
-          ' 页），已按"非字表页"处理（打印自检页或更正册不参与字形识别）'
+          ' 页），已按"非字表页"处理（打印自检页不参与字形识别）'
       })
     }
     const missing = []
-    for (let p = 1; p <= sheetPages; p++) if (!seen.has(p)) missing.push(p)
+    for (let p = 1; p <= sheetPages; p++) if (!seen.has('main:' + p)) missing.push(p)
     if (missing.length) {
       problems.push({ level: 'warn', text: '字表页里还缺第 ' + missing.join('、') + ' 页' })
     }
@@ -765,8 +786,10 @@ export function summarizeBatch(pages, options = {}) {
     pages: rows,
     duplicates,
     problems,
+    correctionPages: correctionRows.length,
     message: ok
-      ? '这一批可以继续识别（' + rows.length + ' 页）'
+      ? '这一批可以继续识别（' + rows.length + ' 页' +
+        (correctionRows.length ? '，其中更正册 ' + correctionRows.length + ' 页' : '') + '）'
       : '这一批被拦下：' + problems.filter((m) => m.level === 'error').map((m) => m.text).join('；')
   }
 }

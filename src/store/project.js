@@ -60,6 +60,23 @@ export const useProjectStore = defineStore('project', {
       summary: null,
       lastRunAt: null
     },
+    // 更正核对（阶段一步骤 1.8 的界面产物，决策 一-7 与 二-13）
+    //   pairs / unmatched / discarded / extra —— **生效清单**（已经应用过用户调整）
+    //   overrides  —— `{ [order]: 连续格号 | null }`（null = 删掉这一对，该字保留主区原字形）
+    //   circled    —— 被圈字清单，顺序即"从左到右、从上到下"
+    //   confirmed  —— 用户确认过；**未确认不允许进入字体构建**（界面确认是最后一道闸）
+    correction: {
+      pairs: [],
+      unmatched: [],
+      discarded: [],
+      extra: [],
+      messages: [],
+      stats: null,
+      circled: [],
+      overrides: {},
+      confirmed: false,
+      updatedAt: null
+    },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -103,6 +120,7 @@ export const useProjectStore = defineStore('project', {
         if (data.selection && typeof data.selection === 'object') Object.assign(this.selection, data.selection)
         if (Array.isArray(data.batches)) this.batches = data.batches
         if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
+        if (data.correction && typeof data.correction === 'object') Object.assign(this.correction, data.correction)
       }
       this.loadSource = source
       this.storage = await getStorageState()
@@ -123,7 +141,8 @@ export const useProjectStore = defineStore('project', {
         template: this.template,
         selection: this.selection,
         batches: this.batches,
-        scan: this.scan
+        scan: this.scan,
+        correction: this.correction
       })
       if (res.ok) {
         this.rev = res.rev
@@ -305,6 +324,56 @@ export const useProjectStore = defineStore('project', {
       this.scan.orderOverrides = {}
       this.scan.batchConfirmed = false
       this.scan.lastRunAt = null
+      // 识别结果一清，之前的配对与确认就都失效了（配对依赖被圈字清单）
+      this.correction = {
+        pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
+        circled: [], overrides: {}, confirmed: false, updatedAt: null
+      }
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // ── 更正核对（步骤 1.8 的界面）────────────────────────────────────────
+    // 写入配对初值（由 lib/scanFlow.pairCorrections 从识别结果算出来）。
+    // **会把 confirmed 复位**：配对一变，之前的确认就不作数了（否则可能拿旧确认去构建字体）
+    setCorrectionResult({ pairs, unmatched, discarded, extra, messages, stats, circled }) {
+      this.correction.pairs = pairs || []
+      this.correction.unmatched = unmatched || []
+      this.correction.discarded = discarded || []
+      this.correction.extra = extra || []
+      this.correction.messages = messages || []
+      this.correction.stats = stats || null
+      this.correction.circled = circled || []
+      this.correction.overrides = {}
+      this.correction.confirmed = false
+      this.correction.updatedAt = new Date().toISOString()
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 用户调整（改派 / 删除 / 补录）：把生效清单与调整记录一起写回
+    setCorrectionOverrides({ overrides, pairs, unmatched }) {
+      this.correction.overrides = overrides || {}
+      if (Array.isArray(pairs)) this.correction.pairs = pairs
+      if (Array.isArray(unmatched)) this.correction.unmatched = unmatched
+      this.correction.confirmed = false
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // 确认这份更正对应（未确认不允许进入字体构建）
+    setCorrectionConfirmed(confirmed) {
+      this.correction.confirmed = !!confirmed
+      if (confirmed) this.correction.updatedAt = new Date().toISOString()
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    clearCorrection() {
+      this.correction = {
+        pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
+        circled: [], overrides: {}, confirmed: false, updatedAt: null
+      }
       this.markDirty()
       schedulePersist(this)
     }

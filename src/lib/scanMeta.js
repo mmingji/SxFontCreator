@@ -5,6 +5,7 @@
 // 这里只依赖 layout（版面契约）与 charset（字表），没有任何浏览器 API。
 import { LAYOUT } from './layout.js'
 import { getAllChars } from './charset.js'
+import { buildCorrectionCells, continuousIndex, mapCorrections } from './correctionMapper.js'
 
 /** 这一批要写的字（字序即批次里的 chars）；没有批次信息时退回全量表 */
 export function resolveBatchChars(batch) {
@@ -30,16 +31,25 @@ export function collectGlyphStats(pages) {
   let suspect = 0
   let marked = 0
   let pagesUsable = 0
+  let correctionPages = 0
+  let correctionWritten = 0
   const chars = new Set()
   for (const p of pages || []) {
     if (!usableForGlyphs(p)) continue
     pagesUsable++
-    written += p.counts ? p.counts.written : 0
+    const isCorrection = p.kind === 'correction'
+    if (isCorrection) correctionPages++
+    const writtenHere = p.counts ? p.counts.written : 0
+    written += writtenHere
+    if (isCorrection) correctionWritten += writtenHere
     suspect += p.counts ? p.counts.suspect : 0
     marked += p.counts ? p.counts.marked : 0
-    for (const c of p.cells || []) if (c.char && c.verdict !== 'empty') chars.add(c.char)
+    // 更正册的格没有字（字由更正核对决定），所以只统计主区
+    if (!isCorrection) {
+      for (const c of p.cells || []) if (c.char && c.verdict !== 'empty') chars.add(c.char)
+    }
   }
-  return { pagesUsable, written, suspect, marked, uniqueChars: chars.size }
+  return { pagesUsable, written, suspect, marked, uniqueChars: chars.size, correctionPages, correctionWritten }
 }
 
 /**
@@ -104,13 +114,17 @@ export function evaluateScanGate(input = {}) {
       ok: !!page.ok,
       footerOk: !!page.footerOk,
       batchMatch: page.batchMatch === undefined ? null : page.batchMatch,
-      pageNumber: page.pageNumber === undefined ? null : page.pageNumber
+      pageNumber: page.pageNumber === undefined ? null : page.pageNumber,
+      kind: page.kind || 'unknown'
     }
   }
+  let correctionPages = 0
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]
     const row = rowOf(i)
-    const label = '第 ' + (i + 1) + ' 个文件';
+    const label = '第 ' + (i + 1) + ' 个文件'
+    // 更正册与主区分别计数：主区页是"能拿出字形"的页，更正册页是"用来覆盖被圈字"的页
+    const isCorrection = (row.kind || page.kind) === 'correction'
     if (row.batchMatch === false) {
       batchMismatch++
       continue
@@ -125,14 +139,16 @@ export function evaluateScanGate(input = {}) {
       // 页脚读不出：页序与批次码都不可信 → 必须手选页序 + 显式确认批次（决策 二-7）
       needsConfirm = true
       if (page.pageNumber) {
-        usablePages++
+        if (isCorrection) correctionPages++
+        else usablePages++
         notes.push(label + ' 的页序是手选的：请确认它确实是第 ' + page.pageNumber + ' 页')
       } else {
         skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: '页脚读不出、也还没手选页序' })
       }
       continue
     }
-    usablePages++
+    if (isCorrection) correctionPages++
+    else usablePages++
   }
 
   if (batchMismatch > 0) {
@@ -153,7 +169,158 @@ export function evaluateScanGate(input = {}) {
   }
 
   if (blockers.length === 0 && usablePages === 0) {
-    blockers.push('没有任何一页可用（全部识别失败）：请确认扫描件是我们生成的模板、纸面平整、按实际大小打印')
+    blockers.push(correctionPages > 0
+      ? '只有更正册可用、没有任何一页主区扫描件：请把主区（写了字的那些页）也一起上传'
+      : '没有任何一页可用（全部识别失败）：请确认扫描件是我们生成的模板、纸面平整、按实际大小打印')
   }
-  return { canProceed: blockers.length === 0 && usablePages > 0, blockers, skipped, notes, usablePages, needsConfirm }
+  return { canProceed: blockers.length === 0 && usablePages > 0, blockers, skipped, notes, usablePages, correctionPages, needsConfirm }
+}
+
+// ── 更正核对（阶段一步骤 1.8 的输入组装）────────────────────────────────
+/**
+ * 从识别结果组装配对输入（决策 一-7、二-13）：
+ *   · **被圈字** = 主区页里 `marked` 的格，按页码、页内格号升序 —— 这就是"从左到右、从上到下"的有序清单
+ *   · **更正格** = 更正册页的全部 136 格，按连续格号升序（跨页连续，清单 四-4）
+ *   · **作废格** = 更正册上被红笔圈掉的格（同一枚红圈在两件上语义不同，靠 `kind` 区分）
+ * @param {Array} pages 识别页记录（store.scan.pages）
+ */
+export function buildCorrectionInputs(pages) {
+  const circled = []
+  const rawCells = []
+  const discardedCells = []
+  for (const p of pages || []) {
+    if (!usableForGlyphs(p)) continue
+    if (p.kind === 'correction') {
+      for (const c of p.cells || []) {
+        rawCells.push({ index: c.index, pageNumber: p.pageNumber, verdict: c.verdict, inkPixels: c.inkPixels, charIndex: null })
+        if (c.marked) discardedCells.push(continuousIndex(p.pageNumber, c.index))
+      }
+      continue
+    }
+    for (const c of p.cells || []) {
+      if (!c.marked) continue
+      circled.push({
+        mainCellIndex: c.index,
+        pageNumber: p.pageNumber,
+        // 全量字序（决策 二-8 ⑤）：0 起，便于回去找字表位置
+        charIndex: (p.pageNumber - 1) * LAYOUT.perPage + c.index,
+        char: c.char,
+        fileIndex: p.fileIndex
+      })
+    }
+  }
+  circled.sort((a, b) => a.pageNumber - b.pageNumber || a.mainCellIndex - b.mainCellIndex)
+  return { circled, correctionCells: buildCorrectionCells(rawCells), discardedCells }
+}
+
+/**
+ * 配对（纯函数）：把上面的输入喂给 correctionMapper，得到"第 k 个被圈字 ↔ 更正册第 m 格"的初值。
+ * @returns {{pairs, unmatched, discarded, extra, messages, stats, circled, correctionCells, discardedCells}}
+ */
+export function pairCorrections(pages) {
+  const { circled, correctionCells, discardedCells } = buildCorrectionInputs(pages)
+  const mapped = mapCorrections(circled, correctionCells, { discarded: discardedCells })
+  return { ...mapped, circled, correctionCells, discardedCells }
+}
+
+/**
+ * 应用用户在核对界面上的调整（改派 / 删除 / 补录）：
+ *   `overrides` = `{ [order]: number|null }` —— 第 order 个被圈字改用某个**连续格号**的更正格；
+ *   值为 `null` 表示"这一对删掉"（该字保留主区原字形）。
+ * 为什么要这一层：配对只是初值，界面调整后要能重算出最终生效的字形（决策 一-7 的最后一道闸）。
+ * @returns {{pairs:Array, effective:Map<string,{continuousIndex:number}|null>, removed:Array<number>}}
+ */
+export function applyCorrectionOverrides(pairs, overrides) {
+  const list = pairs || []
+  const out = []
+  const removed = []
+  for (const p of list) {
+    const key = String(p.order)
+    if (overrides && Object.prototype.hasOwnProperty.call(overrides, key)) {
+      const value = overrides[key]
+      if (value === null) {
+        removed.push(p.order)
+        continue
+      }
+      out.push({
+        ...p,
+        correctContinuousIndex: value,
+        source: 'manual'
+      })
+      continue
+    }
+    out.push(p)
+  }
+  return { pairs: out, removed }
+}
+
+/**
+ * 最终生效的字形清单（字体构建的输入）：主区每个写了字的格一个字形，**被更正的字用更正册的格替换**。
+ * 规则（决策 一-7、二-13）：被红笔圈掉的字若在更正册上有对应格 → 用更正册的字形；留空 / 删掉配对 /
+ * 补写不足 → **保留主区原字形**。所以"被圈"本身不改变字形，只有配对成功才改变。
+ * @param {Array} pages 识别页记录
+ * @param {{pairs?:Array, circled?:Array}} [correction] pairs 要是**应用过界面调整**之后的生效清单
+ * @returns {{items:Array, problems:Array<string>, replaced:number}}
+ *   items = `[{ char, source:'main'|'correction', fileIndex, cellIndex, pageNumber }]`（掩膜按 fileIndex+cellIndex 从字形库取）
+ */
+export function buildFinalGlyphPlan(pages, correction = {}) {
+  const list = pages || []
+  // 更正册的格：连续格号 → 它落在哪一页哪一格（掩膜按 fileIndex + cellIndex 取）
+  const byContinuous = new Map()
+  for (const p of list) {
+    if (p.kind !== 'correction' || !usableForGlyphs(p)) continue
+    for (const c of p.cells || []) {
+      byContinuous.set(continuousIndex(p.pageNumber, c.index), {
+        fileIndex: p.fileIndex,
+        cellIndex: c.index,
+        pageNumber: p.pageNumber,
+        verdict: c.verdict
+      })
+    }
+  }
+
+  const items = []
+  const problems = []
+  for (const p of list) {
+    if (p.kind === 'correction' || !usableForGlyphs(p)) continue
+    for (const c of p.cells || []) {
+      if (c.verdict === 'empty' || !c.char) continue
+      items.push({
+        char: c.char,
+        source: 'main',
+        fileIndex: p.fileIndex,
+        cellIndex: c.index,
+        pageNumber: p.pageNumber,
+        marked: !!c.marked
+      })
+    }
+  }
+
+  const replacedChars = new Set()
+  for (const pair of correction.pairs || []) {
+    const cell = byContinuous.get(pair.correctContinuousIndex)
+    if (!cell || cell.verdict === 'empty') {
+      problems.push('第 ' + (pair.order + 1) + ' 个更正对（' + (pair.mainChar || '?') + '）指向的更正格没有笔迹，已按"保留主区原字形"处理')
+      continue
+    }
+    replacedChars.add(pair.mainChar)
+    const item = {
+      char: pair.mainChar,
+      source: 'correction',
+      fileIndex: cell.fileIndex,
+      cellIndex: cell.cellIndex,
+      pageNumber: cell.pageNumber,
+      replaced: true
+    }
+    const idx = items.findIndex((it) => it.char === pair.mainChar)
+    if (idx >= 0) items[idx] = item
+    else items.push(item)
+  }
+
+  const notReplaced = (correction.circled || []).filter((c) => !replacedChars.has(c.char))
+  if (notReplaced.length) {
+    problems.push('有 ' + notReplaced.length + ' 个被圈的字没有用上更正册（保留主区原字形）：' +
+      notReplaced.map((c) => c.char).join('、'))
+  }
+  return { items, problems, replaced: replacedChars.size }
 }
