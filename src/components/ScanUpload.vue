@@ -12,6 +12,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { applyPageOrder, evaluateScanGate, recognizeBatch, resolveBatchChars } from '../lib/scanFlow.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
+import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { LAYOUT } from '../lib/layout.js'
 
 const store = useProjectStore()
@@ -26,6 +27,7 @@ const zoomIndex = ref(null) // 单格放大
 const message = ref('')
 const messageType = ref('info') // info | error | done
 const dragFrom = ref(null)
+const savedStats = ref(null) // 已落盘的字形统计（分片键里的字与体积）
 let cancelled = false
 
 const pages = computed(() => store.scan.pages)
@@ -68,6 +70,8 @@ onMounted(() => {
     if (cache) restored[page.fileIndex] = { thumb: cache.thumb, sheet: cache.sheet }
   }
   if (Object.keys(restored).length) images.value = restored
+  // 字形是**落盘**的（分片键）：刷新后仍能拿去生成字体，所以这里把已落盘的量显示出来
+  glyphStoreStats().then((s) => { savedStats.value = s }).catch(() => {})
 })
 
 function onPickFiles(event) {
@@ -97,6 +101,9 @@ async function start() {
   zoomIndex.value = null
   images.value = {}
   clearPageCache()
+  // 同一批重新识别：先把这批已落盘的字形清掉，避免旧页与新页混在一起（分片键是按批次 + 页序写的）
+  await clearGlyphs({ batchId: store.scan.batchId })
+  savedStats.value = null
   store.beginScanRun({ batchId: store.scan.batchId, chars: resolveBatchChars(batch.value) })
   progress.value = { done: 0, total: files.value.length }
   setMessage('正在识别…（单页约 1~2 秒，51 页约 85 秒；中途可以点「中止」，已识别的页会保留）', 'info')
@@ -106,11 +113,28 @@ async function start() {
       batch: batch.value,
       onStage: (text) => { stage.value = text },
       shouldStop: () => cancelled,
-      onPage: (record, index, total, cache) => {
+      onPage: async (record, index, total, cache) => {
         putPageCache(index, cache)
         images.value = { ...images.value, [index]: { thumb: cache.thumb, sheet: cache.sheet } }
         store.appendScanPage(record)
         progress.value = { done: index + 1, total }
+        // 字形**逐页落盘**（掩膜存 PNG，分片键）：关掉浏览器或刷新后不用重扫，
+        // 字体合成（下一步）直接从这里取原料 —— 口径见《决策记录》二-16
+        const res = await savePageGlyphs({
+          batchId: store.scan.batchId,
+          fileIndex: index,
+          pageNumber: record.pageNumber,
+          glyphs: (cache.masks || []).map((m) => ({
+            char: m.char,
+            cellIndex: m.index,
+            mask: m.mask,
+            width: m.width,
+            height: m.height,
+            boxInSlice: m.boxInSlice
+          }))
+        })
+        if (!res.ok) setMessage('字形落盘失败（识别结果仍在内存里，但刷新会丢）：' + res.error, 'error')
+        savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
       }
     })
     store.finishScanRun({ summary: res.summary })
@@ -140,8 +164,12 @@ function clearAll() {
   openIndex.value = null
   zoomIndex.value = null
   clearPageCache()
+  // 字形是落盘的：清结果要连分片键一起清，否则下次识别会与旧字形混在一起
+  clearGlyphs({ batchId: store.scan.batchId }).then((r) => {
+    savedStats.value = null
+    setMessage('已清空识别结果、内存缓存与落盘的字形' + (r && r.removed ? '（删除 ' + r.removed + ' 页分片）' : ''), 'info')
+  })
   store.clearScan()
-  setMessage('已清空识别结果与内存缓存', 'info')
 }
 
 // ── 手选页序（决策 二-7）：改数字或拖动都能改 ────────────────────────────
@@ -307,6 +335,10 @@ const zoomIsMarkedLabel = computed(() => {
       </div>
     </div>
     <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
+    <p v-if="savedStats && savedStats.glyphs" class="panel-hint">
+      字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
+      —— 存的是笔迹掩膜（PNG 无损），<strong>刷新或关掉浏览器后不用重扫</strong>，下一步生成字体直接用它
+    </p>
 
     <!-- ③ 批次判定与收批闸门 -->
     <div v-if="pages.length" class="scan-summary">

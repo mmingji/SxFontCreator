@@ -326,8 +326,9 @@ export async function recognizeBatch(files, options = {}) {
     pages.push(record)
     caches.set(i, cache)
     // onPage 带上该页的内存缓存（缩略图 / 格子拼图 / 掩膜）：界面要**边跑边显示**，
-    // 不能等整批结束才拿到（51 页要等 85 秒，期间什么都看不到）
-    if (opt.onPage) opt.onPage(record, i, files.length, cache)
+    // 不能等整批结束才拿到（51 页要等 85 秒，期间什么都看不到）。
+    // **要 await**：回调里要落盘字形（一页一次写），不等它就没有确定的完成顺序
+    if (opt.onPage) await opt.onPage(record, i, files.length, cache)
   }
   const summary = summarizeBatch(pages, {
     expectedBatchCode,

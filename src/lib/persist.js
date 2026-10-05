@@ -20,6 +20,10 @@ const DB_NAME = 'sxfont-db'
 const DB_STORE = 'projects'
 const DB_KEY = 'sxfont.project.v1'
 
+// 字形数据（掩膜）另存分片键：`sxfont.glyphs.v1.<批次>.<页序>`（见 lib/glyphStore.js）。
+// 为什么不塞进上面那个项目对象：字形量大（全量约 6900 格），而 persist 每次改动都会重写整份对象，
+// 塞进去会让"改一个族名"也写十几 MB；分片之后小改动只写元信息。
+
 let idbPromise = null
 // 惰性打开 IndexedDB（首次调用才建库，避免不支持的环境直接报错）
 function openDb() {
@@ -54,6 +58,12 @@ export async function isIdbAvailable() {
   } catch {
     return false
   }
+}
+
+// 给别的模块（lib/glyphStore.js）复用同一个库与对象仓，避免第二份打开逻辑：
+// 两个模块各开各的会多一份连接与升级竞态，得不偿失
+export async function openProjectDb() {
+  return { db: await openDb(), store: DB_STORE }
 }
 
 // 从 IndexedDB 读项目；无数据或失败返回 null
