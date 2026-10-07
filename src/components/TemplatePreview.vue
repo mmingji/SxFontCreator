@@ -61,8 +61,9 @@ async function refreshSample(fontBytes, chars) {
   sampleBusy.value = true
   try {
     const sampleFont = await resolveHandwritingFont()
+    // **不截断**：示意页与模板同页数（2026-10-07 用户拍板），全量时是 51 页，预览可以翻页看
     const out = await buildSamplePagePdf({
-      chars: chars.slice(0, LAYOUT.perPage),
+      chars,
       fontBytes,
       sampleFontBytes: sampleFont
     })
@@ -230,7 +231,8 @@ async function refreshPreview() {
   try {
     const { out, font, chars } = await buildCurrentPdf()
     previewBytes.value = out.bytes
-    // 示意页跟在模板预览之后生成：同一批字的第 1 页 + 同一个参考字字体（换了本机字体，两页一起变）
+    // 示意页跟在模板预览之后生成：**同一批字、同一个参考字字体**（换本机字体时两块一起变），
+    // 页数与模板一致（2026-10-07 用户拍板），所以全量时这里会多花约 1 秒生成 51 页
     await refreshSample(font.bytes, chars)
   } catch (e) {
     setMessage('预览生成失败：' + (e && e.message ? e.message : e), 'error')
@@ -376,9 +378,10 @@ async function generateCorrectionBook() {
       <div class="panel-field">
         <span class="field-label">打印预览</span>
         <span class="panel-hint">
-          按当前设置生成的模板、第 1 页的真实渲染；改范围 / 排列方式 / 选字后会自动重出。
-          右边「填写示意」用内置手写体（{{ HANDWRITING_FONT_LABEL }}）在书写格里示范写法：笔画多的字撑满格、
-          笔画少的字居中写小（口径见第 1 步下方的「书写要求」）。<strong>它只看不打印</strong>。
+          左边是模板**第 1 页**的真实渲染，右边「填写示意」用内置手写体（{{ HANDWRITING_FONT_LABEL }}）在书写格里
+          示范写法：笔画多的字撑满格、笔画少的字居中写小（口径见第 1 步下方的「书写要求」）。
+          两块都**与当前范围同页数、可以翻页**（改了范围 / 排列方式 / 选字后会自动重出）；
+          <strong>示意页只看不打印</strong>，它不在正式模板 PDF 里、也不带定位块与页脚编码。
           <span v-if="previewBusy">正在生成预览…</span>
         </span>
         <button class="text" type="button" :disabled="previewBusy || busy" @click="refreshPreview">更新预览</button>
@@ -391,7 +394,7 @@ async function generateCorrectionBook() {
         :bytes="previewBytes"
         :loading="previewBusy"
         :max-width="640"
-        title="模板预览（第 1 页与实际打印完全一致）"
+        title="模板预览（与实际打印逐格一致）"
       />
       <PdfPreview
         :bytes="sampleBytes"
@@ -399,8 +402,7 @@ async function generateCorrectionBook() {
         :max-width="640"
         title="填写示意（书写格里已写好示范字，只看不打印）"
         empty-text="填写示意还没生成出来"
-      />
-    </div>
+      />    </div>
     <p v-if="sampleNote" class="panel-message error">{{ sampleNote }}</p>
 
     <div class="panel-actions">

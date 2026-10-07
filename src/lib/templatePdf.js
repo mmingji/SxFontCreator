@@ -409,9 +409,11 @@ function drawSampleChar(page, cell, char, font, glyphBoxes) {
  * @param {ArrayBuffer|Uint8Array} options.sampleFontBytes 示范手写体字节（内置悠哉字体子集）
  * @returns {Promise<{bytes:Uint8Array, pageCount:number, glyphCount:number, fontScale:number}>}
  */
-export async function buildSamplePagePdf({ chars, fontBytes, sampleFontBytes }) {
+export async function buildSamplePdf({ chars, fontBytes, sampleFontBytes }) {
   if (!sampleFontBytes) throw new Error('生成填写示意失败：没有手写示范字体')
-  const list = (chars && chars.length ? chars : getAllChars()).slice(0, LAYOUT.perPage)
+  const list = chars && chars.length ? Array.from(chars) : getAllChars()
+  // 按当前范围**逐页**生成（2026-10-07 用户拍板：与模板同页数、可翻页看）
+  const pageCount = Math.max(1, Math.ceil(list.length / LAYOUT.perPage))
 
   const pdf = await PDFDocument.create()
   pdf.setTitle('SxFontCreator 填写示意')
@@ -422,14 +424,24 @@ export async function buildSamplePagePdf({ chars, fontBytes, sampleFontBytes }) 
   const glyphBoxes = buildGlyphBoxTable(fontBytes)
   const sampleBoxes = buildGlyphBoxTable(sampleFontBytes)
 
-  const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
-  drawGrid(page)
-  for (let i = 0; i < list.length; i++) {
-    const cell = cellRect(i)
-    drawReferenceChar(page, cell, list[i], font, glyphBoxes)
-    drawSampleChar(page, cell, list[i], sampleFont, sampleBoxes)
+  let glyphCount = 0
+  for (let p = 0; p < pageCount; p++) {
+    const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
+    drawGrid(page)
+    const from = p * LAYOUT.perPage
+    const slice = list.slice(from, from + LAYOUT.perPage)
+    for (let i = 0; i < slice.length; i++) {
+      const cell = cellRect(i)
+      drawReferenceChar(page, cell, slice[i], font, glyphBoxes)
+      drawSampleChar(page, cell, slice[i], sampleFont, sampleBoxes)
+      glyphCount++
+    }
   }
 
   const bytes = await pdf.save()
-  return { bytes, pageCount: 1, glyphCount: list.length, fontScale: SAMPLE_PAGE.fontScale }
+  return { bytes, pageCount, glyphCount, fontScale: SAMPLE_PAGE.fontScale }
 }
+
+// 兼容旧名（调用方与测试都用 `buildSamplePagePdf`）：现在它生成的是**多页**示意，名字保留不再改，
+// 免得同时改一堆引用；新代码用 `buildSamplePdf` 更贴切。
+export const buildSamplePagePdf = buildSamplePdf

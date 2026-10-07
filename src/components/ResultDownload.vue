@@ -11,6 +11,7 @@ import { buildFontFromPlan, getLastBuild } from '../lib/buildFont.js'
 import { buildGuideText, buildPreviewHtml, packFontZip } from '../lib/fontPack.js'
 import { downloadBytes, downloadText } from '../lib/download.js'
 import { buildFinalGlyphPlan } from '../lib/scanFlow.js'
+import { OVERVIEW_DEFAULTS, overviewFileName, renderOverviewPng } from '../lib/glyphOverview.js'
 import FontPreview from './FontPreview.vue'
 
 const store = useProjectStore()
@@ -169,6 +170,48 @@ async function downloadSingle(kind) {
     setMessage('下载失败：' + (e && e.message ? e.message : e), 'error')
   }
 }
+
+// ── 字形总览图（阶段三 3.6，版权登记辅助）────────────────────────────────
+// 用**生成的字体字节**渲染（FontFace 注册，与上面的网页预览同一条路），好处是图上的字形与产物一致；
+// 全量 6919 字约 740 × 9016 像素，画完再编码 PNG，实测约 1~3 秒。
+async function exportOverview() {
+  if (busy.value) return
+  busy.value = true
+  const t0 = performance.now()
+  try {
+    setMessage('正在准备字体字节…', 'info')
+    const built = await ensureBuild()
+    const chars = (font.value.coverage && font.value.coverage.chars) || []
+    if (!chars.length) throw new Error('这套字体还没有收录任何字')
+    setMessage('正在画字形总览图（' + chars.length + ' 个字，约 ' +
+      Math.ceil(chars.length / OVERVIEW_DEFAULTS.cols) + ' 行）…', 'info')
+    const out = await renderOverviewPng({
+      fontBytes: built.ttf,
+      familyName: font.value.familyName || built.familyName,
+      version: store.meta.version,
+      chars,
+      fromCorrection: font.value.coverage.fromCorrection,
+      excluded: store.excludedCount,
+      generatedAt: new Date()
+    })
+    const name = overviewFileName({
+      familyName: font.value.familyName || built.fileName,
+      version: store.meta.version,
+      generatedAt: new Date()
+    })
+    downloadBytes(await out.blob.arrayBuffer(), name, 'image/png')
+    const secs = ((performance.now() - t0) / 1000).toFixed(1)
+    setMessage('已导出 ' + name + '（' + out.width + ' × ' + out.height + ' 像素，' +
+      out.rows + ' 行，' + (out.blob.size / 1024 / 1024).toFixed(2) + 'MB，用时 ' + secs + ' 秒）。' +
+      '图上标了族名、版本、收录字数与生成时间 —— 版权登记时可直接用这份材料。', 'done')
+  } catch (e) {
+    setMessage('导出总览图失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    busy.value = false
+    stage.value = ''
+    progress.value = { done: 0, total: 0 }
+  }
+}
 </script>
 
 <template>
@@ -203,9 +246,16 @@ async function downloadSingle(kind) {
         <button class="text" :disabled="busy" @click="downloadSingle('css')">只下载 font.css</button>
         <button class="text" :disabled="busy" @click="downloadSingle('guide')">只下载使用说明.txt</button>
         <button class="text" :disabled="busy" @click="downloadSingle('preview')">只下载 preview.html</button>
+        <button class="text" data-role="overview-export" :disabled="busy" @click="exportOverview">导出字形总览图</button>
         <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
       </div>
       <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
+
+      <p class="panel-hint">
+        <strong>字形总览图</strong>：把这一套字体<strong>收录的字</strong>排成一张 PNG（一行 25 字，
+        {{ font.coverage.total }} 字约 {{ Math.ceil(font.coverage.total / 25) }} 行），图上标注族名、版本、收录字数与生成时间，
+        可用作<strong>版权登记</strong>的材料。字体里没收录的字不会出现在图上（图下方有这句说明）。
+      </p>
 
       <p class="panel-hint">
         <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」（或复制到 <code>C:\Windows\Fonts</code>）；
