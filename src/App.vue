@@ -10,6 +10,7 @@ import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
 import { buildFlowState, flowSummary, stepIndex, stepNavigation } from './lib/flow.js'
 import StepContent from './components/StepContent.vue'
+import GuideLink from './components/GuideLink.vue'
 
 // 第 1 步「选字与出模板」按需加载（pdf-lib + fontkit + pdf.js）
 const StepLoading = {
@@ -207,7 +208,11 @@ const recoverDismissed = ref(false)
             <span class="step-number">第 {{ stepIndex(currentKey) + 1 }} 步</span>
             {{ currentStep.label }}
           </h2>
-          <span class="panel-hint">{{ currentStep.hint }}</span>
+          <span class="step-head-right">
+            <span class="panel-hint">{{ currentStep.hint }}</span>
+            <!-- 每一步都能打开同一份《使用说明》（单文件 HTML，新标签页）：界面只留摘要，正文只有一份 -->
+            <GuideLink />
+          </span>
         </div>
         <p v-if="currentStep.note" class="step-note">{{ currentStep.note }}</p>
 

@@ -11,7 +11,7 @@
 //      结果是文档与 worker 从来没释放（每改一次设置就漏一个）；
 //   ② **旧文档要等新文档就绪后再销毁**，且每次换字节都用一个 token 作废在途的那一轮 ——
 //      否则会出现"上一轮把新一轮的渲染任务取消掉"的竞态，界面停在"正在渲染预览…"。
-import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 
 const props = defineProps({
   // 模板 PDF 的字节（Uint8Array）；为空时显示占位提示
@@ -165,14 +165,77 @@ function goto(delta) {
   pageNo.value = next
 }
 
+// ── 点击放大 ───────────────────────────────────────────────────────────────
+// 并排两块预览时每块只有约 620px 宽，1cm 的格子缩得很小 —— 点一下放到整屏看细节，
+// 关闭方式：点任意处或按 Esc。放大用的是**同一份文档对象**，只是按更大的尺寸重渲染一次
+// （不放大像素，避免发虚）。
+const zoomOpen = ref(false)
+const zoomCanvasRef = ref(null)
+let zoomTask = null
+
+async function openZoom() {
+  if (status.value !== 'ready' || !docRef.value) return
+  zoomOpen.value = true
+  await nextTick() // 放大层里的画布要先挂上，才有 ref 可用
+  await renderZoom()
+}
+
+async function renderZoom() {
+  const doc = docRef.value
+  const canvas = zoomCanvasRef.value
+  if (!doc || !canvas) return
+  try {
+    if (zoomTask) {
+      try {
+        zoomTask.cancel()
+      } catch {
+        // 上一轮已结束，忽略
+      }
+      zoomTask = null
+    }
+    const page = await doc.getPage(pageNo.value)
+    const base = page.getViewport({ scale: 1 })
+    // 同时受视口宽与高约束：A4 横向放满宽度会超出屏幕高度，必须一起算
+    const maxWidth = Math.min((window.innerWidth || 1280) * 0.94, 1600)
+    const maxHeight = (window.innerHeight || 800) * 0.88
+    const scale = Math.min(maxWidth / base.width, maxHeight / base.height)
+    const dpr = Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1)
+    const viewport = page.getViewport({ scale })
+    canvas.width = Math.max(1, Math.round(viewport.width * dpr))
+    canvas.height = Math.max(1, Math.round(viewport.height * dpr))
+    canvas.style.width = Math.round(viewport.width) + 'px'
+    canvas.style.height = Math.round(viewport.height) + 'px'
+    const ctx = canvas.getContext('2d')
+    ctx.save()
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
+    zoomTask = page.render({ canvasContext: ctx, viewport, transform: [dpr, 0, 0, dpr, 0, 0] })
+    await zoomTask.promise
+    zoomTask = null
+  } catch (e) {
+    // 放大失败不影响主预览：收起放大层即可（用户还能看小图）
+    if (!(e && e.name === 'RenderingCancelledException')) zoomOpen.value = false
+  }
+}
+
+function onKeydown(e) {
+  if (e.key === 'Escape') zoomOpen.value = false
+}
+watch(zoomOpen, (open) => {
+  if (open) document.addEventListener('keydown', onKeydown)
+  else document.removeEventListener('keydown', onKeydown)
+})
+
 watch(() => props.bytes, () => { openDoc() }, { immediate: true })
-watch(pageNo, () => { renderPage() })
+watch(pageNo, () => { renderPage(); if (zoomOpen.value) renderZoom() })
 onBeforeUnmount(() => {
   openToken++ // 让在途的那一轮作废，别在卸载后再改状态
   cancelRender()
   disposeTask(loadingTask)
   loadingTask = null
   docRef.value = null
+  document.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -189,12 +252,20 @@ onBeforeUnmount(() => {
       </span>
     </div>
     <div class="pdf-preview-body">
-      <canvas ref="canvasRef" class="pdf-preview-canvas" :class="{ hidden: status !== 'ready' }"></canvas>
+      <canvas ref="canvasRef" class="pdf-preview-canvas" :class="{ hidden: status !== 'ready' }" @click="openZoom"></canvas>
       <p v-if="status === 'idle'" class="pdf-preview-empty">
         {{ loading ? '正在生成，稍后显示预览…' : (emptyText || '还没有预览：先在下面点「生成模板 PDF」或「更新预览」') }}
       </p>
       <p v-else-if="status === 'rendering' && !pageCount" class="pdf-preview-empty">正在渲染预览…</p>
       <p v-else-if="status === 'error'" class="pdf-preview-empty error">{{ errorText }}</p>
+      <p v-if="status === 'ready'" class="pdf-preview-zoom-tip">点图可放大看细节</p>
     </div>
+    <!-- 点击放大层：整屏看细节，点任意处或按 Esc 关闭（Teleport 到 body，避免被容器裁掉） -->
+    <Teleport to="body">
+      <div v-if="zoomOpen" class="pdf-zoom" @click="zoomOpen = false">
+        <canvas ref="zoomCanvasRef" class="pdf-zoom-canvas"></canvas>
+        <p class="pdf-zoom-tip">{{ title }}　第 {{ pageNo }} / {{ pageCount }} 页　—— 点击任意处或按 Esc 关闭</p>
+      </div>
+    </Teleport>
   </div>
 </template>
