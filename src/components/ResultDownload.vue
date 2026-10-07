@@ -64,6 +64,7 @@ async function ensureBuild() {
       items: plan.value.items,
       meta: { ...store.meta },
       batchId: store.scan.batchId,
+      excluded: store.excludedChars,
       woff2WasmUrl: './woff2.wasm',
       onStage: (t) => { stage.value = t },
       onProgress: (done, total) => { progress.value = { done, total } }
@@ -83,7 +84,8 @@ async function ensureBuild() {
         chars: rebuilt.mapping.map((m) => m.char)
       },
       skipped: rebuilt.skipped.length,
-      missing: rebuilt.missing.length
+      missing: rebuilt.missing.length,
+      checkup: rebuilt.checkup
     })
     syncPreviewBytes() // 重建出来的字节同时交给网页预览用
     return rebuilt
@@ -99,11 +101,15 @@ function coverageInfo(extra = {}) {
   const suspectNote = store.scanGlyphStats.suspect
     ? '这批里有 ' + store.scanGlyphStats.suspect + ' 个字形被判为可疑（偏淡或写得太小），可以回第 3 步的格级视图逐格看。'
     : ''
+  // 被剔除的字要说清"为什么不在里面"（决策 八-8）：不说的话用户会以为字体漏了字
+  const excludedNote = store.excludedCount
+    ? '其中有 ' + store.excludedCount + ' 个字是你在第 5 步字形体检里剔除的（' + store.excludedChars.join('、') + '），它们不进字体；要收回请回第 5 步点「恢复」。'
+    : ''
   return {
     total: font.value.coverage ? font.value.coverage.total : 0,
     fromCorrection: font.value.coverage ? font.value.coverage.fromCorrection : 0,
     chars: font.value.coverage ? font.value.coverage.chars : [],
-    suspectNote,
+    suspectNote: suspectNote + (excludedNote ? (suspectNote ? ' ' : '') + excludedNote : ''),
     missingNote: extra.missingNote || '',
     ...extra
   }

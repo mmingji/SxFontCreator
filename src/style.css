@@ -282,6 +282,22 @@ small {
   color: var(--danger);
 }
 
+/* 单行状态栏（2026-10-07 用户要求）：把原来"标题 + 逐项两列"的环境自检压成一行小字。
+   项与项之间用 gap 分隔，窄屏自动换行；不再有分隔虚线与标题，免得占掉半屏 */
+.checkline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: 12px;
+}
+
+.checkline li {
+  padding: 0;
+  border-bottom: none;
+  font-size: 12px;
+}
+
 .hint {
   margin: 10px 0 0;
   font-size: 12px;
@@ -482,6 +498,14 @@ button.text:hover {
   flex-wrap: wrap;
 }
 
+/* 步骤标题后面那句"这一步要干什么"（2026-10-07 从右上角移过来）：比正文轻、比标题更淡 */
+.step-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+
 /* 「完整说明」入口（每一步右上角都有）：链接 + 保存到本地。
    说明正文只有一份（单文件 public/使用说明.html），界面上只留一句摘要（决策 一-15）。 */
 .guide-link {
@@ -492,14 +516,22 @@ button.text:hover {
   white-space: nowrap;
 }
 
-.guide-link a {
-  color: #2e6e7e;
+/* 两个入口**同一套样式**（2026-10-07 用户要求）：都是 12px 次要色文本，悬停变主题色 + 下划线。
+   链接的默认蓝色与下划线都要显式去掉，否则它和旁边的按钮看着是两种控件。 */
+.guide-link a,
+.guide-link button.text {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-2);
   text-decoration: none;
-  border-bottom: 1px solid currentColor;
 }
 
-.guide-link a:hover {
-  opacity: 0.75;
+.guide-link a:hover,
+.guide-link button.text:hover {
+  color: var(--primary);
+  text-decoration: underline;
 }
 
 .guide-link-note {
@@ -612,12 +644,6 @@ button.text:hover {
 
 .pdf-preview-canvas.hidden {
   display: none;
-}
-
-.pdf-preview-zoom-tip {
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: var(--text-2);
 }
 
 /* 点击放大层：整屏看细节（Teleport 到 body，避免被容器裁掉） */
@@ -1199,5 +1225,53 @@ button.text:hover {
 .file-button.disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* ── 字形体检清单（第 5 步，阶段三 3.2）────────────────────────────────────
+   每条一行：字 + 位置 + 提示 + 处置按钮。字用大一号显示（要认得出是哪个字）。 */
+.checkup-group {
+  margin-top: 10px;
+}
+
+.checkup-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.checkup-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 12px;
+}
+
+.checkup-list li:last-child {
+  border-bottom: none;
+}
+
+.checkup-char {
+  flex: none;
+  font-size: 16px;
+  line-height: 1.2;
+  min-width: 20px;
+  text-align: center;
+}
+
+.checkup-where {
+  flex: none;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.checkup-msgs {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  line-height: 1.6;
 }
 

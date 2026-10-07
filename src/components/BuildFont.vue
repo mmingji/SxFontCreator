@@ -62,10 +62,13 @@ async function build() {
   const t0 = performance.now()
   try {
     setMessage('正在准备字形原料…', 'info')
+    // excluded：被人工剔除的字不进字体（决策 八-8 的"已剔除"），但它们仍在体检清单里显示为"已剔除"，
+    // 好让用户看得到、也能恢复
     const built = await buildFontFromPlan({
       items: plan.value.items,
       meta: { ...store.meta },
       batchId: store.scan.batchId,
+      excluded: store.excludedChars,
       woff2WasmUrl: './woff2.wasm',
       onStage: (text) => stage.value = text,
       onProgress: (done, total) => { progress.value = { done, total } }
@@ -85,13 +88,20 @@ async function build() {
       stats: built.stats,
       coverage: { total: chars.length, fromCorrection, chars },
       skipped: built.skipped.length,
-      missing: built.missing.length
+      missing: built.missing.length,
+      checkup: built.checkup
     })
+    // 体检清单默认只列"要重写的"，没有要重写的就展开"留意"那一栏（一屏给到最有用的信息）
+    showNote.value = !(built.checkup && built.checkup.summary && built.checkup.summary.rewrite > 0)
     const secs = ((performance.now() - t0) / 1000).toFixed(1)
     const kb = (n) => (n / 1024).toFixed(1) + 'KB'
+    const ck = built.checkup && built.checkup.summary
+    const checkNote = ck ? '；字形体检：' + (ck.rewrite ? ck.rewrite + ' 个建议重写' : '没有要重写的') +
+      (store.excludedCount ? '、已剔除 ' + store.excludedCount + ' 个' : '') : ''
     setMessage('字体已生成：' + chars.length + ' 个字形，TTF ' + kb(built.ttf.byteLength) +
       (built.woff2 ? '、woff2 ' + kb(built.woff2.byteLength) : '（woff2 不可用，已跳过）') +
-      '；用时 ' + secs + ' 秒' + (suspect ? '；这批里有 ' + suspect + ' 个可疑字形（偏淡或写得太小），去看看第 3 步的格级视图' : ''), 'done')
+      '；用时 ' + secs + ' 秒' + checkNote +
+      (suspect ? '；这批里有 ' + suspect + ' 个可疑字形（偏淡或写得太小），去看看第 3 步的格级视图' : ''), 'done')
   } catch (e) {
     setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
@@ -100,6 +110,31 @@ async function build() {
     progress.value = { done: 0, total: 0 }
   }
 }
+
+// ── 字形体检清单（决策 四-7 的替代手段：只提示、不改字形；八-8 的"已剔除"在这里处置）──
+const checkup = computed(() => store.font.checkup)
+const LIST_LIMIT = 40 // 一屏最多列这么多条：全量下可能有几百个字要重写，全铺出来反而看不出重点
+const showNote = ref(true) // "只是留意"那一栏是否展开
+const rewriteList = computed(() => ((checkup.value && checkup.value.glyphs) || []).filter((g) => g.needsRewrite && !g.excluded))
+const noteList = computed(() => ((checkup.value && checkup.value.glyphs) || []).filter((g) => !g.needsRewrite && !g.excluded && (g.messages || []).length))
+const excludedList = computed(() => ((checkup.value && checkup.value.glyphs) || []).filter((g) => g.excluded))
+const listSlice = (list) => list.slice(0, LIST_LIMIT)
+
+function excludeGlyph(char) {
+  store.setGlyphExcluded(char, true, '字形体检里剔除')
+  setMessage('已剔除「' + char + '」：它不进字体，也不计入收录数；下次点「生成字体」生效（要收回就点「恢复」）', 'info')
+}
+function restoreGlyph(char) {
+  store.setGlyphExcluded(char, false)
+  setMessage('已恢复「' + char + '」：下次点「生成字体」时它重新进字体', 'info')
+}
+function restoreAll() {
+  const n = store.excludedCount
+  store.clearExcluded()
+  setMessage(n ? '已恢复全部 ' + n + ' 个被剔除的字；下次点「生成字体」生效' : '没有被剔除的字', 'info')
+}
+// 剔除了字、或改了名称表之后，之前那份体检快照就与当前状态不一致了（store 会置 checkupStale）
+const staleAfterExclude = computed(() => !!checkup.value && store.font.checkupStale)
 
 // 决策 五-3：在"识别完成 / 字体生成后"各提醒一次导出项目包备份（不做常驻计数与"距上次导出 N 天"）。
 // 判据在 store 的 backupReminder：有可用识别结果或已生成字体，且这次会话里还没导出过项目包。
@@ -165,6 +200,76 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
         建议现在导出一次项目包（含名称表、批次、进度与全部字形）。
         <button type="button" class="text" @click="store.openBackup()">立即导出项目包</button>
       </p>
+
     </template>
+
+    <!-- 字形体检（阶段三 3.2，决策 四-7）：只提示、不改字形；处置手段是"剔除"或"重写那一格"。
+         放在 `v-else` **之外**：剔除一个字之后 `store.font.built` 会被清掉（提示"要重新生成"），
+         如果它在里面，面板会跟着整块消失 —— 那样就看不清单、也没法恢复（实测踩到） -->
+    <div v-if="checkup" class="card nested" data-role="glyph-checkup">
+      <div class="panel-head">
+        <h3>字形体检</h3>
+        <span class="panel-hint">只提示、不改字形 —— 字形大小与笔画粗细取决于你的书写</span>
+      </div>
+      <p class="panel-hint">{{ checkup.summary.message }}</p>
+      <p v-if="staleAfterExclude" class="step-note" data-role="checkup-stale">
+        体检之后你剔除过字形（或改过名称表）—— 现在显示的是上一次生成时的清单，
+        点上面的「生成字体」重新生成一次即生效。
+      </p>
+
+      <div v-if="rewriteList.length" class="checkup-group">
+        <p class="panel-hint"><strong>建议重写（{{ rewriteList.length }}）</strong>：成字后这些字会明显偏小或不成形，最好重写那一格（或用更正册覆盖）</p>
+        <ul class="checkup-list" data-role="rewrite-list">
+          <li v-for="g in listSlice(rewriteList)" :key="'r' + g.char">
+            <span class="checkup-char">{{ g.char }}</span>
+            <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
+            <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
+            <button type="button" class="text" :disabled="busy" @click="excludeGlyph(g.char)">剔除这个字</button>
+          </li>
+        </ul>
+        <p v-if="rewriteList.length > LIST_LIMIT" class="panel-hint">
+          还有 {{ rewriteList.length - LIST_LIMIT }} 个字没列出来（一屏只列前 {{ LIST_LIMIT }} 个）
+        </p>
+      </div>
+      <p v-else-if="checkup.summary.rewrite === 0" class="panel-message done">
+        没有需要重写的字形 —— 这一批可以直接生成字体。
+      </p>
+
+      <div v-if="noteList.length" class="checkup-group">
+        <p class="panel-hint">
+          <strong>只是留意（{{ noteList.length }}）</strong>：不影响成字，看一眼就行
+          <button type="button" class="text" @click="showNote = !showNote">{{ showNote ? '收起' : '展开' }}</button>
+        </p>
+        <ul v-if="showNote" class="checkup-list" data-role="note-list">
+          <li v-for="g in listSlice(noteList)" :key="'n' + g.char">
+            <span class="checkup-char">{{ g.char }}</span>
+            <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
+            <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
+            <button type="button" class="text" :disabled="busy" @click="excludeGlyph(g.char)">剔除这个字</button>
+          </li>
+        </ul>
+        <p v-if="showNote && noteList.length > LIST_LIMIT" class="panel-hint">
+          还有 {{ noteList.length - LIST_LIMIT }} 个字没列出来
+        </p>
+      </div>
+
+      <div v-if="excludedList.length" class="checkup-group">
+        <p class="panel-hint">
+          <strong>已剔除（{{ excludedList.length }}）</strong>：这些字不进字体、也不计入收录数
+          <button type="button" class="text" :disabled="busy" @click="restoreAll">全部恢复</button>
+        </p>
+        <ul class="checkup-list" data-role="excluded-list">
+          <li v-for="g in listSlice(excludedList)" :key="'x' + g.char">
+            <span class="checkup-char">{{ g.char }}</span>
+            <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
+            <button type="button" class="text" :disabled="busy" @click="restoreGlyph(g.char)">恢复</button>
+          </li>
+        </ul>
+        <p class="panel-hint">
+          剔除只影响<strong>这一次生成</strong>的字库：想真正补上，还是重写那一格、重新扫这一页（或用更正册覆盖）。
+          重新识别之后，剔除记录仍会保留（可在上面「全部恢复」）。
+        </p>
+      </div>
+    </div>
   </div>
 </template>

@@ -8,11 +8,13 @@
 //   rev       —— 版本号，由 persist 递增；用来判断 IndexedDB 与 localStorage 快照哪份更新（五-4）
 // 数据来源与去向：启动时从 persist 读（IndexedDB 是唯一真相，快照只作异常关闭后的恢复），改动后写回。
 import { defineStore } from 'pinia'
+import { toRaw } from 'vue'
 import { loadProject, saveProject, getStorageState } from '../lib/persist.js'
 import { getAllChars } from '../lib/charset.js'
 import { normalizeSelection } from '../lib/frequency.js'
 import { computeBatchCode } from '../lib/batchCode.js'
 import { collectGlyphStats } from '../lib/scanMeta.js'
+import { toggleSnapshotExcluded } from '../lib/glyphCheckup.js'
 
 // 默认字体族名：产品命名（决策记录 七-1）。名称表字段自 1.9 起已全部有默认值（决策 四-1），
 // 界面上在第 5 步「生成字体」里改（顶栏原来那个族名输入框已去掉，一处填写）
@@ -88,6 +90,11 @@ export const useProjectStore = defineStore('project', {
       confirmed: false,
       updatedAt: null
     },
+    // 人工修正（决策 八-8 的"已剔除"三态之一，2026-10-07 随 3.2 字形体检落地）：
+    //   excluded —— `{ [字]: { at, reason } }` 被**人工剔除**的字：不进字体、也不计入收录数。
+    //   为什么按"字"而不是按"格"：一个字只该有一个字形，用户想剔的是这个字，重扫之后仍然作数
+    //   （要收回就点"恢复"）。它与字形数据分开放，改一次只写几十字节。
+    excluded: {},
     // 字体产物（步骤 1.9 / 1.10）：只存**元信息**，不存字节（TTF 能由字形重算，全量约 30 秒；
     // 再存一份只会让体积翻倍。字节暂存在 lib/buildFont.js 的内存里，刷新后按需重建）
     font: {
@@ -100,6 +107,13 @@ export const useProjectStore = defineStore('project', {
       skipped: 0,
       missing: 0,
       builtAt: null,
+      // 最近一次字形体检的快照（见 lib/glyphCheckup.buildCheckupSnapshot）：只留界面要显示的字段，
+      // 全量约 6919 条 × 少量字段。**改了名称表 / 剔除某个字就把 built 清掉**，界面据此提示"要重新生成"
+      checkup: null,
+      // 体检之后又改过东西（剔除字形、改名称表）→ 快照已经与当前状态不一致，界面要提示"点生成字体重新生成"。
+      // 为什么不复用 `built`：`built=false` 只说明"产物需要重建"，而空库时它本来就是 false —— 用它当"快照过期"
+      // 会让界面在剔除一个字之后**整块体检面板消失**（实测踩到：剔除后看不到清单、也没法恢复）
+      checkupStale: false,
       // 项目包导出时间（决策 五-3 的两个提醒节点以此为判据；原字段名 exportedAt 语义含糊，
       // 容易被读成"下载过字体 zip"—— 而它一直是"备份提醒用"的那一个，2026-10-07 随 3.5 一并改名）
       projectExportedAt: null
@@ -137,14 +151,17 @@ export const useProjectStore = defineStore('project', {
     },
     // 这批识别结果能拿出多少字形（页数 / 写了多少格 / 可疑多少 / 被圈多少 / 去重字数）
     scanGlyphStats: (state) => collectGlyphStats(state.scan.pages),
-    // 要不要提醒"导出项目包备份"（决策 五-3：只在**识别完成**与**字体生成后**两个节点各提醒一次，
+    // 要提醒"导出项目包备份"（决策 五-3：只在**识别完成**与**字体生成后**两个节点各提醒一次，
     // 不做"距上次导出已过 N 天""有未导出的改动"这类常驻计数）。
     // 判据：有可用识别结果、或已生成字体；且这次会话里还没导出过项目包
     backupReminder: (state) => {
       const hasScan = collectGlyphStats(state.scan.pages).pagesUsable > 0
       const hasFont = state.font.built === true
       return (hasScan || hasFont) && !state.font.projectExportedAt
-    }
+    },
+    // 被剔除的字（数组形式，界面与构建都要用）
+    excludedChars: (state) => Object.keys(state.excluded || {}),
+    excludedCount: (state) => Object.keys(state.excluded || {}).length
   },
 
   actions: {
@@ -162,6 +179,8 @@ export const useProjectStore = defineStore('project', {
           this.selection.chars = typeof data.selection.chars === 'string' ? data.selection.chars : ''
         }
         if (Array.isArray(data.batches)) this.batches = data.batches
+        // 人工剔除记录（八-8）：读旧项目对象时没有这个字段，缺省为空对象即可
+        if (data.excluded && typeof data.excluded === 'object' && !Array.isArray(data.excluded)) this.excluded = data.excluded
         if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
         if (data.correction && typeof data.correction === 'object') Object.assign(this.correction, data.correction)
         if (data.font && typeof data.font === 'object') Object.assign(this.font, data.font)
@@ -189,6 +208,7 @@ export const useProjectStore = defineStore('project', {
         batches: this.batches,
         scan: this.scan,
         correction: this.correction,
+        excluded: this.excluded,
         font: this.font
       }
     },
@@ -422,7 +442,7 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
-    // ── 字体产物（步骤 1.9 / 1.10）────────────────────────────────────────
+    // ── 字体产物（步骤 1.9 / 1.10）与字形体检（阶段三 3.2）──────────────────
     // 改名称表字段（第 5 步的表单）：改了就把"已构建"标记清掉 —— 否则界面会显示上一次的产物，
     // 而产物里的 name 表其实还是旧值（字体字节在内存里，重建只需点一下按钮）
     setFontMeta(patch) {
@@ -431,12 +451,13 @@ export const useProjectStore = defineStore('project', {
         this.font.built = false
         this.font.builtAt = null
       }
+      if (this.font.checkup) this.font.checkupStale = true
       this.markDirty()
       schedulePersist(this)
     },
 
-    // 构建成功：写入产物元信息（字节留在内存里，见 lib/buildFont.js）
-    setFontResult({ fileName, familyName, sizes, stats, coverage, skipped, missing }) {
+    // 构建成功：写入产物元信息与体检快照（字节留在内存里，见 lib/buildFont.js）
+    setFontResult({ fileName, familyName, sizes, stats, coverage, skipped, missing, checkup }) {
       this.font.built = true
       this.font.fileName = fileName
       this.font.familyName = familyName
@@ -445,15 +466,51 @@ export const useProjectStore = defineStore('project', {
       this.font.coverage = coverage || null
       this.font.skipped = skipped || 0
       this.font.missing = missing || 0
+      this.font.checkup = checkup || null
+      this.font.checkupStale = false
       this.font.builtAt = new Date().toISOString()
       this.font.projectExportedAt = null
       this.markDirty()
       schedulePersist(this)
     },
 
-    // 导出过项目包（决策 五-3：识别完成与字体生成后各提醒一次，导出过就不再提醒）
-    markProjectExported() {
-      this.font.projectExportedAt = new Date().toISOString()
+    // ── 人工剔除（决策 八-8 的"已剔除"，清单 一-8）────────────────────────
+    /**
+     * 剔除 / 恢复一个字（第 5 步体检清单里的按钮）。
+     * 剔除后这个字**不进字体、也不计入收录数**；恢复即回到正常。
+     * 剔除会清掉"已构建"标记 —— 产物里还留着那个字形，不重新生成就与界面说的不一致。
+     */
+    setGlyphExcluded(char, excluded, reason) {
+      if (!char) return false
+      const next = { ...(this.excluded || {}) }
+      if (excluded) next[char] = { at: new Date().toISOString(), reason: reason || '人工剔除' }
+      else delete next[char]
+      this.excluded = next
+      // 体检快照是"生成字体"那一次的产物，剔除只是翻一个状态位：**就地更新它**，
+      // 让清单立刻正确（重新跑一遍体检要几秒，没必要）。
+      // `toRaw` 是必需的：传进 computed 的数组会被 Vue 包成 Proxy，直接存回 state 会让
+      // 落盘时的 JSON 往返与响应式系统互相缠住（实测：恢复剔除后页面直接崩）
+      this.font.checkup = toggleSnapshotExcluded(toRaw(this.font.checkup), char, excluded)
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
+      this.markDirty()
+      schedulePersist(this)
+      return true
+    },
+
+    // 清除全部剔除记录（第 5 步的「全部恢复」）
+    clearExcluded() {
+      const was = Object.keys(this.excluded || {})
+      this.excluded = {}
+      for (const char of was) this.font.checkup = toggleSnapshotExcluded(toRaw(this.font.checkup), char, false)
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
       this.markDirty()
       schedulePersist(this)
     },
@@ -461,18 +518,26 @@ export const useProjectStore = defineStore('project', {
     clearFont() {
       this.font = {
         built: false, fileName: null, familyName: null, sizes: null, stats: null,
-        coverage: null, skipped: 0, missing: 0, builtAt: null, projectExportedAt: null
+        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null, checkupStale: false,
+        projectExportedAt: null
       }
       this.markDirty()
       schedulePersist(this)
     },
 
-    // ── 项目备份弹窗（顶部入口与两处提醒条共用同一个弹窗）──────────────────
+    // 项目备份弹窗（顶部入口与两处提醒条共用同一个弹窗）──────────────────
     openBackup() {
       this.ui.backupOpen = true
     },
     closeBackup() {
       this.ui.backupOpen = false
+    },
+
+    // 导出过项目包（决策 五-3：识别完成与字体生成后各提醒一次，导出过就不再提醒）
+    markProjectExported() {
+      this.font.projectExportedAt = new Date().toISOString()
+      this.markDirty()
+      schedulePersist(this)
     },
 
     /**
@@ -486,6 +551,9 @@ export const useProjectStore = defineStore('project', {
       this.template = data.template && typeof data.template === 'object' ? data.template : {}
       this.selection = { chars: data.selection && typeof data.selection.chars === 'string' ? data.selection.chars : '' }
       this.batches = Array.isArray(data.batches) ? data.batches : []
+      this.excluded = data.excluded && typeof data.excluded === 'object' && !Array.isArray(data.excluded)
+        ? data.excluded
+        : {}
       this.scan = {
         batchId: null, batchConfirmed: false, allowVoidBatch: false, pages: [],
         orderOverrides: {}, chars: '', summary: null, lastRunAt: null,
@@ -497,10 +565,11 @@ export const useProjectStore = defineStore('project', {
         ...(data.correction || {})
       }
       // 字体字节不在包里（决策 五-5：只存元信息、字节按需重建），所以"已构建"标记一律清掉 ——
-      // 否则界面会显示上一次的产物信息，而内存里根本没有那份字节
+      // 否则界面会显示上一次的产物信息，而内存里根本没有那份字节。
+      // 注意 `built: false` 必须写在展开**之后**：写在前面会被包里的 true 覆盖（这是个真实踩点）
       this.font = {
         built: false, fileName: null, familyName: null, sizes: null, stats: null,
-        coverage: null, skipped: 0, missing: 0, builtAt: null, projectExportedAt: null,
+        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null, projectExportedAt: null,
         ...(data.font || {}),
         built: false
       }

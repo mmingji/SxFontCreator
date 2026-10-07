@@ -106,8 +106,8 @@ function goPrev() {
   }
 }
 
-// 环境自检：这几项是后续步骤真实依赖的浏览器能力，检测结果决定后续步骤能否开工
-// （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取）
+// 运行环境：这三项是后续步骤真实依赖的浏览器能力，缺哪一项哪一步就干不了（单行状态栏按它们渲染）
+// （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取；IndexedDB 是数据落盘的唯一真相）
 // 判据要与实现一致：界面用的是 <input type="file"> + File.arrayBuffer()，不是 File System Access API
 const fontPickerSupported =
   typeof window !== 'undefined' && typeof File !== 'undefined' && typeof File.prototype.arrayBuffer === 'function'
@@ -120,27 +120,17 @@ const canvas2dSupported = (() => {
 })()
 
 const checks = computed(() => [
-  {
-    label: '内置字表（' + charset.source + '）',
-    ok: charset.total === 6919 && charset.han === 6812,
-    text: charset.total + ' 字（汉字 ' + charset.han + ' + 符号 ' + charset.symbol + '）'
-  },
-  {
-    label: '本地数据库（IndexedDB）',
-    ok: store.storage.idb,
-    text: store.storage.idb ? '可用' : '不可用，已退到本地快照'
-  },
-  {
-    label: '本机字体文件读取（供模板嵌入参考字）',
-    ok: fontPickerSupported,
-    text: fontPickerSupported ? '支持' : '不支持，将只用内置字体'
-  },
-  {
-    label: '画布 2D（切格与笔迹提取用）',
-    ok: canvas2dSupported,
-    text: canvas2dSupported ? '可用' : '不可用'
-  }
+  // 顺序即显示顺序：能力 → 字体读取 → 画布
+  { label: '本地数据库', ok: store.storage.idb },
+  { label: '本机字体读取', ok: fontPickerSupported },
+  { label: '画布 2D', ok: canvas2dSupported }
 ])
+
+// 内置字表的一句话描述（单行状态栏末尾）。**不再显示数据来源文件名**（`做字体网标准模板V4.0.txt`）
+// —— 那是构建期的中间产物，用户不需要知道，也看不出这个字表覆盖什么（2026-10-07 用户提出）。
+// 改成说清口径：GB2312 的全部 6763 个汉字 + 49 个超纲字 + 107 个符号 = 6919。
+const charsetDesc = '内置字表：GB2312 全部 ' + (charset.han - 49) + ' 字 + 超纲字 49 + 符号 ' +
+  charset.symbol + ' = ' + charset.total + ' 字'
 
 // 保存状态与快照恢复：**只在异常时提示**（原来底部状态栏常驻一句"数据只在本机"属噪音，已去掉）
 const saveFailed = computed(() => store.saveState === 'failed')
@@ -219,9 +209,10 @@ glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
           <h2>
             <span class="step-number">第 {{ stepIndex(currentKey) + 1 }} 步</span>
             {{ currentStep.label }}
+            <!-- 这一步要干什么：紧跟在标题后面（2026-10-07 用户要求），不再放到右上角与说明入口挤在一起 -->
+            <span class="step-hint">{{ currentStep.hint }}</span>
           </h2>
           <span class="step-head-right">
-            <span class="panel-hint">{{ currentStep.hint }}</span>
             <!-- 每一步都能打开同一份《使用说明》（单文件 HTML，新标签页）：界面只留摘要，正文只有一份 -->
             <GuideLink />
           </span>
@@ -243,17 +234,22 @@ glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
       </section>
 
       <section class="card">
-        <h2>运行环境自检</h2>
-        <ul class="checklist">
+        <!-- 运行环境：**单行状态栏**（2026-10-07 用户要求去掉标题）。只留"能影响后续步骤"的浏览器能力，
+             分两行会占掉半屏而其中多数项永远是通过的；内置字表不是环境问题（它是产品的固定内容），
+             写成一句描述放在末尾 -->
+        <ul class="checklist checkline" data-role="env-status">
           <li v-for="check in checks" :key="check.label">
-            <span class="check-name">{{ check.label }}</span>
-            <span class="check-value" :class="check.ok ? 'ok' : 'warn'">{{ check.text }}</span>
+            <span class="check-value" :class="check.ok ? 'ok' : 'warn'">
+              {{ check.ok ? '可用' : '不可用' }} · {{ check.label }}
+            </span>
           </li>
           <li v-if="savedGlyphs && savedGlyphs.glyphs">
-            <span class="check-name">已落盘的字形（关掉浏览器也不会丢）</span>
             <span class="check-value ok" data-role="saved-glyphs">
-              {{ savedGlyphs.pages }} 页 / {{ savedGlyphs.glyphs }} 个字 / {{ (savedGlyphs.bytes / 1048576).toFixed(1) }}MB
+              已落盘 {{ savedGlyphs.pages }} 页 / {{ savedGlyphs.glyphs }} 个字
             </span>
+          </li>
+          <li>
+            <span class="check-value">{{ charsetDesc }}</span>
           </li>
         </ul>
         <p class="hint">

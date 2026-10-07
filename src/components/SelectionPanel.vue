@@ -118,8 +118,9 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
 
 <template>
   <section class="card" :class="{ nested }">
+    <!-- 嵌在第 1 步「用哪些字 → 自定义选字」下面时**不再重复标题**（上面那组单选已经说明了这是什么）；
+         独立使用时（nested 为假）才需要自己的标题 -->
     <h2 v-if="!nested">选字</h2>
-    <h3 v-else>自定义选字</h3>
 
     <p class="panel-hint">
       按 GB2312 分级：一级常用字覆盖日常使用频度约 99.9%；数字、字母与标点单独成一类。

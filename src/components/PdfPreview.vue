@@ -275,7 +275,8 @@ onBeforeUnmount(() => {
       </p>
       <p v-else-if="status === 'rendering' && !pageCount" class="pdf-preview-empty">正在渲染预览…</p>
       <p v-else-if="status === 'error'" class="pdf-preview-empty error">{{ errorText }}</p>
-      <p v-if="status === 'ready'" class="pdf-preview-zoom-tip">点图可放大看细节</p>
+      <!-- 原来这里有一行"点图可放大看细节"：2026-10-07 用户要求去掉（两块预览各挂一句太吵）。
+           点击放大的能力本身保留（画布仍可点开整屏），关闭方式写在放大层的提示里 -->
     </div>
     <!-- 点击放大层：整屏看细节，点任意处或按 Esc 关闭（Teleport 到 body，避免被容器裁掉） -->
     <Teleport to="body">

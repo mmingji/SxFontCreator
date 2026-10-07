@@ -16,6 +16,7 @@ import { maskToPathData } from './traceImage.js'
 import { commandsToPathData, parsePathCommands, pathBBox } from './svgPath.js'
 import { charToCodePoint, classifyChar } from './charset.js'
 import { ensureInlineAsset, hasInlineAssets } from './inlineAssets.js'
+import { FONT_DEFAULTS, OUT_TOLERANCE, glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
 
 // woff2 编码器要一个单独的 wasm（710KB）。**不能**从 node_modules 里 import：
 //   fonteditor-core 的 package.json `exports` 只声明了 `.` 与 `./lib/*`，`fonteditor-core/woff2/woff2.wasm` 会被拦下
@@ -30,17 +31,9 @@ export const DEFAULT_WOFF2_WASM_URL = './woff2.wasm'
 //   实测依据：79 字样本的字面高度中位只有 0.734em，而宋体 0.910em、楷体 0.859em、雅黑 0.956em ——
 //   两个原因叠加：① 书写占格率中位只有书写格的 81.6%（主因，属用户书写习惯，见模板那行要点）；
 //   ② 映射上限 0.9em（旧值 900）。抬到 1000 后同样的笔迹字面 +11%，且**对已经手写好的纸也生效**（重扫即可）。
-export const FONT_DEFAULTS = {
-  unitsPerEm: 1000, // em 方格
-  glyphBox: 1000, // 书写格映射到的边长 = 1em（字面率 100%，与宋体/雅黑的字面率 0.91/0.96 同档）
-  glyphLeft: 0, // 占位框左边距：书写格左边落在 x = 0、右边落在 x = 1000
-  glyphTop: 900, // 书写格顶边映射到 y = 900
-  glyphBottom: -100, // 书写格底边映射到 y = -100（基线在格底上方 0.1em，与旧口径一致：字可以略微下探到基线下）
-  fullWidth: 1000, // 汉字与中文标点的 advanceWidth
-  halfWidth: 500, // 数字与拉丁字母的 advanceWidth
-  turdsize: 2, // 透传给 potrace 的去噪点（1.6 已按面积过滤过，这里只兜底）
-  alphamax: 1
-}
+// 2026-10-07：常量搬到零依赖的 `glyphGeometry.js`（体检模块也要用同一份几何，不能为此加载本模块），
+//   这里**再导出**保持既有引用不变（与 layout.js / templatePdf.js 同一套路）。
+export { FONT_DEFAULTS }
 
 // Unicode 非字符（U+FDD0–U+FDEF 与每个平面末尾的 U+xFFFE / U+xFFFF）：
 // 写进字体的 cmap 会让解析器中断、其后的字形全部丢失（参考项目 2026-09 实测），必须过滤
@@ -137,59 +130,38 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
   // ① 按书写格线性映射：书写格（118 像素见方）→ 占位框（1000×1000 = 1em，字面率 100%），y 轴同时翻转（图像向下 → 字体向上）。
   //    注意要**合并 potrace 自己的 transform**：它的 path 坐标是"像素 × 10"且 y 反向（见 traceImage 的说明），
   //    所以像素坐标 = (c·x + a, d·y + b)。漏掉这一步会让坐标差 10 倍、上下颠倒（实测踩到）。
-  const box = boxInSlice
-  const tr = traced.transform || { a: 0, b: 0, c: 1, d: 1 }
-  const sx = opt.glyphBox / box.width
-  const sy = -opt.glyphBox / box.height
-  const oxFull = (tr.a - box.x) * sx + opt.glyphLeft // 全角时字形左边落在 x = glyphLeft
-  const oy = (tr.b - box.y) * sy + opt.glyphTop // 书写格顶边落在 y = glyphTop
-  // ② 半角字形（数字、拉丁字母）：水平压一半，落进 500 宽的格子（决策 四-3）。垂直不变。
-  //    推导：全角映射 x_tt = x·sx + oxFull；半角 x_half = x_tt·0.5 = x·(sx·0.5) + oxFull·0.5，
+  //    ⚠ 半角字形的推导（决策 四-3）在这里由 glyphMapping 统一实现：
+  //    全角映射 x_tt = x·sx + oxFull；半角 x_half = x_tt·0.5 = x·(sx·0.5) + oxFull·0.5，
   //    即整个书写格 [0,1000] 压成 [0,500] —— 在格子里居中写的数字／字母就落在半角格中心 250，
   //    与系统字体一致（实测 SimSun：'1' advance 500、墨迹 x 113~398，'a' x 43~480，都在 0~500 内）。
   //    **踩过的坑（2026-10-04 修）**：原式写成 (x_tt − 500)·0.5 + 500 = x·(sx·0.5) + oxFull·0.5 + 250，
   //    等于以 em 中心 500 为缩放中心，墨迹落在 250~750 —— 每个半角字都右移 0.25em、字距全乱；
   //    因为样本里全是汉字（没有一个半角字形），这条错误一直没被真件暴露出来。
-  const scaleX = (half ? 0.5 : 1) * tr.c * sx
-  const offsetX = half ? oxFull * 0.5 : oxFull
-  const scaleY = tr.d * sy
-  const offsetY = oy
-
-  // ③ 越界处理：**以"书写格映射出来的设计框"为界**（横向 boxL~boxR、竖向 glyphBottom~glyphTop），
-  //    越出设计框的笔画按"只裁不放大"等比收缩并平移回框内（决策 四-2 ④、四-4）。
-  //    为什么界要用设计框、不用"0~1000 的 em 方格"：书写格底边落在基线下方 0.1em（glyphBottom = −100），
-  //    按 0~1000 判会把**格内**那一段合法笔迹当成越界、把整个字上移 0.1em —— 破坏基线一致性
-  //    （2026-10-04 实测发现：60/79 个字形被"处理"过，其中多数只是被平移、并非真的越界）。
   const bb = pathBBox(traced.cmds)
-  const mappedMinX = bb.minX * scaleX + offsetX
-  const mappedMaxX = bb.maxX * scaleX + offsetX
-  const y1 = bb.minY * scaleY + offsetY
-  const y2 = bb.maxY * scaleY + offsetY
-  const mappedMinY = Math.min(y1, y2)
-  const mappedMaxY = Math.max(y1, y2)
-  const boxL = half ? 0 : opt.glyphLeft
-  const boxR = half ? opt.halfWidth : opt.glyphLeft + opt.glyphBox
-  const outTol = 0.5
+  const box = boxInSlice || { x: 0, y: 0, width, height } // 缺省退化成"整张切片都算书写格"（与 1.6 同口径）
+  const tr = traced.transform || { a: 0, b: 0, c: 1, d: 1 }
+  const mapping = glyphMapping({ boxInSlice: box, half, traceTransform: tr }, opt)
+  const { scaleX, offsetX, scaleY, offsetY } = mapping
+  const { mapped, box: designBox, outside, clampScale } = mapBBoxToDesignBox(bb, mapping, half)
+
+  // ② 越界处理：**以"书写格映射出来的设计框"为界**（决策 四-2 ④、四-4），越出设计框的笔画按
+  //    "只裁不放大"等比收缩并平移回框内。为什么界要用设计框、不用"0~1000 的 em 方格"：
+  //    书写格底边落在基线下方 0.1em（glyphBottom = −100），按 0~1000 判会把**格内**那一段合法笔迹
+  //    当成越界、把整个字上移 0.1em —— 破坏基线一致性（2026-10-04 实测：60/79 个字形被"处理"过，
+  //    其中多数只是被平移、并非真的越界）。
   let k = 1
   let dx = 0
   let dy = 0
-  let clamped = false
-  if (mappedMinX < boxL - outTol || mappedMaxX > boxR + outTol ||
-      mappedMinY < opt.glyphBottom - outTol || mappedMaxY > opt.glyphTop + outTol) {
-    const w = mappedMaxX - mappedMinX
-    const h = mappedMaxY - mappedMinY
-    const boxW = boxR - boxL
-    const boxH = opt.glyphTop - opt.glyphBottom
-    k = Math.min(1, boxW / Math.max(w, boxW), boxH / Math.max(h, boxH))
-    const x0 = mappedMinX * k
-    const x1 = mappedMaxX * k
-    const yy0 = mappedMinY * k
-    const yy1 = mappedMaxY * k
-    if (x0 < boxL) dx = boxL - x0
-    if (x1 + dx > boxR) dx = boxR - x1
-    if (yy0 < opt.glyphBottom) dy = opt.glyphBottom - yy0
-    if (yy1 + dy > opt.glyphTop) dy = opt.glyphTop - yy1
-    clamped = true
+  if (outside) {
+    k = clampScale
+    const x0 = mapped.minX * k
+    const x1 = mapped.maxX * k
+    const yy0 = mapped.minY * k
+    const yy1 = mapped.maxY * k
+    if (x0 < designBox.left) dx = designBox.left - x0
+    if (x1 + dx > designBox.right) dx = designBox.right - x1
+    if (yy0 < designBox.bottom) dy = designBox.bottom - yy0
+    if (yy1 + dy > designBox.top) dy = designBox.top - yy1
   }
   const d = commandsToPathData(traced.cmds, scaleX * k, scaleY * k, offsetX * k + dx, offsetY * k + dy)
   // 最终包围盒：解析回命令再算（供体检与测试断言；d 是自己生成的规范格式，解析成本可忽略）
@@ -198,12 +170,12 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
     empty: false,
     d,
     advanceWidth,
-    clamped,
+    clamped: outside,
     bbox,
     // 度量信息：原始包围盒与最终映射参数 —— 3.2 字形体检（越界 / 偏大偏小）要用，排查也靠它
     metrics: {
       rawBBox: bb,
-      mappedBBox: { minX: mappedMinX, minY: mappedMinY, maxX: mappedMaxX, maxY: mappedMaxY },
+      mappedBBox: mapped,
       scaleX, scaleY, offsetX, offsetY, clampScale: k, clampDx: dx, clampDy: dy,
       traceTransform: tr
     }

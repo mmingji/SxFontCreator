@@ -1,6 +1,7 @@
 <script setup>
 // 第 1 步：选字与出模板（阶段一步骤 1.3 的界面；2026-10-04 按用户要求改造成向导的第一步）
-// 职责：① 选字（当前选字 / 自定义选字两级，选字面板是它的下级）② 选排列方式与参考字字体
+// 职责：① 选用哪些字（**一组三选**：单页试打 / 全部字表 / 自定义选字，2026-10-07 由原来的
+//      「选字 + 生成范围」两组单选合并而来）② 选排列方式与参考字字体
 //   ③ **先看到模板第一页的真实预览**（pdf.js 渲染真实 PDF）④ 生成模板 PDF / 更正册并下载。
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
 // 数据来源：字表来自 src/lib/charset.js（6919 字）；字体来自 referenceFont.js（内置子集或本机字体）。
@@ -17,13 +18,14 @@ const store = useProjectStore()
 const meta = getCharsetMeta()
 const totalPages = Math.ceil(meta.total / LAYOUT.perPage)
 
-// 选字方式（两级里的上级）：用现有选字 / 展开选字面板重新挑（用户 2026-10-04 拍板的口径）
-// 选字面板是这一项的下级 —— 只有选「自定义选字」时才展开，避免默认状态就把整个字网格铺在第一步里
-const pickMode = ref('current')
-
-// 生成范围：**默认单页试打**（用户 2026-10-04 拍板）—— 先打一页确认版式与打印设置，
-// 再打正式的；正式范围（当前选字 / 全量）出模板时会记一个批次，单页试打不记批次
+// 用哪些字出模板：**一组三选**（2026-10-07 用户要求把原来的「选字 + 生成范围」两组单选合并成一组）。
+//   single —— 单页试打：只出第 1 页（前 136 字）+ 自检页，先确认版式与打印设置；**不记批次**
+//   full   —— 全部字表：6919 字全出（按当前排列方式）
+//   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全部字表"等价
+// 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
+// 正式范围（全部字表 / 自定义选字）出模板时会记一个批次，单页试打不记。
 const scope = ref('single')
+const pickerOpen = computed(() => scope.value === 'custom')
 // 字体来源：内置子集 / 用户选的本机字体
 const fontSource = ref('builtin')
 const localFontName = ref('')
@@ -115,23 +117,17 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocumentKeydown)
 })
 
-const selectionHint = computed(() => {
-  if (store.selectedCount) {
-    return '当前选字：' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
-  }
-  return '还没有选字：不选就按全量 ' + meta.total + ' 字出模板（' + totalPages + ' 页）'
-})
-
+// 三选一的提示：每一种都当场说清"这次会排哪些字、多少页"
 const scopeHint = computed(() => {
   if (scope.value === 'single') {
     return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字）+ 打印自检页，先确认版式与打印设置；不记批次'
   }
-  if (scope.value === 'selection') {
+  if (scope.value === 'custom') {
     return store.selectedCount
-      ? '当前选字：' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
-      : '还没有选字 —— 不选字时按全量出'
+      ? '自定义选字：已选 ' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
+      : '自定义选字：还没有选字 —— 一个字都没选时按全部字表 ' + meta.total + ' 字出，下面是选字面板'
   }
-  return '全量：' + meta.total + ' 字／' + totalPages + ' 页'
+  return '全部字表：' + meta.total + ' 字／' + totalPages + ' 页（内置字表全部排进去）'
 })
 
 // 排列方式：默认**按使用频率** —— 最常用的字排在最前，前 2000 字覆盖日常语料 97.1%（约 15 页），
@@ -148,12 +144,12 @@ const orderHint = computed(() => {
   return '字表顺序（拼音）：与做字体网 V4.0 模板一致，同偏旁的字容易挨在一起'
 })
 
-// 实际要排的字：先按"排列方式"定全序，再按范围取子集
-// （试打取前 136 字 —— 频序下就是最常用的 136 字；选字取当前选字；全量取全部）
+// 实际要排的字：先按"排列方式"定全序，再按上面三选一取子集
+// （单页试打取前 136 字 —— 频序下就是最常用的 136 字；自定义选字取已选的字；全部字表取全序）
 function charsForScope() {
   const base = orderMode.value === 'rank' ? getRankOrder() : getAllChars()
   if (scope.value === 'single') return base.slice(0, LAYOUT.perPage)
-  if (scope.value === 'selection') {
+  if (scope.value === 'custom') {
     const picked = Array.from(store.charsForTemplate)
     if (!picked.length) return base
     return orderMode.value === 'rank' ? sortByRank(picked) : picked
@@ -173,9 +169,9 @@ async function pickLocalFont(event) {
     localFont = await loadFontFromFile(file)
     localFontName.value = file.name
     fontSource.value = 'local'
-    // note 说明"格式被怎么处理了"（如从字体集合里取用了第几个），有就带上
-    const note = localFont.note ? '，' + localFont.note : ''
-    setMessage('已选用本机字体：' + file.name + '（' + localFont.label + note + '；只在本机内存中使用）', 'info')
+    // 这里**不再补一条"已选用本机字体…"的提示**（2026-10-07 用户要求去掉）：上面的单选项已经回显了文件名，
+    // 同一件事说两遍反而把真正要看的信息（生成结果 / 错误原因）挤下去
+    setMessage('')
   } catch (e) {
     localFont = null
     localFontName.value = ''
@@ -314,26 +310,18 @@ async function generateCorrectionBook() {
 
 <template>
   <div class="step-body">
-    <!-- 选字：两级里的上级。选字面板是它的下级，只有选「自定义选字」时才展开 -->
+    <!-- 用哪些字：**一组三选**（2026-10-07 把原来的「选字」与「生成范围」两组单选合并成这一组；
+         选字面板只在「自定义选字」时展开，避免默认状态就把整个字网格铺在第一步里） -->
     <div class="panel-row">
       <div class="panel-field">
-        <span class="field-label">选字</span>
-        <label class="radio"><input v-model="pickMode" type="radio" value="current" :disabled="busy" />当前选字</label>
-        <label class="radio"><input v-model="pickMode" type="radio" value="custom" :disabled="busy" />自定义选字</label>
-        <span class="panel-hint">{{ selectionHint }}</span>
-      </div>
-    </div>
-    <SelectionPanel v-if="pickMode === 'custom'" nested />
-
-    <div class="panel-row">
-      <div class="panel-field">
-        <span class="field-label">生成范围</span>
+        <span class="field-label">用哪些字</span>
         <label class="radio"><input v-model="scope" type="radio" value="single" :disabled="busy" />单页试打</label>
-        <label class="radio"><input v-model="scope" type="radio" value="selection" :disabled="busy" />当前选字</label>
-        <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全量</label>
+        <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全部字表（{{ meta.total }} 字）</label>
+        <label class="radio"><input v-model="scope" type="radio" value="custom" :disabled="busy" />自定义选字</label>
         <span class="panel-hint">{{ scopeHint }}</span>
       </div>
     </div>
+    <SelectionPanel v-if="pickerOpen" nested />
 
     <div class="panel-row">
       <div class="panel-field">
