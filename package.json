@@ -11,6 +11,7 @@
     "charset": "node scripts/build-charset.mjs",
     "charrank": "node scripts/build-char-rank.mjs",
     "font-subset": "node scripts/build-font-subset.mjs",
+    "handwriting-subset": "node scripts/build-handwriting-subset.mjs",
     "inspect:os2": "node scripts/inspect-font-os2.mjs",
     "test:smoke": "node test/smoke-app.mjs",
     "test:charset": "node test/charset.mjs",

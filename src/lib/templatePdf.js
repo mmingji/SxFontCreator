@@ -67,21 +67,23 @@ function drawRegisterMarks(page, pageNumber, batchCode = 0) {
 // 印在 PDF 上的所有文案集中在这里：**每个字符都必须落在字表 6919 字内**，
 // 否则嵌入子集字体没有该字形，会印成方块（踩过两次：`·`、`%`，以及 ASCII 空格都不在字表里）。
 // 中文与数字之间也不要加空格 —— 空格同样不在字表内。测试里有断言兜住。
-// 表格上方那一行提示（**每页都印**）：把"打印 + 书写 + 扫描"的关键点压成一行 —— 打印设置（实际大小、
-// 不勾无边距）、用笔（0.5mm 黑色中性笔）、写法（居中、把格子写满、笔画到格子边但别出格、不描不改）、
-// 纸张（防翘边折叠受潮）、扫描设置（照片模式、彩色、300dpi）。原来只在页脚左侧印一句打印要求，位置偏、
-// 容量只有约 40 字（2026-10-03 按用户要求改为顶部一行、并删掉页脚那句，避免同一件事在纸上说两遍）。
-// **写法的措辞迭代（两次都因为"同一句话会被读成相反的意思"）**：① 最初写"笔画最好顶着田字格"——
-// 容易被理解成"要写出格"，2026-10-04 改成"笔画别出田字格"；② 但装机实测发现字普遍写小（墨迹高度中位
-// 只有书写格的 81.6%，清单 一-5），而"别出田字格"读起来只剩"别写出去"、没有"要写满"的意思，
-// 所以 2026-10-04 再改为"**居中写满格子(笔画贴到格子边、别出格)**"—— 一句话里同时给出"写满"与"别出格"。
-// **2026-10-07 两行 → 一行**：当天先按"加一句写错用红笔圈参考字"拆成两行，随后用户给了定稿文案并要求
-//   **不换行**（纸面上就是一行），文案同时收敛了措辞（"A4彩打""居中写满(贴格边、别出格)"）并把分隔符
-//   换成半角逗号 / 分号以便在一行内读得更紧凑。实测 8pt 下**宽 604.7pt**，远小于两个上角定位块内边界
-//   之间的 785pt —— 一行放得下；数组形态保留（`drawHint` 支持多行，将来要拆随时可拆，行距 1.35 倍字号）。
-//   字符经断言确认**全在字表内**（`PAGE_HINT` 仍导出 = 各行拼接，供"文案字符是否都在字表内"这类整体判断）。
+// 表格上方那一行提示（**每页都印**）：把"打印 + 书写 + 扫描"的关键点压成一行 —— 打印设置（A4 彩打、
+// 不缩放、不勾无边距）、用笔（0.5mm 黑色中性笔）、写法（居中书写、别出格、不描不改）、纠错（写错用红笔
+// 圈参考字）、纸张（防翘边折叠受潮）、扫描设置（照片模式、彩色、300dpi）。原来只在页脚左侧印一句打印要求，
+// 位置偏、容量只有约 40 字（2026-10-03 按用户要求改到顶部，并删掉页脚那句 —— 同一件事不在纸上说两遍）。
+// **写法的措辞迭代（每一次都是同一句话被读成了别的意思，或口径本身不够准）**：① "笔画最好顶着田字格"
+// （易读成"要写出格"）→ ② "笔画别出田字格"（2026-10-04；装机实测发现字普遍写小、墨迹高度中位只有书写格的
+// 81.6%，清单 一-5，而它只剩"别写出去"的意思）→ ③ "居中写满格子(笔画贴到格子边、别出格)"（2026-10-04，
+// 一句话同时给出"写满"与"别出格"）→ ④ **"居中书写,别出格"（2026-10-07 用户定稿）**：用户指出"笔画少的字
+// 总不能也写满"（如"日""一""小"，硬撑满反而难看、成字后大小不匀；参照做字体网的书写要求 —— 大部分字刚刚
+// 触到格线为宜，本身小的字不顶格），所以**纸面只留"居中书写、别出格"这条普适规则**，"笔画多的字撑满格、
+// 天生小的字居中写小"这层细则放到界面详细说明里分开讲（决策 一-4 ⑤）。
+// **2026-10-07 两行 → 一行**：当天先按"加一句写错用红笔圈参考字"拆成两行，随后用户给定稿文案并要求
+//   **不换行**（纸面上就是一行），分隔符换成半角逗号 / 分号，一行内读起来更紧凑。实测 8pt 下**宽 569.9pt**（85 字），
+//   远小于两个上角定位块内边界之间的 785pt；数组形态保留（`drawHint` 支持多行，将来要拆随时可拆，
+//   行距 1.35 倍字号）。字符经断言确认**全在字表内**（`PAGE_HINT` 仍导出 = 各行拼接，供整体判断用）。
 export const PAGE_HINT_LINES = [
-  'A4彩打,不缩放,不勾无边距;0.5mm黑色中性笔,居中写满(贴格边、别出格),不描不改,写错用红笔圈参考字,防止纸张翘边,折叠,受潮;扫描用照片模式,图像类型彩色,300dpi。'
+  'A4彩打,不缩放,不勾无边距;0.5mm黑色中性笔,居中书写,别出格,不描不改,写错用红笔圈参考字,防止纸张翘边,折叠,受潮;扫描用照片模式,图像类型彩色,300dpi。'
 ]
 export const PAGE_HINT = PAGE_HINT_LINES.join('')
 
@@ -359,4 +361,75 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
 
   const bytes = await pdf.save()
   return { bytes, pageCount }
+}
+
+// 填写示意页的绘制参数（导出给测试断言）。
+// 这一页**不进正式模板 PDF**：只由界面在第 1 步与模板预览并排显示，让用户一眼看到"这个格子里应该写成什么样"
+// （用户 2026-10-07 的要求：和模板一样的一页，只是每个书写格里已经用工整的手写体写好了那个字）。
+export const SAMPLE_PAGE = {
+  // 示范字的字号 = 书写格边长 × 1.0（即 1em = 格边长）。依据（2026-10-07 实测悠哉字体子集里 6812 个汉字的
+  // 墨迹外框）：中位高 0.889em / 宽 0.879em、p90 0.924 / 0.917、最大 0.977 / 0.972 —— 取 1em = 格边长时
+  // **最大的字也不会出格**，而大部分字落在"刚刚触到格子线"附近，正是决策 一-13 的口径（笔画少的字自然不满格）。
+  fontScale: 1,
+  // 示范笔迹色：接近黑色中性笔。比参考字的 #A6A6A6 深得多，一眼分得清"印上去的参考字"与"写上去的示范字"
+  inkColor: { type: 'RGB', red: 0.13, green: 0.13, blue: 0.13 }
+}
+
+// 在书写格里画一个示范手写字：字号统一（见 SAMPLE_PAGE.fontScale），位置按**该字自己的墨迹外框**居中 ——
+// 与参考字的居中口径一致（决策 一-4 ①），这样"一"与"囊"都端坐在格心，笔画多的字自然贴近格边。
+function drawSampleChar(page, cell, char, font, glyphBoxes) {
+  const box = writingBoxRect(cell)
+  const size = LAYOUT.writingBox * SAMPLE_PAGE.fontScale
+  const centerX = box.x + box.width / 2
+  const centerY = box.y + box.height / 2
+  const gb = glyphBoxes ? glyphBoxes.get(char) : null
+  const midY = gb
+    ? (gb.top + gb.bottom) / 2
+    : (LAYOUT.referenceTypicalTop + LAYOUT.referenceTypicalBottom) / 2
+  const x = gb
+    ? centerX - ((gb.left + gb.right) / 2) * size
+    : centerX - font.widthOfTextAtSize(char, size) / 2
+  page.drawText(char, {
+    x,
+    y: centerY - midY * size,
+    size,
+    font,
+    color: SAMPLE_PAGE.inkColor
+  })
+}
+
+/**
+ * 生成"填写示意"PDF（单页，仅界面预览用，**不进正式模板**）
+ * 与模板**同版式**（同样的 17 × 8 字位、参考字、书写格与田字格），差别只有两处：
+ *   ① 每个书写格里已经用工整手写体写好了那一格的字（示范"怎么写"）；
+ *   ② **不画四角定位块与页脚编码标记** —— 它是给人看的，不是给机器认的，也避免被误当成可打印的模板。
+ * @param {object} options
+ * @param {string[]} [options.chars] 本页要排的字（超过一页只取前 136 个，与模板第一页对应）
+ * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（与模板同一字体）
+ * @param {ArrayBuffer|Uint8Array} options.sampleFontBytes 示范手写体字节（内置悠哉字体子集）
+ * @returns {Promise<{bytes:Uint8Array, pageCount:number, glyphCount:number, fontScale:number}>}
+ */
+export async function buildSamplePagePdf({ chars, fontBytes, sampleFontBytes }) {
+  if (!sampleFontBytes) throw new Error('生成填写示意失败：没有手写示范字体')
+  const list = (chars && chars.length ? chars : getAllChars()).slice(0, LAYOUT.perPage)
+
+  const pdf = await PDFDocument.create()
+  pdf.setTitle('SxFontCreator 填写示意')
+  pdf.setCreator('SxFontCreator')
+  pdf.registerFontkit(fontkit)
+  const font = await pdf.embedFont(fontBytes, { subset: true })
+  const sampleFont = await pdf.embedFont(sampleFontBytes, { subset: true })
+  const glyphBoxes = buildGlyphBoxTable(fontBytes)
+  const sampleBoxes = buildGlyphBoxTable(sampleFontBytes)
+
+  const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
+  drawGrid(page)
+  for (let i = 0; i < list.length; i++) {
+    const cell = cellRect(i)
+    drawReferenceChar(page, cell, list[i], font, glyphBoxes)
+    drawSampleChar(page, cell, list[i], sampleFont, sampleBoxes)
+  }
+
+  const bytes = await pdf.save()
+  return { bytes, pageCount: 1, glyphCount: list.length, fontScale: SAMPLE_PAGE.fontScale }
 }

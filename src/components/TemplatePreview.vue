@@ -5,10 +5,10 @@
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
 // 数据来源：字表来自 src/lib/charset.js（6919 字）；字体来自 referenceFont.js（内置子集或本机字体）。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf } from '../lib/templatePdf.js'
+import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf, buildSamplePagePdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
 import { CHAR_RANK_META, getRankOrder, sortByRank } from '../lib/charRank.js'
-import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadFontFromFile } from '../lib/referenceFont.js'
+import { BUILTIN_FONT_LABEL, HANDWRITING_FONT_LABEL, loadBuiltinFont, loadHandwritingFont, loadFontFromFile } from '../lib/referenceFont.js'
 import { useProjectStore } from '../store/project.js'
 import SelectionPanel from './SelectionPanel.vue'
 import PdfPreview from './PdfPreview.vue'
@@ -40,6 +40,39 @@ const lastResult = ref(null) // { name, pages, bytes }
 // 交给 PdfPreview 用 pdf.js 渲染第 1 页 —— 用户下单前就能看到"打出来长什么样"
 const previewBytes = ref(null)
 const previewBusy = ref(false)
+
+// 填写示意（用户 2026-10-07 要求）：与模板**同版式**的一页，但每个书写格里已经用工整手写体写好了那个字，
+// 让用户一眼看到"这个格子应该写成什么样"（口径见《决策记录》一-13：笔画多的字撑满格、天生小的字居中写小）。
+// 三点约束：① 只用**第 1 页的 136 个字**（与模板预览第 1 页同一批字，两边一一对应）；
+//   ② **不进正式模板 PDF**（它是给人看的示范，不是打印件，也不画定位块与页脚编码）；
+//   ③ 参考字用当前选的字体，示范字固定用内置手写体子集（悠哉字体，OFL-1.1）。
+const sampleBytes = ref(null)
+const sampleBusy = ref(false)
+const sampleNote = ref('')
+// 手写体子集 3.84MB：一个会话只 fetch 一次，之后所有示意页复用同一份字节
+let handwritingFont = null
+async function resolveHandwritingFont() {
+  if (!handwritingFont) handwritingFont = await loadHandwritingFont()
+  return handwritingFont
+}
+async function refreshSample(fontBytes, chars) {
+  sampleBusy.value = true
+  try {
+    const sampleFont = await resolveHandwritingFont()
+    const out = await buildSamplePagePdf({
+      chars: chars.slice(0, LAYOUT.perPage),
+      fontBytes,
+      sampleFontBytes: sampleFont
+    })
+    sampleBytes.value = out.bytes
+    sampleNote.value = ''
+  } catch (e) {
+    // 示意页失败不影响模板预览与生成：只在这一块显示中文原因
+    sampleNote.value = '填写示意生成失败：' + (e && e.message ? e.message : e)
+  } finally {
+    sampleBusy.value = false
+  }
+}
 
 // 「本机字体怎么选」的浮窗：这段说明较长（Windows 字体目录带「系统」属性、两条绕开办法、macOS 目录），
 // 常驻会把面板撑长，所以收进问号按钮后面，点击展开；点击别处或按 Esc 收起。
@@ -199,8 +232,10 @@ async function refreshPreview() {
   if (previewBusy.value) return
   previewBusy.value = true
   try {
-    const { out } = await buildCurrentPdf()
+    const { out, font, chars } = await buildCurrentPdf()
     previewBytes.value = out.bytes
+    // 示意页跟在模板预览之后生成：同一批字的第 1 页 + 同一个参考字字体（换了本机字体，两页一起变）
+    await refreshSample(font.bytes, chars)
   } catch (e) {
     setMessage('预览生成失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
@@ -354,13 +389,31 @@ async function generateCorrectionBook() {
         <span class="field-label">打印预览</span>
         <span class="panel-hint">
           按当前设置生成的模板、第 1 页的真实渲染；改范围 / 排列方式 / 选字后会自动重出。
+          右边「填写示意」用内置手写体（{{ HANDWRITING_FONT_LABEL }}）在书写格里示范写法：笔画多的字撑满格、
+          笔画少的字居中写小（口径见第 1 步下方的「书写要求」）。<strong>它只看不打印</strong>。
           <span v-if="previewBusy">正在生成预览…</span>
         </span>
         <button class="text" type="button" :disabled="previewBusy || busy" @click="refreshPreview">更新预览</button>
       </div>
     </div>
-    <!-- 预览画布单独占一整行：塞进上面的 flex 行会让它被挤在右侧、左边留一大片空白 -->
-    <PdfPreview :bytes="previewBytes" :loading="previewBusy" />
+    <!-- 两块预览并排：左边是**真会打印出来的模板**，右边是"照着写好的样子"（填写示意）。
+         版式都由 LAYOUT 统一控制，两边逐格对应；窄窗口自动改为上下堆叠（style.css 的 .preview-pair） -->
+    <div class="preview-pair">
+      <PdfPreview
+        :bytes="previewBytes"
+        :loading="previewBusy"
+        :max-width="640"
+        title="模板预览（第 1 页与实际打印完全一致）"
+      />
+      <PdfPreview
+        :bytes="sampleBytes"
+        :loading="sampleBusy"
+        :max-width="640"
+        title="填写示意（书写格里已写好示范字，只看不打印）"
+        empty-text="填写示意还没生成出来"
+      />
+    </div>
+    <p v-if="sampleNote" class="panel-message error">{{ sampleNote }}</p>
 
     <div class="panel-actions">
       <button class="primary" :disabled="busy" @click="generateTemplate">生成模板 PDF</button>
@@ -380,8 +433,9 @@ async function generateCorrectionBook() {
     </p>
 
     <p class="panel-hint">
-      <strong>书写要求</strong>（模板每页顶部也印了这些要点）：用 0.5mm 黑色中性笔，<strong>居中写满格子</strong>、
-      大小匀称；<strong>笔画贴到格子边，但不要写出格</strong>（写小了字会显小 —— 实测同一字号下，写满格子的字面才赶得上系统字体）；
+      <strong>书写要求</strong>（模板每页顶部也印了这些要点）：用 0.5mm 黑色中性笔，<strong>居中书写、大小匀称、别出格</strong>。
+      <strong>笔画多的字</strong>：写到刚刚触到格子边为宜（撑满格，但不要写出格）—— 这样整套字的大小才均一；
+      <strong>笔画少的字</strong>（如"日""一""小"）：本身就该写小一些，居中写即可，硬撑满格反而难看、成字后大小不匀。
       不描不改、一笔写成；<strong>写错的字用红笔把这一格的参考字圈起来</strong>（统一圈<strong>参考字</strong>，不要圈书写格 ——
       第 4 步会按圈到的顺序生成更正册）；写好的纸别翘边、折叠或受潮 —— 纸张一旦变形，透视校正也救不回来。
     </p>

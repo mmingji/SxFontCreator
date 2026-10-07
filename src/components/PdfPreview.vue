@@ -19,7 +19,11 @@ const props = defineProps({
   // 调用方是否正在生成 PDF（生成期间显示"正在生成预览"而不是"还没有预览"）
   loading: { type: Boolean, default: false },
   // 预览画布的最大宽度（px）；实际按容器宽度自适应，超过这个值就居中留白
-  maxWidth: { type: Number, default: 900 }
+  maxWidth: { type: Number, default: 900 },
+  // 标题：第 1 步并排两块预览（模板 / 填写示意），各自要写清自己是什么
+  title: { type: String, default: '模板预览（第 1 页与实际打印完全一致）' },
+  // 没有字节时的占位文案（如填写示意还没生成出来）
+  emptyText: { type: String, default: '' }
 })
 
 const canvasRef = ref(null)
@@ -175,7 +179,7 @@ onBeforeUnmount(() => {
 <template>
   <div ref="wrapRef" class="pdf-preview" :data-pages="pageCount" :data-page-no="pageNo" :data-status="status">
     <div class="pdf-preview-head">
-      <span class="pdf-preview-title">模板预览（第 1 页与实际打印完全一致）</span>
+      <span class="pdf-preview-title">{{ title }}</span>
       <!-- 翻页条**常驻渲染**（单页时按钮禁用）：页数是测试与排障都要看的量，不给它加 v-if -->
       <span class="pdf-preview-pager">
         <button class="text" type="button" :disabled="pageNo <= 1 || status === 'rendering'" @click="goto(-1)">上一页</button>
@@ -187,7 +191,7 @@ onBeforeUnmount(() => {
     <div class="pdf-preview-body">
       <canvas ref="canvasRef" class="pdf-preview-canvas" :class="{ hidden: status !== 'ready' }"></canvas>
       <p v-if="status === 'idle'" class="pdf-preview-empty">
-        {{ loading ? '正在生成模板，稍后显示预览…' : '还没有预览：先在下面点「生成模板 PDF」或「更新预览」' }}
+        {{ loading ? '正在生成，稍后显示预览…' : (emptyText || '还没有预览：先在下面点「生成模板 PDF」或「更新预览」') }}
       </p>
       <p v-else-if="status === 'rendering' && !pageCount" class="pdf-preview-empty">正在渲染预览…</p>
       <p v-else-if="status === 'error'" class="pdf-preview-empty error">{{ errorText }}</p>

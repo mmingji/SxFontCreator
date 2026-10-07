@@ -523,6 +523,19 @@ button.text:hover {
   font-size: 13px;
 }
 
+/* 第 1 步的两块预览并排（左：模板 / 右：填写示意）：宽屏左右各半，窄屏自动堆叠 */
+.preview-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.preview-pair > * {
+  flex: 1 1 460px;
+  min-width: 300px;
+}
+
 /* ── 模板 PDF 预览（pdf.js 渲染真实 PDF 的第一页）────────────────────── */
 
 .pdf-preview {
