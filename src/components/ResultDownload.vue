@@ -3,12 +3,15 @@
 // 职责：① 打包 zip（字体 TTF/woff/woff2 + font.css + 使用说明.txt + 可双击的样张预览页）
 //   ② 也能单独下载 TTF 与 CSS ③ 安装与使用说明（Word / PS / 网页）④ 备份提醒（决策 五-3）。
 // 打包来源：优先用内存里刚生成的字体字节；**刷新后内存里没有就当场重建一次**（不是静默失败，界面给进度）。
-import { computed, ref } from 'vue'
+// 网页预览（FontPreview）：用同一份字节，不装机也能看效果（决策 四-8）—— 放在下载按钮**上方**，
+//   让用户先确认观感、再决定拿走；刷新后内存里没有字节时不自动重建，由用户点「加载预览」触发。
+import { computed, onMounted, ref } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { buildFontFromPlan, getLastBuild } from '../lib/buildFont.js'
 import { buildGuideText, buildPreviewHtml, packFontZip } from '../lib/fontPack.js'
 import { downloadBytes, downloadText } from '../lib/download.js'
 import { buildFinalGlyphPlan } from '../lib/scanFlow.js'
+import FontPreview from './FontPreview.vue'
 
 const store = useProjectStore()
 const busy = ref(false)
@@ -27,6 +30,26 @@ const plan = computed(() => buildFinalGlyphPlan(store.scan.pages, {
 function setMessage(text, type) {
   message.value = text
   messageType.value = type || 'info'
+}
+
+// 预览可用的字体字节：内存里刚生成的产物（`buildFont` 的模块级暂存）。
+// 为什么用 ref 而不是直接用 getLastBuild()：那份暂存不在响应式系统里，改了界面不会重渲染。
+const previewBytes = ref(null)
+function syncPreviewBytes() {
+  const b = getLastBuild()
+  previewBytes.value = b && b.ttf ? b.ttf : null
+}
+onMounted(syncPreviewBytes)
+
+// 预览区点「加载预览」：重建一次字节再交给预览（全量约 30 秒，所以做成按钮而不是自动跑）
+async function loadPreview() {
+  if (busy.value) return
+  try {
+    await ensureBuild()
+    syncPreviewBytes()
+  } catch (e) {
+    setMessage('重建字体失败：' + (e && e.message ? e.message : e), 'error')
+  }
 }
 
 // 取产物字节：内存里有就用，没有就重建
@@ -62,6 +85,7 @@ async function ensureBuild() {
       skipped: rebuilt.skipped.length,
       missing: rebuilt.missing.length
     })
+    syncPreviewBytes() // 重建出来的字节同时交给网页预览用
     return rebuilt
   } finally {
     busy.value = false
@@ -152,6 +176,19 @@ async function downloadSingle(kind) {
         <strong>使用说明.txt</strong>、<strong>preview.html</strong>（双击就能看样张）；
         字体族名 <strong>{{ font.familyName }}</strong>，收录 {{ font.coverage.total }} 个字。
       </p>
+
+      <!-- 网页字体预览（决策 四-8）：用刚生成的字节当场注册，先看效果再下载 -->
+      <div class="card nested">
+        <h3>这套字体长什么样（网页预览，不装机也能看）</h3>
+        <FontPreview
+          :bytes="previewBytes"
+          :covered-chars="font.coverage ? font.coverage.chars : []"
+          :family-name="font.familyName || ''"
+          :loading="busy"
+          :loading-text="busy ? stage + '（' + progress.done + ' / ' + progress.total + ' 个字形）' : ''"
+          @request-bytes="loadPreview"
+        />
+      </div>
 
       <div class="panel-actions">
         <button class="primary" :disabled="busy" @click="downloadZip">下载 zip（推荐）</button>
