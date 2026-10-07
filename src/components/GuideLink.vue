@@ -6,6 +6,7 @@
 // 相对路径在 http 与 file:// 下都指向同一目录，不会因为换形态而失效。
 import { ref } from 'vue'
 import { downloadText } from '../lib/download.js'
+import { ensureInlineAsset, hasInlineAssets } from '../lib/inlineAssets.js'
 
 const GUIDE_URL = './使用说明.html'
 const note = ref('')
@@ -13,13 +14,24 @@ const note = ref('')
 async function saveLocal() {
   note.value = ''
   try {
-    const res = await fetch(GUIDE_URL)
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const text = await res.text()
+    // 交付形态（file://）下 fetch 同目录文件会被拦，但《使用说明》的内容在构建时也内联了一份
+    let text = null
+    if (hasInlineAssets()) {
+      try {
+        text = await ensureInlineAsset('guide-html')
+      } catch (e) {
+        text = null
+      }
+    }
+    if (!text) {
+      const res = await fetch(GUIDE_URL)
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      text = await res.text()
+    }
     downloadText(text, 'SxFontCreator-使用说明.html', 'text/html;charset=utf-8')
     note.value = '已保存'
   } catch (e) {
-    // file:// 下 fetch 同目录文件可能被浏览器拦下：给中文提示，引导用浏览器自带另存
+    // 两条路都取不到时给中文提示，引导用浏览器自带另存
     note.value = '保存失败：请在说明页里用浏览器的「另存为」（' + (e && e.message ? e.message : e) + '）'
   }
 }

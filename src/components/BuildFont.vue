@@ -66,7 +66,7 @@ async function build() {
       items: plan.value.items,
       meta: { ...store.meta },
       batchId: store.scan.batchId,
-      woff2WasmUrl: '/woff2.wasm',
+      woff2WasmUrl: './woff2.wasm',
       onStage: (text) => stage.value = text,
       onProgress: (done, total) => { progress.value = { done, total } }
     })

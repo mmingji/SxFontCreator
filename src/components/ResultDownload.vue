@@ -64,7 +64,7 @@ async function ensureBuild() {
       items: plan.value.items,
       meta: { ...store.meta },
       batchId: store.scan.batchId,
-      woff2WasmUrl: '/woff2.wasm',
+      woff2WasmUrl: './woff2.wasm',
       onStage: (t) => { stage.value = t },
       onProgress: (done, total) => { progress.value = { done, total } }
     })

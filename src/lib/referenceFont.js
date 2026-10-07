@@ -5,7 +5,10 @@
 // 格式支持（2026-09-29 扩展）：ttf / otf 直接用；ttc 由 fontFormat.js 零依赖提取出单个字体；
 //   woff 解包成 sfnt；woff2 明确不支持并给中文提示（见 fontFormat.js 顶部说明与实测结论）。
 // 数据去向：字体字节只传给模板生成模块，用于嵌入 PDF；本模块不写任何存储。
+// file:// 形态（交付形态）：同目录文件读不了（清单 三-8 实测 fetch 被拦），
+//   所以两个内置子集在构建期被内联成 `assets/inline-font-*.js`，运行时按需加载（见 inlineAssets.js）。
 import { normalizeFontBytes } from './fontFormat.js'
+import { ensureInlineBytes } from './inlineAssets.js'
 
 export const BUILTIN_FONT_URL = './fonts/lxgw-wenkai-subset.ttf'
 export const BUILTIN_FONT_LABEL = '内置楷体（霞鹜文楷子集）'
@@ -17,8 +20,24 @@ export const BUILTIN_FONT_LABEL = '内置楷体（霞鹜文楷子集）'
 export const HANDWRITING_FONT_URL = './fonts/yozai-subset.ttf'
 export const HANDWRITING_FONT_LABEL = '悠哉字体（手写体子集）'
 
-// 按 URL 取字体字节：两条内置字体走同一条路径，失败时都给出中文原因（原错误码放括号里便于排查）
+// 两条内置字体各自对应的内联资源名（构建期约定，见 vite.config.js 的 INLINE_ASSETS）
+const INLINE_BY_URL = {
+  [BUILTIN_FONT_URL]: 'font-lxgw',
+  [HANDWRITING_FONT_URL]: 'font-yozai'
+}
+
+// 按 URL 取字体字节：先看构建期有没有把它内联进来（交付形态走这条），没有才走 fetch（dev / http 形态）。
+// 失败时都给出中文原因（原错误码放括号里便于排查）
 async function loadFontBytes(url, what) {
+  const inlineName = INLINE_BY_URL[url]
+  if (inlineName) {
+    try {
+      const bytes = await ensureInlineBytes(inlineName)
+      if (bytes && bytes.byteLength) return bytes
+    } catch (e) {
+      // 内联资源取不到就继续走下面的 fetch；两条都失败时由 fetch 那条给中文提示
+    }
+  }
   let res
   try {
     res = await fetch(url)

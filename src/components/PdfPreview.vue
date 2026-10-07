@@ -12,6 +12,7 @@
 //   ② **旧文档要等新文档就绪后再销毁**，且每次换字节都用一个 token 作废在途的那一轮 ——
 //      否则会出现"上一轮把新一轮的渲染任务取消掉"的竞态，界面停在"正在渲染预览…"。
 import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { ensureInlineBlobUrl, hasInlineAssets } from '../lib/inlineAssets.js'
 
 const props = defineProps({
   // 模板 PDF 的字节（Uint8Array）；为空时显示占位提示
@@ -39,9 +40,25 @@ function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
       const pdfjs = await import('pdfjs-dist')
-      // worker 走 vite 的 ?url：构建时把它当静态资源发出来（与主包分开，不拖慢首屏）
-      const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
-      pdfjs.GlobalWorkerOptions.workerSrc = worker.default
+      // worker 的来源分两种形态（决策 六-4 的交付形态是 file:// 版）：
+      //   ① 内联形态（交付产物）：worker 的字节被构建期内联，这里转成 **Blob URL** ——
+      //      file:// 下 `new Worker('./assets/pdf.worker.min.mjs')` 会被浏览器拦下
+      //      （实测报 `cannot be accessed from origin 'null'`，清单 三-8），而 Blob URL 可用；
+      //      pdf.js 只要求 workerSrc 是**字符串 URL**，所以这条路成立。
+      //   ② 普通形态（dev 服务器）：走 vite 的 ?url，它把 worker 作为独立资源发出来，不拖慢首屏。
+      let workerSrc = null
+      if (hasInlineAssets()) {
+        try {
+          workerSrc = await ensureInlineBlobUrl('pdf-worker', 'text/javascript')
+        } catch (e) {
+          workerSrc = null // 取不到就退回 ?url；两条都不行时 pdf.js 自己会报错，界面有中文兜底
+        }
+      }
+      if (!workerSrc) {
+        const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+        workerSrc = worker.default
+      }
+      pdfjs.GlobalWorkerOptions.workerSrc = workerSrc
       return pdfjs
     })()
   }

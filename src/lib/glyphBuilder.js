@@ -15,11 +15,15 @@ import fonteditor from 'fonteditor-core'
 import { maskToPathData } from './traceImage.js'
 import { commandsToPathData, parsePathCommands, pathBBox } from './svgPath.js'
 import { charToCodePoint, classifyChar } from './charset.js'
+import { ensureInlineAsset, hasInlineAssets } from './inlineAssets.js'
 
-// woff2 编码器要一个单独的 wasm（727KB）。**不能**从 node_modules 里 import：
+// woff2 编码器要一个单独的 wasm（710KB）。**不能**从 node_modules 里 import：
 //   fonteditor-core 的 package.json `exports` 只声明了 `.` 与 `./lib/*`，`fonteditor-core/woff2/woff2.wasm` 会被拦下
-//   （实测报 Missing specifier）。所以把它放进 public/（构建时复制到产物根目录），运行时按 URL 加载。
-export const DEFAULT_WOFF2_WASM_URL = '/woff2.wasm'
+//   （实测报 Missing specifier）。所以把它放进 public/，运行时按 URL 加载。
+// 路径用**相对**的 './woff2.wasm'（不是 '/woff2.wasm'）：交付形态是 file:// 双击打开，
+//   绝对路径会被解析成 `file:///woff2.wasm` 而指向磁盘根目录；相对路径在 http 与 file:// 下都指向产物目录。
+// file:// 下连相对路径也读不了（清单 三-8：fetch 被拦）—— 那种形态改用构建期内联的 wasm（见下）。
+export const DEFAULT_WOFF2_WASM_URL = './woff2.wasm'
 
 // 字体几何参数（取值型参数：改这里要同步《决策记录》四-2 / 四-3 与《实施计划》1.9）
 // 2026-10-04 调整（清单 一-5：装机实测"同等字号观感偏小"）：书写格的映射上限由 900 抬到 1000。
@@ -207,9 +211,23 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
 }
 
 let woff2Ready = null
-// 初始化 woff2 的 wasm（首次生成 woff2 时加载；默认取 public/woff2.wasm，调用方可传别的 URL）
+// 解析 woff2 编码器的 wasm 地址：内联形态（file:// 交付产物）用构建期内联的字节拼成 **data URL**
+//   （emscripten 自己会去取这个 URL，file:// 下只有 data URL 能被它取到）；其余形态用相对路径的文件。
+async function resolveWoff2WasmUrl(wasmUrl) {
+  if (hasInlineAssets()) {
+    try {
+      const b64 = await ensureInlineAsset('woff2-wasm')
+      if (b64) return 'data:application/wasm;base64,' + b64
+    } catch (e) {
+      // 内联取不到就退回文件路径；真不可用时 buildGlyphFont 会把 woff2 记成"未产出"而不是整体失败
+    }
+  }
+  return wasmUrl || DEFAULT_WOFF2_WASM_URL
+}
+
+// 初始化 woff2 的 wasm（首次生成 woff2 时加载；调用方可传别的 URL 覆盖）
 export async function ensureWoff2Ready(wasmUrl) {
-  if (!woff2Ready) woff2Ready = fonteditor.woff2.init(wasmUrl || DEFAULT_WOFF2_WASM_URL)
+  if (!woff2Ready) woff2Ready = resolveWoff2WasmUrl(wasmUrl).then((url) => fonteditor.woff2.init(url))
   await woff2Ready
 }
 
