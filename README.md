@@ -10,14 +10,15 @@
 ```
 npm install            # 若报 npm 缓存目录权限错误（EPERM），改用：npm install --cache .npm-cache
 npm run dev            # 开发服务，浏览器访问 http://localhost:5173
-npm run build          # 构建到 dist/
+npm run build          # 构建到 dist/（ES module 多文件，配本地静态服务用）
+npm run build:file     # 构建到 dist-file/（IIFE 单包，为的是能 file:// 双击打开，见 vite.config.js）
 npm run charset        # 重新生成字表（读做字体网 V4.0 的 GBK 字序文件，源文件不入库）
 npm run charrank       # 重新生成频序数据（Jun Da 字频表，源文件是 GBK、缓存于 .font-sources/ 不入库）
 npm run font-subset    # 重新生成参考字字体子集（读 .font-sources/ 下的霞鹜文楷，源字体不入库）
 npm run handwriting-subset # 重新生成「填写示意」用的手写体子集（读 .font-sources/ 下的悠哉字体，源字体不入库）
 npm run guide          # 重新生成《使用说明》单文件页（内容源 src/lib/guide.js → public/使用说明.html）
 npm run inspect:os2    # 字体 OS/2 表体检（量"Word 认不认它当中文字体"，可传系统字体做对照）
-npm test               # 全套：字表 + 选字分类 + 频序 + 选字与批次 + 流程 + 使用说明 + 图像算子 + 扫描预处理 + 切格 + 字形提取 + 红圈识别 + 上传识别 + 更正对应 + 字体构建 + 字体预览 + 模板 + 渲染 + 构建 + 冒烟
+npm test               # 全套：字表 + 选字分类 + 频序 + 选字与批次 + 流程 + 使用说明 + 图像算子 + 扫描预处理 + 切格 + 字形提取 + 红圈识别 + 上传识别 + 更正对应 + 字体构建 + 字体预览 + 模板 + 渲染 + 构建（两种形态）+ file:// 能力实测 + 冒烟
 npm run test:charset   # 只跑字表校验
 npm run test:flow      # 只跑制作流程的状态推导（向导界面的判断来源）
 npm run test:guide     # 只跑《使用说明》校验（内容源结构 + 产物是单文件、六节齐全）
@@ -33,6 +34,7 @@ npm run test:fontbuild # 只跑矢量化 + 字体构建（会先用 vite 打一�
 npm run test:fontpack # 只跑字体打包（zip 内容 / 使用说明 / 预览页，纯 Node）
 npm run test:fontpreview # 只跑网页字体预览的纯逻辑（文本拆分 / 收录判定 / 默认文本 / 族名，纯 Node）
 npm run test:smoke     # 只跑冒烟验证（需先 build）
+npm run test:file      # 只跑 file:// 形态的能力实测（需先 build:file；量 IndexedDB / WASM / Worker / 字体 / 下载）
 ```
 
 ## 目录结构
@@ -58,6 +60,7 @@ npm run test:smoke     # 只跑冒烟验证（需先 build）
 - [实施计划](docs/实施计划.md)
 - [决策记录](docs/决策记录.md)（本项目专属）
 - [待办与风险清单](docs/待办与风险清单.md)
+- [验收走查清单](docs/验收走查清单.md)（用户侧人工验收：每一步怎么做、期望看到什么、容易踩的坑）
 - [提交历史](docs/提交历史.md)
 
 跨项目通用的《决策记录-通用.md》与 `AGENTS.md` 属本地协作文档，**不入库**（见 `.gitignore`）。

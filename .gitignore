@@ -16,6 +16,8 @@ sn-font-manager-copies/
 # ── 工程依赖与构建产物（后续初始化前端工程时生效）─────────────────────
 node_modules/
 dist/
+# file:// 形态的构建产物（npm run build:file → dist-file/，见 vite.config.js 与决策 六-4）
+dist-file/
 *.local
 
 # npm 缓存（默认缓存在用户目录，若因权限受限改用仓库内缓存目录，见 README）
