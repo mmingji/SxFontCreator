@@ -9,8 +9,10 @@ import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
 import { buildFlowState, flowSummary, stepIndex, stepNavigation } from './lib/flow.js'
+import { glyphStoreStats } from './lib/glyphStore.js'
 import StepContent from './components/StepContent.vue'
 import GuideLink from './components/GuideLink.vue'
+import ProjectBackup from './components/ProjectBackup.vue'
 
 // 第 1 步「选字与出模板」按需加载（pdf-lib + fontkit + pdf.js）
 const StepLoading = {
@@ -55,8 +57,8 @@ const ResultDownload = defineAsyncComponent({
 const store = useProjectStore()
 const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
 
-// 流程进度快照：批次与识别结果都是真实数据；更正确认 / 字体产物由后续步骤（B3）接入后填进来
-// —— 界面不用改，步骤状态与"下一步能不能走"会跟着变
+// 流程进度快照：全部来自真实数据（批次 / 识别结果 / 更正确认 / 字体产物），六个步骤的状态与
+// "下一步能不能走"都由 lib/flow.js 按它推导 —— 界面不维护第二份状态机
 const scanStats = computed(() => store.scanGlyphStats)
 const progress = computed(() => ({
   batchCount: store.batches.length,
@@ -67,7 +69,10 @@ const progress = computed(() => ({
   needsCorrection: (store.correction.circled || []).length > 0,
   correctionConfirmed: store.correction.confirmed,
   fontBuilt: store.font.built,
-  exported: !!store.font.exportedAt
+  // "下载安装"这一步：字体一旦生成，产物就在手上了（下载随时可做），所以**以 fontBuilt 为准**。
+  // 原来这里数的是"下载过字体 zip"，随字段改名一并订正 —— 它混用了"项目包备份"那个字段，
+  // 而项目包备份是另一件事（决策 五-3 的提醒），不该决定这一步的状态
+  exported: store.font.built === true
 }))
 const flow = computed(() => buildFlowState(progress.value))
 // 打开页面时停在"第一个还没做完的步骤"（用户 2026-10-04 的界面形态要求：向导式）
@@ -140,6 +145,11 @@ const checks = computed(() => [
 // 保存状态与快照恢复：**只在异常时提示**（原来底部状态栏常驻一句"数据只在本机"属噪音，已去掉）
 const saveFailed = computed(() => store.saveState === 'failed')
 const recoverDismissed = ref(false)
+
+// 落盘字形（自检区展示）：它是"关掉浏览器不白写"的兑现，也是导入项目包之后**一眼能看出数据回来了**的地方
+// （字形分片在 IndexedDB 里，刷新后仍在；不显示的话，导入成功与否要走到第 5 步才知道）
+const savedGlyphs = ref(null)
+glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
 </script>
 
 <template>
@@ -156,6 +166,8 @@ const recoverDismissed = ref(false)
           <p class="brand-sub">手写字体制作器 · 纯前端 · 离线可用</p>
         </div>
       </div>
+      <!-- 顶栏右侧：项目备份（导出 / 导入项目包）。入口放在这里是因为"换电脑前先备份"与当前在第几步无关 -->
+      <ProjectBackup />
     </header>
 
     <!-- 异常提示条：只在「保存失败」或「上次改动没写完、已从快照恢复」时出现，平时不占位置 -->
@@ -237,10 +249,16 @@ const recoverDismissed = ref(false)
             <span class="check-name">{{ check.label }}</span>
             <span class="check-value" :class="check.ok ? 'ok' : 'warn'">{{ check.text }}</span>
           </li>
+          <li v-if="savedGlyphs && savedGlyphs.glyphs">
+            <span class="check-name">已落盘的字形（关掉浏览器也不会丢）</span>
+            <span class="check-value ok" data-role="saved-glyphs">
+              {{ savedGlyphs.pages }} 页 / {{ savedGlyphs.glyphs }} 个字 / {{ (savedGlyphs.bytes / 1048576).toFixed(1) }}MB
+            </span>
+          </li>
         </ul>
         <p class="hint">
-          数据只保存在本机浏览器里：复制程序目录不会带走数据，换电脑或换浏览器前必须先用「导出项目包」备份
-          （导出与导入入口在阶段三接入）。
+          数据只保存在本机浏览器里：复制程序目录不会带走数据，换电脑或换浏览器前，请先用右上角的
+          <strong>「项目备份」</strong> 导出一份项目包。
         </p>
       </section>
     </main>

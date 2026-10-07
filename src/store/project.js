@@ -14,7 +14,8 @@ import { normalizeSelection } from '../lib/frequency.js'
 import { computeBatchCode } from '../lib/batchCode.js'
 import { collectGlyphStats } from '../lib/scanMeta.js'
 
-// 默认字体族名：产品命名（决策记录 七-1）。名称表其余字段在阶段三接入时补默认值。
+// 默认字体族名：产品命名（决策记录 七-1）。名称表字段自 1.9 起已全部有默认值（决策 四-1），
+// 界面上在第 5 步「生成字体」里改（顶栏原来那个族名输入框已去掉，一处填写）
 const DEFAULT_FAMILY_NAME = 'SxFontCreator'
 
 // 落盘防抖：连续点字、连续切换分类时不至于每次都写一遍 IndexedDB
@@ -99,8 +100,14 @@ export const useProjectStore = defineStore('project', {
       skipped: 0,
       missing: 0,
       builtAt: null,
-      exportedAt: null // 是否下载过 zip（决策 五-3 的"字体生成后提醒备份"用）
+      // 项目包导出时间（决策 五-3 的两个提醒节点以此为判据；原字段名 exportedAt 语义含糊，
+      // 容易被读成"下载过字体 zip"—— 而它一直是"备份提醒用"的那一个，2026-10-07 随 3.5 一并改名）
+      projectExportedAt: null
     },
+    // 界面开关（不进"数据"的范畴，但也要能在组件之间共享）：
+    //   backupOpen —— 顶栏「项目备份」弹窗是否打开。放在 store 里是为了让**第 3 / 第 5 步的提醒条**
+    //   也能打开同一个弹窗，而不必把事件从页面根部一层层传下来
+    ui: { backupOpen: false },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -129,7 +136,15 @@ export const useProjectStore = defineStore('project', {
       return !!batch && batch.status === 'void'
     },
     // 这批识别结果能拿出多少字形（页数 / 写了多少格 / 可疑多少 / 被圈多少 / 去重字数）
-    scanGlyphStats: (state) => collectGlyphStats(state.scan.pages)
+    scanGlyphStats: (state) => collectGlyphStats(state.scan.pages),
+    // 要不要提醒"导出项目包备份"（决策 五-3：只在**识别完成**与**字体生成后**两个节点各提醒一次，
+    // 不做"距上次导出已过 N 天""有未导出的改动"这类常驻计数）。
+    // 判据：有可用识别结果、或已生成字体；且这次会话里还没导出过项目包
+    backupReminder: (state) => {
+      const hasScan = collectGlyphStats(state.scan.pages).pagesUsable > 0
+      const hasFont = state.font.built === true
+      return (hasScan || hasFont) && !state.font.projectExportedAt
+    }
   },
 
   actions: {
@@ -431,14 +446,14 @@ export const useProjectStore = defineStore('project', {
       this.font.skipped = skipped || 0
       this.font.missing = missing || 0
       this.font.builtAt = new Date().toISOString()
-      this.font.exportedAt = null
+      this.font.projectExportedAt = null
       this.markDirty()
       schedulePersist(this)
     },
 
-    // 下载过 zip（决策 五-3：在"字体生成后"提醒一次导出项目包备份，用过就不再提醒）
-    markFontExported() {
-      this.font.exportedAt = new Date().toISOString()
+    // 导出过项目包（决策 五-3：识别完成与字体生成后各提醒一次，导出过就不再提醒）
+    markProjectExported() {
+      this.font.projectExportedAt = new Date().toISOString()
       this.markDirty()
       schedulePersist(this)
     },
@@ -446,10 +461,53 @@ export const useProjectStore = defineStore('project', {
     clearFont() {
       this.font = {
         built: false, fileName: null, familyName: null, sizes: null, stats: null,
-        coverage: null, skipped: 0, missing: 0, builtAt: null, exportedAt: null
+        coverage: null, skipped: 0, missing: 0, builtAt: null, projectExportedAt: null
       }
       this.markDirty()
       schedulePersist(this)
+    },
+
+    // ── 项目备份弹窗（顶部入口与两处提醒条共用同一个弹窗）──────────────────
+    openBackup() {
+      this.ui.backupOpen = true
+    },
+    closeBackup() {
+      this.ui.backupOpen = false
+    },
+
+    /**
+     * 导入项目包：把读出来并校验过的数据整份替换进来（决策 五-6）。
+     * 只在这里改 store 的状态，**落盘由调用方先做完**（字形分片 + 项目数据）—— 顺序反了会出现
+     * "界面显示新项目、落盘里还是旧项目"，下次启动又变回去。
+     */
+    applyImportedProject(data) {
+      this.rev = Number(data.rev) || this.rev
+      this.meta = { ...this.meta, ...(data.meta || {}) }
+      this.template = data.template && typeof data.template === 'object' ? data.template : {}
+      this.selection = { chars: data.selection && typeof data.selection.chars === 'string' ? data.selection.chars : '' }
+      this.batches = Array.isArray(data.batches) ? data.batches : []
+      this.scan = {
+        batchId: null, batchConfirmed: false, allowVoidBatch: false, pages: [],
+        orderOverrides: {}, chars: '', summary: null, lastRunAt: null,
+        ...(data.scan || {})
+      }
+      this.correction = {
+        pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
+        circled: [], overrides: {}, confirmed: false, updatedAt: null,
+        ...(data.correction || {})
+      }
+      // 字体字节不在包里（决策 五-5：只存元信息、字节按需重建），所以"已构建"标记一律清掉 ——
+      // 否则界面会显示上一次的产物信息，而内存里根本没有那份字节
+      this.font = {
+        built: false, fileName: null, familyName: null, sizes: null, stats: null,
+        coverage: null, skipped: 0, missing: 0, builtAt: null, projectExportedAt: null,
+        ...(data.font || {}),
+        built: false
+      }
+      this.glyphs = {}
+      // 刚导入的这一份就是盘上的真相，不该再被当成"有未落盘改动"（否则关页兜底会写一份多余的快照）
+      this.dirty = false
+      this.loadSource = 'idb'
     }
   }
 })

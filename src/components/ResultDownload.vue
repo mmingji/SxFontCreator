@@ -130,7 +130,8 @@ async function downloadZip() {
       sampleText: coverage.chars.slice(0, 80).join('')
     })
     downloadBytes(zip, 'SxFontCreator-' + built.fileName + '.zip', 'application/zip')
-    store.markFontExported()
+    // 注：字体 zip 与"项目包"是两件事 —— 字体 zip 是交付物，项目包是数据备份；
+    // 所以这里**不**标记"项目已备份"（备份提醒由决策 五-3 的两个节点负责，按钮在提醒条上）
     setMessage('已下载 zip（' + (zip.byteLength / 1024).toFixed(0) + 'KB）：解压后双击 preview.html 就能看样张，' +
       '装字体请右键 ' + built.fileName + '.ttf → 安装。', 'done')
   } catch (e) {
@@ -209,8 +210,13 @@ async function downloadSingle(kind) {
         然后 <code>font-family: "{{ font.familyName }}";</code>。
         <strong>没写的字</strong>在 Word 里会显示成方框、在 PS 里可能回退到别的字体 —— 想要一套完整可用的字体，建议先把常用字补齐。
       </p>
-      <p v-if="font.exportedAt" class="step-note">
-        已经下载过了。提醒一次：数据只在本机浏览器里 —— 建议导出项目包备份（入口在阶段三接入）。
+      <p v-if="font.projectExportedAt" class="step-note">
+        已经导出过项目包了。提醒一次：数据只在本机浏览器里 —— 又写了新的字之后，记得再导出一份。
+        <button type="button" class="text" @click="store.openBackup()">打开项目备份</button>
+      </p>
+      <p v-else-if="store.backupReminder" class="step-note backup-reminder" data-role="backup-reminder">
+        字体已经拿到手了，但<strong>项目还没备份</strong>：换了电脑或清了浏览器数据，这些字形就没了 ——
+        <button type="button" class="text" @click="store.openBackup()">立即导出项目包</button>
       </p>
     </template>
   </div>

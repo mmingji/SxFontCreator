@@ -360,6 +360,12 @@ const zoomIsMarkedLabel = computed(() => {
       <p v-if="gate.canProceed" class="panel-message done">
         这一批可以继续：点向导下面的「下一步」进入更正核对（只有被红笔圈掉的字才需要更正册）
       </p>
+      <!-- 决策 五-3：「识别完成」这个节点提醒一次导出项目包备份（不做常驻计数） -->
+      <p v-if="gate.canProceed && store.backupReminder" class="step-note backup-reminder" data-role="backup-reminder">
+        这一批已经识别完并落盘了，但<strong>项目还没备份</strong>：数据只在本机浏览器里，清缓存或换电脑就没了 ——
+        建议现在导出一次项目包（含选字、批次、识别进度与全部字形）。
+        <button type="button" class="text" @click="store.openBackup()">立即导出项目包</button>
+      </p>
     </div>
 
     <!-- ④ 页级结果 + ⑤ 格级视图 -->

@@ -183,6 +183,52 @@ export async function loadGlyphs({ batchId = null } = {}) {
   return out
 }
 
+// ── 按原键读写单条分片（项目包导入 / 导出用，决策 五-6）────────────────────
+// 为什么要这一对：项目包里的分片**照搬落盘格式**，导入时按包里的 key 原样写回即可；
+// 键的拼法（前缀 / 补零位数）只留在本模块一处，导入侧不需要知道，也就不会拼错。
+/** 按存储键读一条分片（原样返回记录，不解码 PNG —— 导出要的是记录本身） */
+export async function readGlyphShard(key) {
+  try {
+    const { db, store } = await openProjectDb()
+    return await new Promise((resolve) => {
+      const tx = db.transaction(store, 'readonly')
+      const req = tx.objectStore(store).get(key)
+      req.onsuccess = () => resolve(req.result || null)
+      req.onerror = () => resolve(null)
+    })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 按存储键写回一条分片（导入用）。
+ * **必须先 JSON 往返一次**再写：项目包导入那条路上，记录来自 Vue 的响应式对象（`ref` 里的数组），
+ *   而 IndexedDB 的结构化克隆不接受 Proxy —— 实测报 "could not be cloned"（踩过一次：
+ *   导入第 1 个分片就失败）。JSON 往返与 lib/persist.js 的做法一致，也顺带排掉 undefined/函数字段。
+ * @param {string} key 完整存储键（以 `sxfont.glyphs.` 开头，本模块的前缀约定）
+ * @param {object} record `{ batchId, fileIndex, pageNumber, savedAt, glyphs }`
+ */
+export async function writeGlyphShard(key, record) {
+  try {
+    if (typeof key !== 'string' || !key.startsWith(PREFIX)) {
+      return { ok: false, error: '分片键不是本程序的字形键' }
+    }
+    const clean = JSON.parse(JSON.stringify(record))
+    const { db, store } = await openProjectDb()
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite')
+      tx.objectStore(store).put(clean, key)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error || new Error('字形写入失败'))
+      tx.onabort = () => reject(tx.error || new Error('字形写入被中止'))
+    })
+    return { ok: true, count: (clean.glyphs ? clean.glyphs.length : 0) }
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) }
+  }
+}
+
 // 统计（界面提示用）：多少页、多少字、占多少字节
 export async function glyphStoreStats() {
   const pages = await listGlyphPages()

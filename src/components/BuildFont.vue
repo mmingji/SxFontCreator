@@ -101,8 +101,9 @@ async function build() {
   }
 }
 
-// 决策 五-3：在"识别完成 / 字体生成后"各提醒一次导出项目包备份（不做常驻计数）
-const backupNotice = computed(() => store.font.built && !store.font.exportedAt)
+// 决策 五-3：在"识别完成 / 字体生成后"各提醒一次导出项目包备份（不做常驻计数与"距上次导出 N 天"）。
+// 判据在 store 的 backupReminder：有可用识别结果或已生成字体，且这次会话里还没导出过项目包。
+// 提醒条上的按钮与顶栏「项目备份」开的是同一个弹窗（store.ui.backupOpen）。
 const hasMemoryBuild = computed(() => !!getLastBuild())
 </script>
 
@@ -159,9 +160,10 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
         <p class="panel-hint">下一步「下载安装」里可以下载 zip（字体 + CSS + 使用说明 + 可双击的样张预览页）。</p>
       </div>
 
-      <p v-if="backupNotice" class="step-note">
-        建议现在导出一次项目包备份（数据只在本机浏览器里，清缓存或换电脑就没了）——
-        导出 / 导入入口在阶段三接入，届时这里会出现按钮。
+      <p v-if="store.font.built && store.backupReminder" class="step-note backup-reminder" data-role="backup-reminder">
+        字体已经生成，但<strong>项目还没备份</strong>：数据只在本机浏览器里，清缓存或换电脑就没了 ——
+        建议现在导出一次项目包（含名称表、批次、进度与全部字形）。
+        <button type="button" class="text" @click="store.openBackup()">立即导出项目包</button>
       </p>
     </template>
   </div>

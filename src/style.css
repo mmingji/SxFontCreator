@@ -1112,3 +1112,92 @@ button.text:hover {
   font-size: 14px;
 }
 
+/* ── 项目备份（顶栏入口 + 弹窗，阶段三步骤 3.5）─────────────────────────────
+   入口在顶栏右侧：它跟"当前在第几步"无关（换电脑前随手就能备份）。
+   弹窗用 fixed 遮罩：不参与页面布局，所以不会影响第 1 步里的元素定位断言。 */
+.backup-entry {
+  display: inline-flex;
+  align-items: center;
+}
+
+.backup-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 11px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--panel);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.backup-button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.backup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px;
+  overflow: auto;
+  z-index: 40;
+}
+
+.backup-modal {
+  width: min(720px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: 0 12px 32px rgba(17, 24, 39, 0.18);
+}
+
+.backup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.backup-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.backup-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+
+.backup-block h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.backup-preview .checklist li {
+  border-bottom: none;
+  padding: 3px 0;
+}
+
+/* 提醒条上的按钮与正文同一行（决策 五-3 的两个提醒节点共用这一套样式） */
+.backup-reminder button {
+  margin-left: 4px;
+}
+
+.file-button.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+

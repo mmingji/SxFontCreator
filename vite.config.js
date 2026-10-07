@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const ROOT = dirname(fileURLToPath(import.meta.url))
+// 程序版本（写进项目包清单，便于将来判断"这个包是哪个版本导的"）
+const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+
 // 构建形态（决策记录 六-4，2026-10-07 用户拍板）：**只出 file:// 版** ——
 //   产物是一个文件夹，双击 `index.html` 即用，不需要任何本地服务或启动脚本。
 // 因此这里有两条与常规 vite 工程不同的约定：
@@ -15,7 +19,6 @@ import vue from '@vitejs/plugin-vue'
 //      `assets/inline-*.js`（base64 挂在 window.__SX_INLINE_ASSETS__ 上），运行时按需插 <script> 取回。
 //      合计约 12MB，但**首屏只加载 app.js** —— 字体在真正要印模板时才载入（用户拍板"按需加载"）。
 // 本地开发（`npm run dev`）不走这条路：dev 下没有内联标记，各调用方照旧 fetch / 用 ?url。
-const ROOT = dirname(fileURLToPath(import.meta.url))
 
 // 需要内联成 `assets/inline-<name>.js` 的资源：name 是运行时约定（见 src/lib/inlineAssets.js）
 const INLINE_ASSETS = [
@@ -88,6 +91,8 @@ export default defineConfig({
   plugins: [vue(), fileBuildPlugin()],
   // 相对路径：产物换目录、打包发送、双击打开都不受影响
   base: './',
+  // 程序版本注入（项目包清单里要写它；避免为读一个字符串再引一份 package.json 副本）
+  define: { __APP_VERSION__: JSON.stringify(PKG.version) },
   build: {
     target: 'es2020',
     cssCodeSplit: false,

@@ -19,6 +19,9 @@ const SNAPSHOT_KEY = 'sxfont.snapshot.v1'
 const DB_NAME = 'sxfont-db'
 const DB_STORE = 'projects'
 const DB_KEY = 'sxfont.project.v1'
+// 导入项目包之前、把"当前这份"另存到同一个对象仓的这个键下（**不覆盖真相键**）：
+// 万一用户选错了包，至少还有一条能捞回来的路（决策 五-6）。只留最近一次，不做历史版本。
+export const BACKUP_KEY = 'sxfont.backup.before-import.v1'
 
 // 字形数据（掩膜）另存分片键：`sxfont.glyphs.v1.<批次>.<页序>`（见 lib/glyphStore.js）。
 // 为什么不塞进上面那个项目对象：字形量大（全量约 6900 格），而 persist 每次改动都会重写整份对象，
@@ -193,6 +196,49 @@ export async function loadProject() {
   const data = { ...snap, glyphs: {} }
   await persistWithRev(data, snapRev)
   return { data, source: 'snapshot-only' }
+}
+
+/**
+ * 整份替换项目（导入项目包时用，决策 五-6）：
+ *   ① rev 取 **max(当前 rev, 包内 rev) + 1** —— 直接用包内 rev 会有两个坑：包来自另一台机器时
+ *      它的 rev 可能比本机大得多（此后每次保存都从一个大数往上爬），或比本机小（旧快照反而"更新"而翻盘）；
+ *   ② IndexedDB 与 localStorage 快照**同时**写同一个新 rev —— 否则下一步启动时按"rev 取大者"恢复，
+ *      旧快照会把刚导入的数据盖回去。
+ * 写失败返回 ok=false，调用方**不要**再往下走（这时打开着的还是原来那份数据）。
+ * @param {object} data 导入进来的项目数据（含 meta / selection / batches / scan / correction …）
+ * @returns {Promise<{ok:boolean, rev:number}>}
+ */
+export async function replaceProject(data) {
+  const current = await readFromIdb()
+  const currentRev = current ? Number(current.rev) || 0 : 0
+  const incomingRev = Number(data && data.rev) || 0
+  const rev = Math.max(currentRev, incomingRev) + 1
+  const res = await persistWithRev({ ...data, rev }, rev)
+  return { ok: res.ok, rev }
+}
+
+/**
+ * 导入前的保底：把当前这份项目数据另存一份（同一个对象仓的另一个键，**不动真相键**）。
+ * 为什么要有：导入是**不可撤销**的整份替换，用户有可能选错包；有一条"最近被替换掉的那份"，
+ * 出事时至少能人工捞回来。它不参与正常读取，因此不影响启动链路。
+ * @returns {Promise<{ok:boolean}>}
+ */
+export async function stashCurrentProject(data) {
+  try {
+    const clean = JSON.parse(JSON.stringify(data))
+    const record = { ...clean, stashedAt: Date.now() }
+    const db = await openDb()
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite')
+      tx.objectStore(DB_STORE).put(record, BACKUP_KEY)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error || new Error('保底写入失败'))
+    })
+    return { ok: true }
+  } catch (e) {
+    console.error('导入前的保底快照写入失败', e)
+    return { ok: false }
+  }
 }
 
 // 存储状态（供界面自检展示）：两边各自的 rev，用于一眼看出是否对齐
