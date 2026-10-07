@@ -13,9 +13,12 @@ const store = useProjectStore()
 // 刷新 / 关闭页面前：只有"确实有改动还没落盘"时才写一份 rev+1 的快照。
 // 下次启动时它会被判定为较新的一份并被固化回 IndexedDB（机制见 lib/persist.js 顶部说明）。
 // 无条件写快照会让每次刷新都留一份多余副本，下次打开还会多走一次恢复流程。
+// **内容必须是整份项目数据**（store.projectData()）：曾经这里手写了 `{ rev, meta, template }`，
+//   漏掉 selection / batches / scan / correction / font —— 于是"改完选字立刻刷新"会把选字丢成空
+//   （2026-10-07 冒烟的三处诊断数据抓到）。字段清单只留在 store 那一处。
 window.addEventListener('pagehide', () => {
   if (!store.dirty) return
-  markPendingSnapshot({ rev: store.rev, meta: store.meta, template: store.template })
+  markPendingSnapshot(store.projectData())
 })
 
 // 首屏加载层（写在 index.html 里，纯 HTML + CSS）：挂在 Vue 挂载完成后移除。

@@ -12,11 +12,10 @@ npm install            # 若报 npm 缓存目录权限错误（EPERM），改用
 npm run dev            # 开发服务，浏览器访问 http://localhost:5173
 npm run build          # 构建到 dist/
 npm run charset        # 重新生成字表（读做字体网 V4.0 的 GBK 字序文件，源文件不入库）
-npm run frequency      # 重新生成频次分级数据（GB2312 本地推算 + 通用规范汉字表，源字表不入库）
 npm run charrank       # 重新生成频序数据（Jun Da 字频表，源文件是 GBK、缓存于 .font-sources/ 不入库）
 npm run font-subset    # 重新生成参考字字体子集（读 .font-sources/ 下的霞鹜文楷，源字体不入库）
 npm run inspect:os2    # 字体 OS/2 表体检（量"Word 认不认它当中文字体"，可传系统字体做对照）
-npm test               # 全套：字表 + 频次 + 频序 + 选字 + 流程 + 图像算子 + 扫描预处理 + 切格 + 字形提取 + 红圈识别 + 上传识别 + 更正对应 + 字体构建 + 模板 + 渲染 + 构建 + 冒烟
+npm test               # 全套：字表 + 选字分类 + 频序 + 选字与批次 + 流程 + 图像算子 + 扫描预处理 + 切格 + 字形提取 + 红圈识别 + 上传识别 + 更正对应 + 字体构建 + 模板 + 渲染 + 构建 + 冒烟
 npm run test:charset   # 只跑字表校验
 npm run test:flow      # 只跑制作流程的状态推导（向导界面的判断来源）
 npm run test:template  # 只跑模板 PDF 校验（版面几何 + 产物读回）

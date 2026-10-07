@@ -1,14 +1,15 @@
 <script setup>
 // 选字面板（阶段一「选字」步骤，决策记录 八-1 ~ 八-6）
 // 职责：按频次分级缩小范围 → 检索或用字网格挑字 → 得到一份"要写的字"清单，交给模板生成。
-// 数据来源：分级数据来自 lib/frequency.js（两套标准：GB2312 与《通用规范汉字表》2013）；
+// 数据来源：分类数据来自 lib/frequency.js（单一标准 GB2312 + 「数字、字母与标点」/「其它」两类兜底 ——
+//   2026-10-07 修订决策 八-2：原两套标准（GB2312 与《通用规范汉字表》2013）只留 GB2312）；
 //   已选清单存在 store.selection，模板生成时按它排版（空 = 全量）。
 // 界面形态（八-4）：左侧分类树 + 上方检索框 + 中间字网格 + 右侧已选清单；
 //   分类节点的「全选本类 / 取消本类」**必须二次确认**（一次点击可能加入 3755 个字）。
 // 为什么分页：最大一类 3755 字，一次性渲染几千个节点会让切换明显卡顿；每页 340 字（约一屏多）。
 import { computed, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { FREQUENCY_SETS, getFrequencySet, getLevelChars, searchChars } from '../lib/frequency.js'
+import { SELECTION_LEVELS, getLevelChars, searchChars } from '../lib/frequency.js'
 
 // nested：作为「选字与出模板」步骤的下级出现（用户 2026-10-04 拍板的两级结构）——
 // 下级形态用更轻的边框与 h3 标题，避免与步骤卡片抢层级
@@ -19,19 +20,18 @@ const PAGE_SIZE = 340
 
 const query = ref('')
 const page = ref(0)
-const activeLevelKey = ref(getFrequencySet(store.selection.standard).levels[0].key)
+const activeLevelKey = ref(SELECTION_LEVELS[0].key)
 const message = ref('')
 const messageType = ref('info') // info | warn | done
 
-const activeSet = computed(() => getFrequencySet(store.selection.standard))
 const selectedSet = computed(() => new Set(Array.from(store.selection.chars)))
 
 // 每个分类的"已选 / 总数"：分类树上要直接看出来还差多少没写
 const treeNodes = computed(() =>
-  activeSet.value.levels.map((level) => {
+  SELECTION_LEVELS.map((level) => {
     let selected = 0
     for (const ch of level.chars) if (selectedSet.value.has(ch)) selected++
-    return { key: level.key, label: level.label, note: level.note, count: level.count, selected }
+    return { key: level.key, label: level.label, note: level.note, count: level.chars.length, selected }
   })
 )
 
@@ -40,24 +40,17 @@ const listing = computed(() => {
   const q = query.value.trim()
   if (q) return searchChars(q)
   if (!activeLevelKey.value) return []
-  return getLevelChars(store.selection.standard, activeLevelKey.value)
+  return getLevelChars(activeLevelKey.value)
 })
 const totalPages = computed(() => Math.max(1, Math.ceil(listing.value.length / PAGE_SIZE)))
 const pageChars = computed(() => listing.value.slice(page.value * PAGE_SIZE, (page.value + 1) * PAGE_SIZE))
 
-// 切换标准或分类、改检索词时回到第一页（否则会停在越界的页码上）
-watch([() => store.selection.standard, activeLevelKey, query], () => {
+// 切换分类或改检索词时回到第一页（否则会停在越界的页码上）
+watch([activeLevelKey, query], () => {
   page.value = 0
 })
-// 换标准后原来的分类 key 不存在了，回到新标准的第一类
-watch(
-  () => store.selection.standard,
-  (standard) => {
-    activeLevelKey.value = getFrequencySet(standard).levels[0].key
-  }
-)
 
-const activeLevel = computed(() => activeSet.value.levels.find((level) => level.key === activeLevelKey.value) || null)
+const activeLevel = computed(() => SELECTION_LEVELS.find((level) => level.key === activeLevelKey.value) || null)
 
 function setMessage(text, type) {
   message.value = text
@@ -112,7 +105,7 @@ function onClearAll() {
 // 已选清单：按分类给出分布，让用户知道"哪些类还没写"
 const selectedStats = computed(() => {
   const stats = []
-  for (const level of activeSet.value.levels) {
+  for (const level of SELECTION_LEVELS) {
     let count = 0
     for (const ch of level.chars) if (selectedSet.value.has(ch)) count++
     if (count) stats.push({ key: level.key, label: level.label, count })
@@ -128,20 +121,10 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
     <h2 v-if="!nested">选字</h2>
     <h3 v-else>自定义选字</h3>
 
-    <div class="panel-row">
-      <div class="panel-field">
-        <span class="field-label">频次标准</span>
-        <label v-for="item in FREQUENCY_SETS" :key="item.key" class="radio">
-          <input
-            type="radio"
-            :value="item.key"
-            :checked="store.selection.standard === item.key"
-            @change="store.setStandard(item.key)"
-          />{{ item.label }}
-        </label>
-        <span class="panel-hint">{{ activeSet.note }}</span>
-      </div>
-    </div>
+    <p class="panel-hint">
+      按 GB2312 分级：一级常用字覆盖日常使用频度约 99.9%；数字、字母与标点单独成一类。
+      先写「一级常用字 + 数字字母标点」（约 28 页）就能得到一套日常可用的字体。
+    </p>
 
     <div class="panel-row">
       <div class="panel-field">

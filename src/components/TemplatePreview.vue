@@ -382,7 +382,8 @@ async function generateCorrectionBook() {
     <p class="panel-hint">
       <strong>书写要求</strong>（模板每页顶部也印了这些要点）：用 0.5mm 黑色中性笔，<strong>居中写满格子</strong>、
       大小匀称；<strong>笔画贴到格子边，但不要写出格</strong>（写小了字会显小 —— 实测同一字号下，写满格子的字面才赶得上系统字体）；
-      不描不改、一笔写成；写好的纸别翘边、折叠或受潮 —— 纸张一旦变形，透视校正也救不回来。
+      不描不改、一笔写成；<strong>写错的字用红笔把这一格的参考字圈起来</strong>（统一圈<strong>参考字</strong>，不要圈书写格 ——
+      第 4 步会按圈到的顺序生成更正册）；写好的纸别翘边、折叠或受潮 —— 纸张一旦变形，透视校正也救不回来。
     </p>
 
     <p class="panel-hint">

@@ -75,9 +75,16 @@ function drawRegisterMarks(page, pageNumber, batchCode = 0) {
 // 容易被理解成"要写出格"，2026-10-04 改成"笔画别出田字格"；② 但装机实测发现字普遍写小（墨迹高度中位
 // 只有书写格的 81.6%，清单 一-5），而"别出田字格"读起来只剩"别写出去"、没有"要写满"的意思，
 // 所以 2026-10-04 再改为"**居中写满格子(笔画贴到格子边、别出格)**"—— 一句话里同时给出"写满"与"别出格"。
-// 实测（pdf-lib 量宽）：95 字、8pt，实际宽 696.7pt，居中后占 72.6~769.3pt，两端离上排定位块内边界
-// （28.4 / 813.5pt）都有余量；字符经断言确认全在字表内。
-export const PAGE_HINT = 'A4彩色打印、不缩放、不勾无边距；建议用0.5mm黑色中性笔，居中写满格子(笔画贴到格子边、别出格)、不描不改，防止纸张变形(翘边、折叠、受潮)；扫描用照片模式、图像类型彩色、300dpi。'
+// **2026-10-07 拆成两行**（用户要求加"写错用红笔圈参考字"）：一行里同时塞打印 + 书写 + 扫描 + 纠错
+//   已经太挤（原 95 字 696.7pt，再加 10 字就顶到左右上角的定位块了），拆成"书写与打印"与"扫描与纠错"
+//   两行更好读。两行都居中在表格上方，行距 1.35 倍字号；最长一行 69 字 ≈ 552pt，远小于两个上角定位块
+//   内边界之间的 785pt。字符经断言确认**全在字表内**（`PAGE_HINT` 仍导出 = 两行拼接，供"文案字符是否
+//   都在字表内"这类整体判断使用）。
+export const PAGE_HINT_LINES = [
+  'A4彩色打印、不缩放、不勾无边距；用0.5mm黑色中性笔，居中写满格子(笔画贴到格子边、别出格)、不描不改，防止纸张变形(翘边折叠受潮)。',
+  '扫描用照片模式、图像类型彩色、300dpi；写错用红笔圈参考字。'
+]
+export const PAGE_HINT = PAGE_HINT_LINES.join('')
 
 // 更正册顶部那一行（**只更正册印，模板不印**）：更正册是空白册，用户要自己按顺序写，
 // 所以顶部必须把配对规则讲清楚 —— 三条压成一行：顺序重写 / 坏格红圈后补写 / 留空即不更正。
@@ -102,13 +109,19 @@ export const SELF_CHECK_TEXTS = {
 // 模板印书写与打印要点（PAGE_HINT）、更正册印它自己的配对规则（CORRECTION_HINT）——
 //   两件事互不相干，所以按调用方传入的文案画，而不是写死一句话。
 function drawHint(page, font, text) {
-  const width = font.widthOfTextAtSize(text, LAYOUT.hintFontSize)
-  page.drawText(text, {
-    x: (LAYOUT.pageWidth - width) / 2,
-    y: LAYOUT.tableTop + 6,
-    size: LAYOUT.hintFontSize,
-    font,
-    color: LAYOUT.hintColor
+  // 支持多行（2026-10-07 起模板顶部是两行）：数组第一行画在最上面，行距 1.35 倍字号；
+  // **最后一行仍落在表格顶边上方 6pt** —— 与原来单行时的位置一致，渲染断言的采样线不用改。
+  const lines = Array.isArray(text) ? text : [text]
+  const lineGap = LAYOUT.hintFontSize * 1.35
+  lines.forEach((line, i) => {
+    const width = font.widthOfTextAtSize(line, LAYOUT.hintFontSize)
+    page.drawText(line, {
+      x: (LAYOUT.pageWidth - width) / 2,
+      y: LAYOUT.tableTop + 6 + (lines.length - 1 - i) * lineGap,
+      size: LAYOUT.hintFontSize,
+      font,
+      color: LAYOUT.hintColor
+    })
   })
 }
 
@@ -285,7 +298,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
     drawRegisterMarks(page, p + 1, batchCode)
-    drawHint(page, font, PAGE_HINT)
+    drawHint(page, font, PAGE_HINT_LINES)
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     for (let i = 0; i < slice.length; i++) {
       drawReferenceChar(page, cellRect(i), slice[i], font, glyphBoxes)

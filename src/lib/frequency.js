@@ -1,79 +1,101 @@
-// 选字用的频次分级（决策记录 八-1、八-2）
-// 职责：把两套频次标准包装成界面可直接用的分类树数据 —— 每级有哪些字、各多少字、"其它"兜底是什么。
-// 数据来源：src/data/frequency.js（由 scripts/build-frequency.mjs 生成，只含字表内的字、按字表顺序）。
-// 为什么两套都提供：GB2312 分级零外部数据、与字表天然重合；通用规范汉字表是国家公布口径（2013），
-//   两者覆盖略有差异（实测字表内 GB2312 覆盖 6763 字、通用规范表覆盖 6677 字），界面上可切换。
-// 为什么有「其它」：符号（107 个）与超纲字不属于任何一级，它们同样是字表的一部分、也要能选，
-//   所以每套标准都补一个兜底分类。兜底内容用全集相减实时算出，不写进数据文件（省体积、也不会不一致）。
-import { getAllChars } from './charset.js'
-import { GB2312_LEVELS, TONGGUI_LEVELS, FREQUENCY_META } from '../data/frequency.js'
+// 选字分类（决策记录 八-1、八-2；2026-10-07 修订：只留 GB2312 一套，并把基础字符单独成类）
+// 职责：算出选字界面左侧分类树要用的数据 —— 每类有哪些字、各多少字。
+// 为什么只留 GB2312（2026-10-07 用户拍板）：两套标准在界面上只多一个切换开关，实际能选的字几乎一样
+//   （GB2312 与 6919 字表**完全重合** 6763 字；通用规范表覆盖 6677 字，另外 242 字只能落进"其它"），
+//   留一套更省心 —— 修订《决策记录》八-2。
+// 为什么不需要数据文件：GB2312 的分级是**标准算法**（区位码），用 TextDecoder('gbk') 反向枚举即可算出，
+//   存一份 42KB 的派生数据文件属于冗余 —— 2026-10-07 删掉 src/data/frequency.js 与 scripts/build-frequency.mjs，
+//   分级改在这里运行时算（与 scripts/build-charset.mjs 那类"读外部源文件"的生成脚本不是一回事）。
+// 为什么把基础字符单独成类：数字 / 拉丁字母 / 标点是"最常用、最该先做"的一批（缺了它们，
+//   "2026年"这类中英混排没法用），原先混在"其它"里 —— 2026-10-07 用户要求拎出来、单独成一类
+//   （数字、字母、标点**合成一类**，不再细分）。
+import { getAllChars, classifyChar } from './charset.js'
 
 const ALL = getAllChars()
 const ALL_SET = new Set(ALL)
+const ORDER = new Map(ALL.map((c, i) => [c, i]))
 
-// 全集减去已分级的字 = 「其它」。顺序仍按字表顺序
-function buildOther(levels) {
-  const covered = new Set()
-  for (const level of levels) for (const ch of level.chars) covered.add(ch)
-  return ALL.filter((ch) => !covered.has(ch)).join('')
-}
-
-function withOther(setKey, setLabel, setNote, levels) {
-  const otherChars = buildOther(levels)
-  return {
-    key: setKey,
-    label: setLabel,
-    note: setNote,
-    levels: [
-      ...levels.map((level) => ({ ...level, count: level.chars.length, setKey })),
-      {
-        key: 'other',
-        setKey,
-        label: '其它（符号与超纲字）',
-        note: '不属于本标准的任何一级：107 个数字/字母/标点，以及不在该标准内的汉字',
-        chars: otherChars,
-        count: otherChars.length
-      }
-    ]
+// GB2312 区位枚举：一级汉字在 0xB0A1~0xD7FE、二级在 0xD8A1~0xF7FE。
+// 按 GBK 解码这些区位即可拿到该字的字符（GBK 在空位补过少量私用区字符，实测 5 个、都不在字表内）。
+function gb2312Levels() {
+  const dec = new TextDecoder('gbk')
+  const level1 = []
+  const level2 = []
+  for (let hi = 0xb0; hi <= 0xf7; hi++) {
+    for (let lo = 0xa1; lo <= 0xfe; lo++) {
+      const ch = dec.decode(new Uint8Array([hi, lo]))
+      if (!ch || ch.length !== 1 || ch === '\uFFFD') continue
+      if (!ALL_SET.has(ch)) continue // 选字界面只可能选字表里的 6919 字，别的字印不出来
+      if (hi <= 0xd7) level1.push(ch)
+      else level2.push(ch)
+    }
   }
+  return [level1, level2]
 }
 
-// 两套标准（界面上的分类树就用这个结构渲染）
-export const FREQUENCY_SETS = [
-  withOther(
-    'gb2312',
-    'GB2312 分级',
-    '由区位码本地推算，与字表天然重合；一级字覆盖日常使用频度约 99.9%',
-    GB2312_LEVELS
-  ),
-  withOther(
-    'tonggui',
-    '通用规范汉字表（2013）',
-    '国务院公布的国家标准字表：一级 3500 / 二级 3000 / 三级 1605（这里只列字表内的字）',
-    TONGGUI_LEVELS
-  )
+// 统一排成**字表顺序**：批次字序就是全量表位置顺序，顺序可复现（决策记录 八-6）
+const byCharsetOrder = (list) => list.slice().sort((a, b) => ORDER.get(a) - ORDER.get(b)).join('')
+
+const [gb1Raw, gb2Raw] = gb2312Levels()
+const GB1 = byCharsetOrder(gb1Raw)
+const GB2 = byCharsetOrder(gb2Raw)
+const GB_COVERED = new Set([...GB1, ...GB2])
+
+// 不在 GB2312 里的字：按字符类型分成"数字与拉丁字母""标点与符号""其它（超纲字）"
+const letters = []
+const symbols = []
+const extra = []
+for (const ch of ALL) {
+  if (GB_COVERED.has(ch)) continue
+  const cls = classifyChar(ch)
+  if (cls === 'halfwidth') letters.push(ch)
+  else if (cls === 'symbol') symbols.push(ch)
+  else extra.push(ch)
+}
+
+// 分类树的数据源（顺序即界面上的显示顺序）
+export const SELECTION_LEVELS = [
+  {
+    key: 'gb1',
+    label: '一级常用字',
+    note: 'GB2312 一级（按拼音排序），覆盖日常使用频度约 99.9%',
+    chars: GB1
+  },
+  {
+    key: 'gb2',
+    label: '二级次常用字',
+    note: 'GB2312 二级（按部首排序），补上后可用字基本齐全',
+    chars: GB2
+  },
+  {
+    key: 'symbols',
+    label: '数字、字母与标点',
+    note: '半角数字与拉丁字母、中文标点与全角符号 —— 做日常可用的字体，这批要先有（如「2026年」这类混排）',
+    chars: [...letters, ...symbols].sort((a, b) => ORDER.get(a) - ORDER.get(b)).join('')
+  },
+  {
+    key: 'extra',
+    label: '其它（超纲字）',
+    note: '不在 GB2312 内的汉字（囧、喆、赟、玥等）',
+    chars: extra.join('')
+  }
 ]
 
-export { FREQUENCY_META }
-
-export function getFrequencySet(setKey) {
-  return FREQUENCY_SETS.find((set) => set.key === setKey) || FREQUENCY_SETS[0]
+// 统计（界面展示与自检用）
+export const SELECTION_META = {
+  charsetTotal: ALL.length,
+  levels: SELECTION_LEVELS.map((level) => ({ key: level.key, label: level.label, count: level.chars.length }))
 }
 
 // 按分类取字（返回字符数组，顺序即字表顺序 = 批次字序）
-export function getLevelChars(setKey, levelKey) {
-  const set = getFrequencySet(setKey)
-  const level = set.levels.find((item) => item.key === levelKey)
+export function getLevelChars(levelKey) {
+  const level = SELECTION_LEVELS.find((item) => item.key === levelKey)
   return level ? Array.from(level.chars) : []
 }
 
-// 某个字在某套标准里属于哪一级（找不到返回 null）—— 字网格上给每个字标级别用
-export function findLevelOf(char, setKey) {
-  const set = getFrequencySet(setKey)
-  for (const level of set.levels) {
-    if (level.chars.includes(char)) return level
-  }
-  return null
+// 某个字属于哪一类（找不到返回 null）—— 字网格上给每个字标类型用
+export function findLevelOf(char) {
+  return SELECTION_LEVELS.find((level) => level.chars.includes(char)) || null
 }
 
 // 把任意字符列表过滤成"字表内的字"，并按字表顺序排序 —— 批次字序的统一出口（决策记录 八-6）

@@ -100,18 +100,6 @@ function goPrev() {
   }
 }
 
-// 字体族名改动 → 标记未落盘 + 延迟落盘（300ms）：避免每敲一个字就写一次 IndexedDB
-// markDirty 的意义：防抖等待期间若用户直接刷新/关页，pagehide 兜底要靠它判断"确实有改动没存"
-let saveTimer = null
-function onFamilyNameInput(event) {
-  store.meta.familyName = event.target.value
-  store.markDirty()
-  clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    store.persist()
-  }, 300)
-}
-
 // 环境自检：这几项是后续步骤真实依赖的浏览器能力，检测结果决定后续步骤能否开工
 // （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取）
 // 判据要与实现一致：界面用的是 <input type="file"> + File.arrayBuffer()，不是 File System Access API
@@ -167,15 +155,6 @@ const recoverDismissed = ref(false)
           <p class="brand-sub">手写字体制作器 · 纯前端 · 离线可用</p>
         </div>
       </div>
-      <label class="field">
-        <span class="field-label">字体族名</span>
-        <input
-          type="text"
-          :value="store.meta.familyName"
-          placeholder="SxFontCreator"
-          @input="onFamilyNameInput"
-        />
-      </label>
     </header>
 
     <!-- 异常提示条：只在「保存失败」或「上次改动没写完、已从快照恢复」时出现，平时不占位置 -->

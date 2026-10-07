@@ -40,12 +40,12 @@ export const useProjectStore = defineStore('project', {
     },
     glyphs: {},
     template: {},
-    // 选字：standard 是频次标准（gb2312 | tonggui），chars 是选中的字（**按字表顺序**的字符串）。
+    // 选字：chars 是选中的字（**按字表顺序**的字符串）。
     // 用字符串而不是数组：6919 字的数组拖进 Pinia 响应式开销大，字符串轻、天然有序、易于比对（八-6）
-    selection: { standard: 'gb2312', chars: '' },
+    // 2026-10-07 修订（决策 八-2）：频次标准只留 GB2312 一套，原来的 `standard` 字段随之去掉
+    selection: { chars: '' },
     // 批次列表（八-6、八-9、八-10）。每个批次记：
     //   chars     —— 该批选字（按全量字表位置排序，保证字序可复现）；空串表示全量
-    //   standard  —— 生成时用的频次标准（只作记录，不影响字序）
     //   pageCount —— 该批模板的字表页数
     //   batchCode —— 12 位校验码，与印在页脚的高 12 位一致（八-10）
     //   status    —— active 可上传 / void 已作废（选字一改即作废，不再接受上传，除非用户显式勾选）
@@ -141,7 +141,11 @@ export const useProjectStore = defineStore('project', {
         if (data.meta && typeof data.meta === 'object') Object.assign(this.meta, data.meta)
         if (data.glyphs && typeof data.glyphs === 'object') this.glyphs = data.glyphs
         if (data.template && typeof data.template === 'object') this.template = data.template
-        if (data.selection && typeof data.selection === 'object') Object.assign(this.selection, data.selection)
+        // 只取 chars：2026-10-07 之前的项目对象里还有 selection.standard（频次标准，决策 八-2 已修订为
+        // 只留 GB2312），那是个老字段，直接忽略 —— 免得它又被写回落盘数据里
+        if (data.selection && typeof data.selection === 'object') {
+          this.selection.chars = typeof data.selection.chars === 'string' ? data.selection.chars : ''
+        }
         if (Array.isArray(data.batches)) this.batches = data.batches
         if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
         if (data.correction && typeof data.correction === 'object') Object.assign(this.correction, data.correction)
@@ -156,10 +160,12 @@ export const useProjectStore = defineStore('project', {
       this.dirty = true
     },
 
-    // 落盘：写 IndexedDB（唯一真相）；返回是否成功
-    async persist() {
-      this.saveState = 'saving'
-      const res = await saveProject({
+    // 组装"要落盘的整份项目数据"：正常落盘（persist）与关页兜底快照（main.js 的 pagehide）**共用这一处**。
+    // 为什么要抽出来：两处各写一份字段清单必然走样 —— 2026-10-07 实测抓到 pagehide 那份只带了
+    //   `rev / meta / template`，于是"改完选字立刻刷新"兜底写出的快照里 selection 是空的，
+    //   下次启动按"快照 rev 更大"恢复后，选字被清成 0 字（冒烟的三处诊断数据钉住了这条）。
+    projectData() {
+      return {
         rev: this.rev,
         meta: this.meta,
         glyphs: this.glyphs,
@@ -169,7 +175,13 @@ export const useProjectStore = defineStore('project', {
         scan: this.scan,
         correction: this.correction,
         font: this.font
-      })
+      }
+    },
+
+    // 落盘：写 IndexedDB（唯一真相）；返回是否成功
+    async persist() {
+      this.saveState = 'saving'
+      const res = await saveProject(this.projectData())
       if (res.ok) {
         this.rev = res.rev
         this.dirty = false
@@ -181,14 +193,6 @@ export const useProjectStore = defineStore('project', {
       }
       this.storage = await getStorageState()
       return res.ok
-    },
-
-    // 切换频次标准（只影响界面怎么分类展示，不改已选的字）
-    setStandard(standard) {
-      if (this.selection.standard === standard) return
-      this.selection.standard = standard
-      this.markDirty()
-      schedulePersist(this)
     },
 
     /**
@@ -238,7 +242,6 @@ export const useProjectStore = defineStore('project', {
         id: 'b' + (this.batches.length + 1) + '-' + Date.now().toString(36),
         chars: list,
         charCount: list.length,
-        standard: this.selection.standard,
         // 排列方式要留痕：同一批重新生成模板时必须用同一种顺序，否则字序变了、校验码也变，已打印的纸作废
         order: order || 'charset',
         pageCount: pageCount || Math.max(1, Math.ceil(list.length / 136)),
