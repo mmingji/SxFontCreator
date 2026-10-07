@@ -267,6 +267,94 @@ export function closeMask(mask, radius = 1) {
   return erodeMask(dilateMask(mask, radius), radius)
 }
 
+// 距离变换（chamfer 5-7-11 两遍扫描）：每个前景像素到**最近背景像素**的距离 × 5。
+// 为什么需要它：判"笔画有多粗"只能从掩膜量（字形本身没有笔画宽度字段），而逐像素数
+//   到边界的距离正是笔画半宽 —— 离背景最远的那些像素就在笔画中轴上（阶段三 3.1 的
+//   "逐字按字面框规整"要用它做笔画保护：放大 k 倍等于笔画也粗 k 倍）。
+// 为什么用 chamfer 近似而不是精确欧氏距离：两遍扫描、整数运算、O(wh)，误差 < 2%
+//   （5-7-11 权重是对欧氏距离 ×5 的拟合），而精确算法要么带开方、要么要更复杂的下包络扫描。
+// 注意：图外的像素按**背景**处理不到（没有外圈），贴边的笔画会被低估半宽 —— 本项目里
+//   切片外扩 14 像素（决策 二-8），正常笔画离切片边界还有余量，影响可忽略。
+// 返回：{ data: Uint16Array(wh), width, height, scale }，真实距离（像素）= data[i] / scale
+export function distanceTransform(mask) {
+  const { data, width, height } = mask
+  const INF = 0xffff
+  const D1 = 5 // 正交邻步
+  const D2 = 7 // 对角邻步
+  const D3 = 11 // 马步（|dx|,|dy| = 1,2）
+  const d = new Uint16Array(width * height)
+  for (let i = 0; i < d.length; i++) d[i] = data[i] ? INF : 0
+  // 前向：左上 → 右下，用已确定的左上半邻域更新
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x
+      if (d[i] === 0) continue
+      let v = d[i]
+      if (y > 0) {
+        if (x > 0) v = Math.min(v, d[i - width - 1] + D2)
+        v = Math.min(v, d[i - width] + D1)
+        if (x < width - 1) v = Math.min(v, d[i - width + 1] + D2)
+      }
+      if (x > 0) v = Math.min(v, d[i - 1] + D1)
+      if (y > 1) {
+        if (x > 0) v = Math.min(v, d[i - 2 * width - 1] + D3)
+        if (x < width - 1) v = Math.min(v, d[i - 2 * width + 1] + D3)
+      }
+      if (x > 1) {
+        if (y > 0) v = Math.min(v, d[i - width - 2] + D3)
+        if (y < height - 1) v = Math.min(v, d[i + width - 2] + D3)
+      }
+      d[i] = v
+    }
+  }
+  // 后向：右下 → 左上，用右下半邻域补齐
+  for (let y = height - 1; y >= 0; y--) {
+    for (let x = width - 1; x >= 0; x--) {
+      const i = y * width + x
+      if (d[i] === 0) continue
+      let v = d[i]
+      if (y < height - 1) {
+        if (x < width - 1) v = Math.min(v, d[i + width + 1] + D2)
+        v = Math.min(v, d[i + width] + D1)
+        if (x > 0) v = Math.min(v, d[i + width - 1] + D2)
+      }
+      if (x < width - 1) v = Math.min(v, d[i + 1] + D1)
+      if (y < height - 2) {
+        if (x < width - 1) v = Math.min(v, d[i + 2 * width + 1] + D3)
+        if (x > 0) v = Math.min(v, d[i + 2 * width - 1] + D3)
+      }
+      if (x < width - 2) {
+        if (y < height - 1) v = Math.min(v, d[i + width + 2] + D3)
+        if (y > 0) v = Math.min(v, d[i - width + 2] + D3)
+      }
+      d[i] = v
+    }
+  }
+  return { data: d, width, height, scale: D1 }
+}
+
+// 笔画宽度统计（像素）：对前景像素取距离变换值的分位数 ×2（距离是半宽，宽度要乘 2）。
+// 为什么给三个分位数而不是一个"笔画宽度"：手写笔画粗细不匀（起笔顿、收笔尖）——
+//   median 代表"典型笔画"、p90 接近"最粗的那一笔"、max 是单点最粗（容易被顿笔拉高）。
+//   **要保护笔画不被放大变粗，该用哪个由调用方选**（阶段三 3.1 的口径待拍板，三个都留着）。
+// 返回：{ pixels, median, p90, max }（单位像素；pixels = 前景像素数）
+export function strokeWidthEstimate(mask) {
+  const dt = distanceTransform(mask)
+  const vals = []
+  for (let i = 0; i < dt.data.length; i++) {
+    if (mask.data[i]) vals.push(dt.data[i] / dt.scale)
+  }
+  if (!vals.length) return { pixels: 0, median: 0, p90: 0, max: 0 }
+  vals.sort((a, b) => a - b)
+  const at = (p) => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]
+  return {
+    pixels: vals.length,
+    median: 2 * at(0.5),
+    p90: 2 * at(0.9),
+    max: 2 * vals[vals.length - 1]
+  }
+}
+
 // ── 连通域 ────────────────────────────────────────────────────────────────
 
 // 连通域标记（8 邻域）＋按面积过滤，返回每个连通块的外接矩形、面积与质心。
