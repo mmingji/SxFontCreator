@@ -41,7 +41,7 @@ async function refreshStats() {
 }
 
 onMounted(refreshStats)
-// 弹窗打开时刷一次（可能刚识别完新的一批）
+
 function onKeydown(e) {
   if (e.key === 'Escape' && open.value && !busy.value) close()
 }
@@ -67,7 +67,7 @@ function openPanel() {
   setMessage('')
   inspected.value = null
   picked.value = null
-  refreshStats()
+  refreshStats() // 打开时重数一遍：可能刚识别完新的一批（统计来自 IndexedDB，不受界面状态影响）
 }
 function close() {
   store.closeBackup()
