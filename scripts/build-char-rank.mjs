@@ -1,12 +1,14 @@
-// 生成"按使用频率排列"的字序表（决策记录 八-6 的修订：模板排列方式）
+// 生成"按使用频率排列"的字序表（决策记录 八-6 的修订：模板排列方式；八-11）
 // 数据来源：Jun Da《Modern Chinese Character Frequency List》（现代汉语单字频率列表）
 //   —— 综合语料 1.935 亿字符（新闻 / 文学 / 非文学三个子语料），是公开可得的字频表里覆盖最好的一份。
 //   首次运行下载并缓存到 .font-sources/（不入库），产物 src/data/charRank.js 入库。
 // **许可**：该表版权归作者，**仅研究与教学用途**；对外分发软件本体或商用需另行取得作者书面许可。
 //   登记见 THIRD-PARTY-NOTICES.md；将来若对外分发，改用标 MIT 的 hanziDB.csv（同为该表派生）或申请许可。
-// 产物形态：**一个按频序排列的 6919 字字符串** —— 与 charset.js 同构，界面直接拿它当 chars 顺序即可，
-//   "排列方式"因此不需要任何额外计算；Jun Da 未收录的字（部首、超纲字、107 个符号）按字表顺序排在末尾
-//   （符号必须保持字表序：数字字母标点在人眼里有固定次序）。
+// 产物形态：**一个按频序排列的 8274 字字符串** —— 与 charset.js 同构，界面直接拿它当 chars 顺序即可，
+//   "排列方式"因此不需要任何额外计算。
+// 排序口径（用户 2026-10-08 拍板）：**Jun Da 收录的按频序在前、未收录的按字表顺序（官方笔画序）排在末尾**。
+//   未收录的 1298 个 = 1129 个汉字（一级 1 + 二级 124 + 三级 1004，字频表成表较早、新规范里的字没收全）
+//   + 169 个基础字符（该表只统计汉字，半角 ASCII 与标点必然不在其中）。
 // 规模任何一项对不上就**中止写出**：宁可报错，也不要静默产出一份错的频序表。
 // 运行：npm run charrank
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
@@ -20,17 +22,17 @@ const CACHE = join(ROOT, '.font-sources', 'junda-char-frequency.txt')
 const SOURCE_URL = 'https://lingua.mtsu.edu/chinese-computing/statistics/char/download.php?Which=MO'
 const LINE_SIZE = 100
 
-// 期望值（实测基线，来自 2026-10-04 的调研核对）：任一项对不上就中止，说明源文件变了
+// 期望值（实测基线，2026-10-08 按新字表重算）：任一项对不上就中止，说明源文件或字表变了
 const EXPECT = {
-  rows: 9933, // 源表数据行数
-  covered: 6710, // 字表内、且被源表收录的字数
-  missing: 209, // 字表内未被收录（67 个 GB2312 二级部首偏旁 + 34 个超纲字 + 107 个符号 + 1 个通用规范一级字）
+  rows: 9933, // 源表数据行数（与字表无关，换字表也不该变）
+  covered: 6976, // 字表内、且被源表收录的字数
+  missing: 1298, // 字表内未被收录（1129 个汉字 + 169 个基础字符）
   top25: '的一是不了在人有我他这个们中来上大为和国地到以说时'
 }
 
 // 源文件编码：**站上这份表是 GBK**（2026-10-04 实测：按 UTF-8 解会得到 14240 个替换字符，
 // 表现是"汉字大量重复"）。这里做一次嗅探：UTF-8 解出来的替换字符超过 10 个就改用 GBK，
-// 并把转成 UTF-8 的文本写回缓存 —— 下次不必再嗅探（与 charset 脚本用 TextDecoder('gbk') 同一套路）。
+// 并把转成 UTF-8 的文本写回缓存 —— 下次不必再嗅探。
 function decodeSource(buf) {
   const utf8 = new TextDecoder('utf-8').decode(buf)
   const bad = (utf8.match(/\uFFFD/g) || []).length
@@ -97,7 +99,7 @@ for (const row of rows) {
   seen.add(row.char)
   covered.push(row.char)
 }
-// 未被收录的字：保持**字表顺序**（符号、部首、超纲字），排在频序字的后面
+// 未被收录的字：保持**字表顺序**（官方笔画序），排在频序字的后面
 const missing = chars.filter((c) => !seen.has(c))
 const order = covered.concat(missing)
 
@@ -111,12 +113,15 @@ if (order.slice(0, 25).join('') !== EXPECT.top25) {
 
 const cum2000 = rows.find((r) => r.rank === 2000)
 const cum3755 = rows.find((r) => r.rank === 3755)
-if (!cum2000 || !cum3755) fail('源表里找不到第 2000 / 3755 条，无法记录累计覆盖率')
+const cum6500 = rows.find((r) => r.rank === 6500)
+if (!cum2000 || !cum3755 || !cum6500) fail('源表里找不到第 2000 / 3755 / 6500 条，无法记录累计覆盖率')
 
-// 折行成字符串数组再用 join('') 拼回 —— 与 charset.js / frequency.js 同一做法，便于 diff
+// 折行成字符串数组再用 join('') 拼回 —— 与 charset.js 同一做法，便于 diff。
+// **按码点折行**：字表里有 196 个扩展 B 区汉字（代理对），按 UTF-16 码元切会把它们切成两半。
 const wrap = (text) => {
+  const list = Array.from(text)
   const lines = []
-  for (let i = 0; i < text.length; i += LINE_SIZE) lines.push(text.slice(i, i + LINE_SIZE))
+  for (let i = 0; i < list.length; i += LINE_SIZE) lines.push(list.slice(i, i + LINE_SIZE).join(''))
   return '[\n' + lines.map((line) => '      ' + JSON.stringify(line)).join(',\n') + '\n    ].join(\'\')'
 }
 
@@ -125,7 +130,7 @@ const body = `// 本文件由 scripts/build-char-rank.mjs 生成，请勿手改�
 //   综合语料 ${corpusTotal} 字符；原始文件缓存于 .font-sources/（不入库）。
 // **许可**：版权归作者，仅研究与教学用途；对外分发或商用需另行取得作者许可 —— 见 THIRD-PARTY-NOTICES.md。
 // 内容：字表内**按使用频率从高到低**排列的 ${chars.length} 字；源表未收录的 ${missing.length} 字
-//   （67 个 GB2312 二级部首偏旁 + 34 个超纲字 + 107 个符号，另有 1 个通用规范一级字）按**字表顺序**排在末尾。
+//   （1129 个汉字 + 169 个基础字符）按**字表顺序（官方笔画序）**排在末尾。
 // 用法：见 src/lib/charRank.js（界面上的"排列方式：使用频率"直接拿它当模板字序）。
 
 export const CHAR_RANK_META = {
@@ -136,9 +141,10 @@ export const CHAR_RANK_META = {
   covered: ${covered.length},
   missing: ${missing.length},
   charsetTotal: ${chars.length},
-  // 源表口径的累计覆盖率：前 2000 条 / 前 3755 条覆盖了多少语料
+  // 源表口径的累计覆盖率：前 2000 / 3755 / 6500 条覆盖了多少语料
   cumAt2000: ${cum2000.cum.toFixed(2)},
   cumAt3755: ${cum3755.cum.toFixed(2)},
+  cumAt6500: ${cum6500.cum.toFixed(2)},
   license: '版权归作者，仅研究与教学用途；对外分发或商用需另行取得作者许可（见 THIRD-PARTY-NOTICES.md）'
 }
 
@@ -152,5 +158,5 @@ writeFileSync(OUT, body, 'utf8')
 console.log('已生成频序数据：' + OUT)
 console.log('  源表 ' + rows.length + ' 条 / 语料 ' + corpusTotal + ' 字符')
 console.log('  字表内被收录 ' + covered.length + ' 字，未收录 ' + missing.length + ' 字（已按字表顺序排在末尾）')
-console.log('  累计覆盖：前 2000 条 ' + cum2000.cum.toFixed(2) + '%，前 3755 条 ' + cum3755.cum.toFixed(2) + '%')
+console.log('  累计覆盖：前 2000 条 ' + cum2000.cum.toFixed(2) + '%，前 3755 条 ' + cum3755.cum.toFixed(2) + '%，前 6500 条 ' + cum6500.cum.toFixed(2) + '%')
 console.log('  频序前 25 字：' + order.slice(0, 25).join(''))

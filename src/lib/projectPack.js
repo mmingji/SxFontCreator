@@ -18,6 +18,8 @@
 // 依赖：只依赖 jszip 与"拿得到分片"的那几个函数 —— 纯逻辑（清单 / 文件名 / 校验 / 说明文案）都能在 Node 里断言，
 //   不需要浏览器（见 test/project-pack.mjs）。
 import JSZip from 'jszip'
+// 字数按码点算（字表里有 196 个扩展 B 区汉字是代理对，用 .length 会虚高）—— 见 lib/charset.js 的 countChars
+import { countChars } from './charset.js'
 
 /** 项目包的格式标记与版本：导入时先看这两个字段（格式不对直接拒，版本比本程序新也拒） */
 export const PACK_FORMAT = 'sxfont.projectPack'
@@ -199,7 +201,7 @@ export function buildProjectReadme(manifest, { data, glyphCount, shardCount } = 
     '',
     '导出时间：' + when + (manifest && manifest.appVersion ? '（程序版本 ' + manifest.appVersion + '）' : ''),
     '字体族名：' + (meta.familyName || '（未命名）'),
-    '该项目的选字：' + (selection.chars ? selection.chars.length + ' 个字' : '全量字表（未自定义选字）'),
+    '该项目的选字：' + (selection.chars ? countChars(selection.chars) + ' 个字' : '全部 8274 字（未自定义选字）'),
     '批次：' + batches.length + ' 个（其中仍有效 ' + batches.filter((b) => b.status === 'active').length + ' 个）',
     '识别结果：' + scannedPages + ' 页扫描件的记录',
     '字形掩膜：' + (glyphCount || 0) + ' 个字，分 ' + (shardCount || 0) + ' 片',
@@ -364,7 +366,7 @@ export function summarizeProjectPack(inspected) {
   const scan = data.scan || {}
   const pages = Array.isArray(scan.pages) ? scan.pages : []
   const correction = data.correction || {}
-  const selected = data.selection && data.selection.chars ? data.selection.chars.length : 0
+  const selected = data.selection && data.selection.chars ? countChars(data.selection.chars) : 0
   const exportedAt = inspected && inspected.manifest ? inspected.manifest.exportedAt : null
   return {
     familyName: meta.familyName || '（未命名）',
@@ -382,7 +384,7 @@ export function summarizeProjectPack(inspected) {
     lines: [
       '字体族名：' + (meta.familyName || '（未命名）') + (meta.version ? '（版本 ' + meta.version + '）' : ''),
       '导出时间：' + formatTime(exportedAt),
-      '选字：' + (selected ? selected + ' 个字' : '全量字表（未自定义选字）'),
+      '选字：' + (selected ? selected + ' 个字' : '全部 8274 字（未自定义选字）'),
       '批次：' + batches.length + ' 个（仍有效 ' + batches.filter((b) => b.status === 'active').length + ' 个）',
       '识别结果：' + pages.length + ' 页记录',
       '字形掩膜：' + ((inspected && inspected.glyphCount) || 0) + ' 个字 / ' + ((inspected && inspected.shardCount) || 0) + ' 个分片',

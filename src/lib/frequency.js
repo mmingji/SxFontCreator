@@ -1,83 +1,49 @@
-// 选字分类（决策记录 八-1、八-2；2026-10-07 修订：只留 GB2312 一套，并把基础字符单独成类）
+// 选字分类（决策记录 八-1、八-2；2026-10-08 换成官方口径）
 // 职责：算出选字界面左侧分类树要用的数据 —— 每类有哪些字、各多少字。
-// 为什么只留 GB2312（2026-10-07 用户拍板）：两套标准在界面上只多一个切换开关，实际能选的字几乎一样
-//   （GB2312 与 6919 字表**完全重合** 6763 字；通用规范表覆盖 6677 字，另外 242 字只能落进"其它"），
-//   留一套更省心 —— 修订《决策记录》八-2。
-// 为什么不需要数据文件：GB2312 的分级是**标准算法**（区位码），用 TextDecoder('gbk') 反向枚举即可算出，
-//   存一份 42KB 的派生数据文件属于冗余 —— 2026-10-07 删掉 src/data/frequency.js 与 scripts/build-frequency.mjs，
-//   分级改在这里运行时算（与 scripts/build-charset.mjs 那类"读外部源文件"的生成脚本不是一回事）。
-// 为什么把基础字符单独成类：数字 / 拉丁字母 / 标点是"最常用、最该先做"的一批（缺了它们，
-//   "2026年"这类中英混排没法用），原先混在"其它"里 —— 2026-10-07 用户要求拎出来、单独成一类
-//   （数字、字母、标点**合成一类**，不再细分）。
-import { getAllChars, classifyChar } from './charset.js'
+//
+// 分类维度 = 《通用规范汉字表》的**规范三级 + 基础字符**（四类）：
+//   一级 3500 / 二级 3000 / 三级 1605 / 基础字符 169 = 8274（全量）。
+// 为什么不需要数据文件：分级就是**字表位置的切片** —— 官方字表序号 1~3500 一级、3501~6500 二级、
+//   6501~8105 三级（《通用规范汉字表》说明第二条），基础字符是字表末尾那 169 个；
+//   全部由字表本身推得，存一份派生数据属于冗余。
+// 与旧口径的差（2026-10-08 用户拍板换源）：原来的 GB2312 区位码分级（一级 3755 / 二级 3008）
+//   与"超纲字"两类概念**全部删除** —— GB2312（1980）是编码字符集，它的分级既不是用字规范、
+//   也漏掉 119 个规范一级字（调研与实测见 docs/字表标准与收字口径.md）。
+import { getAllChars, getCharsetMeta } from './charset.js'
 
 const ALL = getAllChars()
 const ALL_SET = new Set(ALL)
-const ORDER = new Map(ALL.map((c, i) => [c, i]))
+const META = getCharsetMeta()
+const { l1, l2, l3 } = META.levels
 
-// GB2312 区位枚举：一级汉字在 0xB0A1~0xD7FE、二级在 0xD8A1~0xF7FE。
-// 按 GBK 解码这些区位即可拿到该字的字符（GBK 在空位补过少量私用区字符，实测 5 个、都不在字表内）。
-function gb2312Levels() {
-  const dec = new TextDecoder('gbk')
-  const level1 = []
-  const level2 = []
-  for (let hi = 0xb0; hi <= 0xf7; hi++) {
-    for (let lo = 0xa1; lo <= 0xfe; lo++) {
-      const ch = dec.decode(new Uint8Array([hi, lo]))
-      if (!ch || ch.length !== 1 || ch === '\uFFFD') continue
-      if (!ALL_SET.has(ch)) continue // 选字界面只可能选字表里的 6919 字，别的字印不出来
-      if (hi <= 0xd7) level1.push(ch)
-      else level2.push(ch)
-    }
-  }
-  return [level1, level2]
-}
-
-// 统一排成**字表顺序**：批次字序就是全量表位置顺序，顺序可复现（决策记录 八-6）
-const byCharsetOrder = (list) => list.slice().sort((a, b) => ORDER.get(a) - ORDER.get(b)).join('')
-
-const [gb1Raw, gb2Raw] = gb2312Levels()
-const GB1 = byCharsetOrder(gb1Raw)
-const GB2 = byCharsetOrder(gb2Raw)
-const GB_COVERED = new Set([...GB1, ...GB2])
-
-// 不在 GB2312 里的字：按字符类型分成"数字与拉丁字母""标点与符号""其它（超纲字）"
-const letters = []
-const symbols = []
-const extra = []
-for (const ch of ALL) {
-  if (GB_COVERED.has(ch)) continue
-  const cls = classifyChar(ch)
-  if (cls === 'halfwidth') letters.push(ch)
-  else if (cls === 'symbol') symbols.push(ch)
-  else extra.push(ch)
-}
-
-// 分类树的数据源（顺序即界面上的显示顺序）
+// 分类树的数据源（顺序即界面上的显示顺序）：四类互不重叠、并集 = 全集。
+// **chars 用数组而不是字符串**：字表里有 273 个非基本区汉字（其中 196 个是扩展 B 区的代理对），
+//   字符串的 `.length` 按 UTF-16 码元算、会把这 196 个字各多算一个 —— 分级计数、界面上的"已选 / 总数"
+//   都会跟着虚高（实测：二级显示成 3003、三级显示成 1798）。数组的长度才是字符数。
 export const SELECTION_LEVELS = [
   {
-    key: 'gb1',
+    key: 'l1',
     label: '一级常用字',
-    note: 'GB2312 一级（按拼音排序），覆盖日常使用频度约 99.9%',
-    chars: GB1
+    note: '《通用规范汉字表》一级：常用字集，主要满足基础教育和文化普及的基本用字需要',
+    chars: ALL.slice(0, l1)
   },
   {
-    key: 'gb2',
+    key: 'l2',
     label: '二级次常用字',
-    note: 'GB2312 二级（按部首排序），补上后可用字基本齐全',
-    chars: GB2
+    note: '《通用规范汉字表》二级：使用度仅次于一级字；一、二级合计 6500 字，满足出版印刷、辞书编纂与信息处理的一般用字需要',
+    chars: ALL.slice(l1, l1 + l2)
   },
   {
-    key: 'symbols',
-    label: '数字、字母与标点',
-    note: '半角数字与拉丁字母、中文标点与全角符号 —— 做日常可用的字体，这批要先有（如「2026年」这类混排）',
-    chars: [...letters, ...symbols].sort((a, b) => ORDER.get(a) - ORDER.get(b)).join('')
+    key: 'l3',
+    label: '三级字',
+    note: '《通用规范汉字表》三级：姓氏人名、地名、科学技术术语与中小学文言文用字中较通用的一部分',
+    chars: ALL.slice(l1 + l2, l1 + l2 + l3)
   },
   {
-    key: 'extra',
-    label: '其它（超纲字）',
-    note: '不在 GB2312 内的汉字（囧、喆、赟、玥等）',
-    chars: extra.join('')
+    key: 'base',
+    label: '基础字符',
+    note: '半角 ASCII（空格到 ~，含 # @ % &）+ 中文标点 + 常用全角符号：做一套日常可用的字体，这批要先有（如「2026年」这类中英混排）',
+    chars: ALL.slice(l1 + l2 + l3)
   }
 ]
 
@@ -87,10 +53,10 @@ export const SELECTION_META = {
   levels: SELECTION_LEVELS.map((level) => ({ key: level.key, label: level.label, count: level.chars.length }))
 }
 
-// 按分类取字（返回字符数组，顺序即字表顺序 = 批次字序）
+// 按分类取字（返回字符数组，顺序即字表顺序 = 批次字序）。返回副本，避免调用方改到分类表
 export function getLevelChars(levelKey) {
   const level = SELECTION_LEVELS.find((item) => item.key === levelKey)
-  return level ? Array.from(level.chars) : []
+  return level ? level.chars.slice() : []
 }
 
 // 某个字属于哪一类（找不到返回 null）—— 字网格上给每个字标类型用

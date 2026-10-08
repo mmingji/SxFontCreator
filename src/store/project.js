@@ -10,7 +10,7 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import { loadProject, saveProject, getStorageState } from '../lib/persist.js'
-import { getAllChars } from '../lib/charset.js'
+import { getAllChars, countChars } from '../lib/charset.js'
 import { normalizeSelection } from '../lib/frequency.js'
 import { computeBatchCode } from '../lib/batchCode.js'
 import { collectGlyphStats } from '../lib/scanMeta.js'
@@ -44,8 +44,10 @@ export const useProjectStore = defineStore('project', {
     glyphs: {},
     template: {},
     // 选字：chars 是选中的字（**按字表顺序**的字符串）。
-    // 用字符串而不是数组：6919 字的数组拖进 Pinia 响应式开销大，字符串轻、天然有序、易于比对（八-6）
-    // 2026-10-07 修订（决策 八-2）：频次标准只留 GB2312 一套，原来的 `standard` 字段随之去掉
+    // 用字符串而不是数组：八千多字的数组拖进 Pinia 响应式开销大，字符串轻、天然有序、易于比对（八-6）。
+    // 代价：**字数一律要用 countChars 按码点算**（字表里有 196 个扩展 B 区汉字是代理对，.length 会虚高）。
+    // 2026-10-08 修订（决策 八-2 重写）：分级改用《通用规范汉字表》规范三级 + 基础字符，
+    // 原来的 GB2312 与"频次标准"字段都已删除
     selection: { chars: '' },
     // 批次列表（八-6、八-9、八-10）。每个批次记：
     //   chars     —— 该批选字（按全量字表位置排序，保证字序可复现）；空串表示全量
@@ -108,7 +110,7 @@ export const useProjectStore = defineStore('project', {
       missing: 0,
       builtAt: null,
       // 最近一次字形体检的快照（见 lib/glyphCheckup.buildCheckupSnapshot）：只留界面要显示的字段，
-      // 全量约 6919 条 × 少量字段。**改了名称表 / 剔除某个字就把 built 清掉**，界面据此提示"要重新生成"
+      // 全量约 8274 条 × 少量字段。**改了名称表 / 剔除某个字就把 built 清掉**，界面据此提示"要重新生成"
       checkup: null,
       // 体检之后又改过东西（剔除字形、改名称表）→ 快照已经与当前状态不一致，界面要提示"点生成字体重新生成"。
       // 为什么不复用 `built`：`built=false` 只说明"产物需要重建"，而空库时它本来就是 false —— 用它当"快照过期"
@@ -123,7 +125,8 @@ export const useProjectStore = defineStore('project', {
     //   也能打开同一个弹窗，而不必把事件从页面根部一层层传下来
     //   batchManagerOpen —— 第 3 步「批次管理」弹窗是否打开（清单 一-6）。同样放这里：入口在第 3 步，
     //   但"删掉批次后要刷新第 3 步的批次选择"这类联动需要跨组件读同一个状态
-    //   orderMode —— 模板排列方式：'rank' 按使用频率 / 'charset' 字表顺序（决策 八-11）。放进 store 是为了让
+    //   orderMode —— 模板排列方式：'rank' 按使用频率 / 'charset' 笔画序（官方字表顺序，决策 八-11）。
+    //   放进 store 是为了让
     //   **选字面板与模板预览两处的单选用同一份状态**（2026-10-08 用户要求联动：在选字面板切换排序之后，
     //   出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"）。它与 selection 不同 —— 切换它
     //   **不改已建批次的字序**（批次自己记了 order），所以不作废批次；也不进落盘数据（刷新回默认
@@ -138,7 +141,7 @@ export const useProjectStore = defineStore('project', {
   getters: {
     // 上次关闭前有改动没写完、已从快照恢复：界面要提示一句，否则用户不知道"这次打开的数据是哪来的"
     recoveredFromSnapshot: (state) => state.loadSource === 'snapshot-newer' || state.loadSource === 'snapshot-only',
-    selectedCount: (state) => state.selection.chars.length,
+    selectedCount: (state) => countChars(state.selection.chars),
     // 出模板时要排的字：没选字就是全量（默认体验：零配置也能直接打全量模板）
     charsForTemplate: (state) => (state.selection.chars.length ? state.selection.chars : getAllChars().join('')),
     activeBatches: (state) => state.batches.filter((batch) => batch.status === 'active'),
@@ -245,12 +248,12 @@ export const useProjectStore = defineStore('project', {
      */
     setSelection(chars) {
       const next = normalizeSelection(chars).join('')
-      if (next === this.selection.chars) return { changed: false, count: next.length, voided: 0 }
+      if (next === this.selection.chars) return { changed: false, count: countChars(next), voided: 0 }
       this.selection.chars = next
       const voided = this.voidActiveBatches('选字清单已改动')
       this.markDirty()
       schedulePersist(this)
-      return { changed: true, count: next.length, voided }
+      return { changed: true, count: countChars(next), voided }
     },
 
     // 单个字加入 / 移除（字网格上点一下）
@@ -280,13 +283,15 @@ export const useProjectStore = defineStore('project', {
      */
     addBatch({ pageCount, chars, order } = {}) {
       const list = chars === undefined ? this.charsForTemplate : chars
+      // 字数与页数都按**码点**算（字表里有 196 个扩展 B 区汉字是代理对，用 .length 会多算）
+      const charCount = countChars(list)
       const batch = {
         id: 'b' + (this.batches.length + 1) + '-' + Date.now().toString(36),
         chars: list,
-        charCount: list.length,
+        charCount,
         // 排列方式要留痕：同一批重新生成模板时必须用同一种顺序，否则字序变了、校验码也变，已打印的纸作废
         order: order || 'charset',
-        pageCount: pageCount || Math.max(1, Math.ceil(list.length / 136)),
+        pageCount: pageCount || Math.max(1, Math.ceil(charCount / 136)),
         batchCode: computeBatchCode(list),
         createdAt: new Date().toISOString(),
         status: 'active',
