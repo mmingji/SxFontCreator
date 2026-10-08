@@ -96,7 +96,7 @@ async function refreshSample(fontBytes, chars) {
 
 // 两个问号浮窗共用同一套开合与定位：①「本机字体怎么选」（Windows 字体目录带「系统」属性、两条绕开
 // 办法、macOS 目录，常驻会把面板撑长）；②「字表标准与收字口径」（2026-10-08 新增，显示《通用规范汉字表》
-// 官方说明全文十条 + 来源声明）。同一时刻只开一个。
+// 来源核对 + 官方说明节选（第二至第八条））。同一时刻只开一个。
 const fontHelpOpen = ref(false)
 const standardHelpOpen = ref(false)
 // 浮窗位置在打开时按按钮位置算，并夹进视口：实测固定的 left / right 都不行 ——
@@ -361,7 +361,7 @@ async function generateCorrectionBook() {
   <div class="step-body">
     <!-- 写哪些字：**一组三选**（2026-10-07 把原来的「选字」与「生成范围」两组单选合并成这一组；
          2026-10-08 换官方字表后第二项由「全量字表（6919 字）」改为「常用 6500 字」，全量走自定义选字里的
-         「全选全部」—— 口径见《决策记录》三-1、八-1；右侧问号是《通用规范汉字表》官方说明全文） -->
+         「全选全部」—— 口径见《决策记录》三-1、八-1；右侧问号是来源核对 + 官方说明节选，口径说明在本步末尾） -->
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">写哪些字</span>
@@ -384,10 +384,7 @@ async function generateCorrectionBook() {
             </svg>
           </button>
           <div v-if="standardHelpOpen" class="help-popover" data-role="charset-help-popover" :style="standardHelpStyle" role="dialog" aria-label="字表标准与收字口径">
-            <p class="help-title">{{ CHARSET_STANDARD_TITLE }}官方说明（全文）</p>
-            <ol class="help-notes">
-              <li v-for="note in CHARSET_STANDARD_NOTES" :key="note.no">{{ note.text }}</li>
-            </ol>
+            <!-- 来源与核对放最上面（用户 2026-10-08 要求）：先交代"这批字是哪来的、怎么核过的"，再给官方说明 -->
             <div class="help-source">
               <p class="help-title">来源与核对</p>
               <ul class="help-notes">
@@ -395,16 +392,19 @@ async function generateCorrectionBook() {
               </ul>
               <p>{{ CHARSET_SCOPE_LINE }}</p>
             </div>
+            <!-- 官方说明只给节选（第二至第八条，用户 2026-10-08 要求）：第一条讲制定目的、第九条讲附表、
+                 第十条讲后续调整，都不涉及"收哪些字、怎么分级" -->
+            <p class="help-title">{{ CHARSET_STANDARD_TITLE }}官方说明</p>
+            <!-- 用 ul + 显式条号：ol 的自动编号会从 1 开始，与原文的"二~八"对不上号 -->
+            <ul class="help-notes">
+              <li v-for="note in CHARSET_STANDARD_NOTES" :key="note.no"><strong>{{ note.no }}</strong>、{{ note.text }}</li>
+            </ul>
             <button class="text" type="button" @click="standardHelpOpen = false">关闭</button>
           </div>
         </span>
         <span class="panel-hint">{{ scopeHint }}</span>
       </div>
     </div>
-    <p class="panel-hint">
-      没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> ——
-      所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。
-    </p>
     <SelectionPanel v-if="pickerOpen" nested />
 
     <div class="panel-row" data-role="order-mode-row">
@@ -499,7 +499,11 @@ async function generateCorrectionBook() {
     <p class="panel-hint">
       打印：彩色喷墨、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>（有些驱动叫「无边框」）；先打最后一页自检页、用尺子量 1cm 方框确认尺寸。
       书写：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字（如"日""一""小"）居中写小些；写错的字用红笔圈这一格的<strong>参考字</strong>。
-      扫描：平板扫描仪、<strong>彩色 300dpi、照片模式</strong>。完整说明见本步右上角「查看完整说明」（可保存到本地）。
+      扫描：平板扫描仪、<strong>彩色 300dpi、照片模式</strong>。<br />
+      <!-- 「写哪些字」下面那段"没写的字会回退、不必写完也能用"按用户要求插在这个位置：
+           扫描那一句之后、"完整说明见…"之前；随选择变化的"这次排哪些字、多少页"仍留在上面那一组里 -->
+      <span data-role="fallback-hint">没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> —— 所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。</span><br />
+      完整说明见本步右上角「查看完整说明」（可保存到本地）。
     </p>
   </div>
 </template>

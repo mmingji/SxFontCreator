@@ -312,19 +312,23 @@ small {
 
 /* ── 模板与更正册面板 ─────────────────────────────────────────────── */
 
-/* 文本按钮：无边框、无底色，字重与颜色都往次要里做（用于「更新预览」「生成更正册」这类次要动作） */
+/* 文本按钮：无边框、无底色，**默认自带下划线**（用户 2026-10-08 要求）—— 一眼能看出是可点的文字；
+   下划线的颜色取文字自身的颜色（text-decoration-color 的默认值就是 currentColor，这里显式写出来表意），
+   悬停时只把颜色转成主题色（下划线跟着变），不再额外加装饰 */
 button.text {
   border: none;
   background: none;
   padding: 0;
   font-size: 12px;
   color: var(--text-2);
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: 2px;
 }
 
 button.text:hover {
   border-color: transparent;
   color: var(--primary);
-  text-decoration: underline;
 }
 
 .panel-row {
@@ -374,7 +378,7 @@ button.text:hover {
 }
 
 /* 问号浮窗（两处共用）：①「本机字体怎么选」—— 那段说明较长（系统字体目录的两条绕开办法 + macOS 目录），
-   常驻会把面板撑长；②「字表按什么标准收字」—— 《通用规范汉字表》官方说明全文十条 + 来源声明。
+   常驻会把面板撑长；②「字表按什么标准收字」—— 来源核对 + 《通用规范汉字表》官方说明节选（第二至第八条）。
    都是点问号展开，点别处或按 Esc 收起。
    浮窗的 left / top / width 由组件在打开时按按钮位置算好（并夹进视口）——固定的 left 或 right 都不行：
    1180px 视口下向左展开会把文字裁在视口外，900px 视口下向右展开又顶出右边界。 */
@@ -407,6 +411,11 @@ button.text:hover {
   z-index: 20;
   width: 560px;
   max-width: calc(100vw - 48px); /* 兜底：内联样式缺失或窗口尺寸变化时也不超出视口 */
+  /* 高度不超过视口（用户 2026-10-08 要求）：内容多时**浮窗内部滚动**，不把整页撑高。
+     72vh 给浮窗上方的按钮与上下留白留出余量；overscroll-behavior 防止滚到底后带着页面一起滚 */
+  max-height: min(72vh, 640px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -421,7 +430,7 @@ button.text:hover {
   color: var(--text-2);
 }
 
-/* 官方说明的十条与来源清单：字号 12px（渲染后最小字号下限），行距放宽便于逐条读 */
+/* 来源清单与官方说明节选：字号 12px（渲染后最小字号下限），行距放宽便于逐条读 */
 .help-popover .help-title {
   margin: 0 0 6px;
   font-weight: 600;
@@ -440,10 +449,11 @@ button.text:hover {
   margin-bottom: 4px;
 }
 
+/* 「来源与核对」块 2026-10-08 起放在弹窗最上面（用户要求），分隔线跟着改到下边 */
 .help-popover .help-source {
   margin-bottom: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
 }
 
 .panel-actions {
@@ -519,8 +529,9 @@ button.text:hover {
   white-space: nowrap;
 }
 
-/* 两个入口**同一套样式**（2026-10-07 用户要求）：都是 12px 次要色文本，悬停变主题色 + 下划线。
-   链接的默认蓝色与下划线都要显式去掉，否则它和旁边的按钮看着是两种控件。 */
+/* 两个入口**同一套样式**（2026-10-07 用户要求）：都是 12px 次要色文本。
+   2026-10-08 改为**默认带下划线**（与全局的文本按钮统一：`button.text` 现在默认就有下划线）——
+   链接的默认蓝色仍要显式去掉，否则它和旁边的按钮看着是两种控件；悬停只变色。 */
 .guide-link a,
 .guide-link button.text {
   border: none;
@@ -528,13 +539,14 @@ button.text:hover {
   padding: 0;
   font-size: 12px;
   color: var(--text-2);
-  text-decoration: none;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: 2px;
 }
 
 .guide-link a:hover,
 .guide-link button.text:hover {
   color: var(--primary);
-  text-decoration: underline;
 }
 
 .guide-link-note {

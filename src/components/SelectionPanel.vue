@@ -268,11 +268,37 @@ const pageCount = computed(() => Math.max(1, Math.ceil(countChars(store.charsFor
   flex: 1;
 }
 
+/* 三块（分类树 / 候选字网格 / 已选清单）用**竖向圆点虚线**分隔（用户 2026-10-08 要求）：
+   不用 `border-right: 1px dotted` —— 它在 1 倍缩放下渲染成一串几乎相连的 1px 点，看上去是条浅实线；
+   改用**径向渐变画圆点**（直径 2px、纵向间隔 8px、沿 y 轴重复），在 100% 缩放下也能一眼看出是圆点。
+   `gap` 设为 0，间距改由各块自己的 padding 撑开 —— 否则"线 + gap"会让线两侧的空白不对称。 */
 .select-layout {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) 200px;
-  gap: 12px;
+  gap: 0;
   margin-top: 6px;
+}
+
+.select-tree,
+.select-grid-wrap {
+  /* 圆点直径约 3px、纵向间隔 8px、颜色比 --border(#e4e7ee) 深一档 —— 实测 1px 的点在 1 倍缩放下
+     几乎看不见（截图核对过），所以用 1.4px 半径 + 4px 宽的 tile */
+  background-image: radial-gradient(circle, #b3bbc9 1.4px, transparent 1.4px);
+  background-size: 4px 8px;
+  background-repeat: repeat-y;
+  background-position: right top;
+}
+
+.select-tree {
+  padding-right: 12px;
+}
+
+.select-grid-wrap {
+  padding: 0 12px;
+}
+
+.select-picked {
+  padding-left: 12px;
 }
 
 .tree-title {
