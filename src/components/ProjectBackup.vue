@@ -188,7 +188,7 @@ function cancelPick() {
 
 <template>
   <div class="backup-entry">
-    <button type="button" class="text backup-button" @click="openPanel">
+    <button type="button" class="text backup-button" data-role="backup-open" @click="openPanel">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 3v12M7.5 10.5L12 15l4.5-4.5" />
         <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
@@ -196,9 +196,11 @@ function cancelPick() {
       项目备份
     </button>
 
-    <!-- 弹窗：fixed 定位、不占页面布局，因此不会影响第 1 步里的元素定位断言 -->
+    <!-- 弹窗：fixed 定位、不占页面布局，因此不会影响第 1 步里的元素定位断言。
+         `data-role` 是给自动化测试用的稳定锚点：顶栏现在有两个按钮（「清空项目」在左边、样式与这一个
+         完全一致，共用 .backup-button），按类名定位会点到另一个上；弹窗骨架 .backup-modal 同样被两处复用 -->
     <div v-if="open" class="backup-overlay" @click.self="!busy && close()">
-      <div class="backup-modal" role="dialog" aria-label="项目备份">
+      <div class="backup-modal" role="dialog" aria-label="项目备份" data-role="backup-modal">
         <div class="backup-head">
           <h3>项目备份（导出 / 导入项目包）</h3>
           <button type="button" class="text" :disabled="busy" @click="close">关闭</button>

@@ -6,13 +6,14 @@
 //   界面不维护第二份状态机，步骤条上的"已完成 / 当前 / 未开始 / 待接入"都是算出来的。
 // 内容按需加载：模板步骤依赖 pdf-lib + fontkit + pdf.js（构建后是独立 chunk），静态引入会让首屏一起下载
 //   （实测冷启动白屏 3.5 秒里一大半是它），所以第 1 步用 defineAsyncComponent 懒加载。
-import { computed, defineAsyncComponent, h, ref } from 'vue'
+import { computed, defineAsyncComponent, h, ref, watch } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { buildFlowState, flowSummary, stepIndex } from './lib/flow.js'
 import { checkBrowserSupport } from './lib/browserSupport.js'
 import StepContent from './components/StepContent.vue'
 import GuideLink from './components/GuideLink.vue'
 import ProjectBackup from './components/ProjectBackup.vue'
+import ResetProject from './components/ResetProject.vue'
 
 // 第 1 步「选字与出模板」按需加载（pdf-lib + fontkit + pdf.js）
 const StepLoading = {
@@ -94,8 +95,16 @@ function goto(key) {
   }
 }
 
-// 运行环境：这三项是后续步骤真实依赖的浏览器能力，缺哪一项哪一步就干不了（单行状态栏按它们渲染）
-// （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取；IndexedDB 是数据落盘的唯一真相）
+// 「清空项目」（决策 五-8）：顶栏那个组件清完之后只做两件事 —— 把界面**推回第 1 步**、
+// 并让第 1 步整块重挂载（见下面模板里的 `:key`）。为什么走 store 里的计数器而不是事件或 props：
+// 入口在顶栏、第 1 步在内容区，两者之间隔着这一层（与 backupOpen 同一个理由）。
+// 顺手清掉"某一步进不去"的原因文案：清空之后那句话说的已经是上一份项目的事了。
+watch(() => store.ui.resetToken, () => {
+  currentKey.value = 'template'
+  blockedReason.value = ''
+})
+
+// 运行环境：这三项是后续步骤真实依赖的浏览器能力，缺哪一项哪一步就干不了（单行状态栏按它们渲染）// （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取；IndexedDB 是数据落盘的唯一真相）
 // 判据要与实现一致：界面用的是 <input type="file"> + File.arrayBuffer()，不是 File System Access API
 // 更全的能力检测见 lib/browserSupport.js：那份清单只在**缺失时**出一条中文提示条（决策 六-10），
 // 不挤进这条单行状态栏 —— 状态栏是"平时就要看到的三项"，提示条是"出问题才出现的"
@@ -120,8 +129,13 @@ const recoverDismissed = ref(false)
           <p class="brand-sub">手写字体制作器 · 纯前端 · 离线可用</p>
         </div>
       </div>
-      <!-- 顶栏右侧：项目备份（导出 / 导入项目包）。入口放在这里是因为"换电脑前先备份"与当前在第几步无关 -->
-      <ProjectBackup />
+      <!-- 顶栏右侧：清空项目 + 项目备份。清空放「项目备份」左边、样式与它一致（用户 2026-10-08 口径）；
+           两者都是"与当前在第几步无关"的项目级动作，所以放顶栏。清空是不可撤销的操作 ——
+           弹窗里用"行内确认条 + 手输「清空」二字"两道门槛，并在弹窗内给出「先导出项目包」（决策 五-8） -->
+      <span class="topbar-actions">
+        <ResetProject />
+        <ProjectBackup />
+      </span>
     </header>
 
     <!-- 异常提示条：只在「保存失败」或「上次改动没写完、已从快照恢复」时出现，平时不占位置 -->
@@ -191,7 +205,11 @@ const recoverDismissed = ref(false)
         </div>
         <p v-if="currentStep.note" class="step-note">{{ currentStep.note }}</p>
 
-        <TemplatePreview v-if="currentKey === 'template'" />
+        <!-- `:key` 绑在「清空项目」的计数器上：清空后第 1 步**整块重挂载**一次 ——
+             "写哪些字"回到默认的单页试打、本机字体选择清掉、模板预览与书写示意重新生成。
+             不这么做的话，清空前若停在「自定义选字」，组件不会卸载、档位会留在那一档，
+             那就不是"刚装上软件的状态"了（决策 五-8） -->
+        <TemplatePreview v-if="currentKey === 'template'" :key="store.ui.resetToken" />
         <ScanUpload v-else-if="currentKey === 'upload'" />
         <CorrectionConfirm v-else-if="currentKey === 'correct'" />
         <BuildFont v-else-if="currentKey === 'build'" />

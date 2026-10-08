@@ -210,6 +210,16 @@ function setMessage(text, type) {
   messageType.value = type || 'info'
 }
 
+// 「清空项目」的结果消息（决策 五-8）：顶栏清完之后经 store.ui.resetNotice 送到这里 ——
+// 用户口径是"消息落在第 1 步"，而清空后界面本来就会被推回这一步（App.vue 监听同一个计数器）。
+// `immediate` 是必需的：清空后本组件是**重新挂载**的，消息在挂载之前就已经写好了。
+// 显示之后立刻让 store 撤掉它（一次性），否则下次进这一步又会看见同一条。
+watch(() => store.ui.resetNotice, (text) => {
+  if (!text) return
+  setMessage(text, 'done')
+  store.consumeResetNotice()
+}, { immediate: true })
+
 async function pickLocalFont(event) {
   const file = event.target.files && event.target.files[0]
   if (!file) return

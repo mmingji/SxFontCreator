@@ -1261,6 +1261,32 @@ label.text-file input {
   cursor: not-allowed;
 }
 
+/* ── 清空项目（顶栏入口 + 确认弹窗，决策 五-8）───────────────────────────────
+   与「项目备份」共用同一套弹窗骨架（.backup-overlay / .backup-modal / .backup-block）与按钮样式
+   （.backup-button），入口并排在它左边。破坏性动作按通用决策 四-4 标红：确认按钮是红底主按钮。 */
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reset-input {
+  width: 150px;
+  /* 两个字拉开一点间距，让用户一眼看清自己打进去的是什么 */
+  letter-spacing: 3px;
+}
+
+button.primary.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+button.primary.danger:hover:not(:disabled) {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+
 /* ── 批次管理（第 3 步批次选择旁的入口 + 弹窗，清单 一-6）───────────────────
    与「项目备份」共用同一套弹窗骨架（.backup-overlay / .backup-modal），这里只补列表与行内确认条。
    字号一律 ≥12px；状态用浅底标签区分（仍有效 / 已作废），不靠颜色单独表意。 */

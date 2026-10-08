@@ -634,6 +634,12 @@ export const useProjectStore = defineStore('project', {
       return { ok, rev: this.rev }
     },
 
+    // 第 1 步把清空消息显示出来之后调用：那条消息是**一次性**的，读过就撤掉 ——
+    // 否则下次再进这一步、或组件重挂载时，同一条消息会再显示一遍（决策 五-8）
+    consumeResetNotice() {
+      this.ui.resetNotice = ''
+    },
+
     // 项目备份弹窗（顶部入口与两处提醒条共用同一个弹窗）──────────────────
     openBackup() {
       this.ui.backupOpen = true
