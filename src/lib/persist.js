@@ -241,6 +241,48 @@ export async function stashCurrentProject(data) {
   }
 }
 
+/**
+ * 清空本机存着的这一份项目（「清空项目」用，决策 五-8）：三个键**全删**。
+ * 为什么一个都不能少：
+ *   ① **真相键** —— 不删的话 IndexedDB 里还是旧项目；
+ *   ② **localStorage 快照** —— 这一条最容易漏，也最要命：读取规则是"**rev 取大者**"（五-4），
+ *      只删真相键的话，rev 更大的旧快照会在下次启动时被当成"较新的一份"恢复并固化回 IndexedDB，
+ *      旧项目当场复活（冒烟里"清空 → 刷新 → 仍为空"这条就是钉它的）；
+ *   ③ **导入保底键** —— 导入项目包时另存的那一份（五-6），它没有界面入口，
+ *      留着就等于"清空"之后库里还藏着一份旧项目。
+ * 调用时机：它是"先删干净、再写一份新的空项目"里的第一步，**必须在 store 复位之前**调用
+ * （顺序见五-8 的五段式；反过来的话，中间那一刻盘上是空的而内存里还是旧数据）。
+ * @returns {Promise<{ok:boolean, removed:{project:boolean, snapshot:boolean, backup:boolean}, error?:string}>}
+ *   removed 的语义是"这一步已执行"，不区分那个键原本在不在（删不存在的键在 IndexedDB 里也算成功）
+ */
+export async function clearProject() {
+  const removed = { project: false, snapshot: false, backup: false }
+  try {
+    const db = await openDb()
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite')
+      const store = tx.objectStore(DB_STORE)
+      store.delete(DB_KEY)
+      store.delete(BACKUP_KEY)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB 删除失败'))
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB 删除中止'))
+    })
+    removed.project = true
+    removed.backup = true
+  } catch (e) {
+    // 删不掉就明确失败：界面据此给中文原因，**不要**再往下复位界面（否则界面空了、盘上还留着旧项目）
+    return { ok: false, removed, error: e && e.message ? e.message : String(e) }
+  }
+  try {
+    localStorage.removeItem(SNAPSHOT_KEY)
+    removed.snapshot = true
+  } catch (e) {
+    return { ok: false, removed, error: e && e.message ? e.message : String(e) }
+  }
+  return { ok: true, removed }
+}
+
 // 存储状态（供界面自检展示）：两边各自的 rev，用于一眼看出是否对齐
 export async function getStorageState() {
   const idbOk = await isIdbAvailable()

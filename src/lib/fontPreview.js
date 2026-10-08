@@ -94,6 +94,12 @@ export function previewFontFamily(base, seq = 1) {
 // 未收录字符回退到哪：显式给系统中文字体栈，让"回退的字"一眼看得出不是这套手写体
 export const PREVIEW_FALLBACK_STACK = '"Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif'
 
+// 本页已注册、还没释放的预览字体（模块级登记表）。
+// 为什么要它：FontFace 一旦 add 进 document.fonts 就**常驻并持有整份字节**，
+//   平时靠注册它的组件卸载时 release；但「清空项目」（决策 五-8）要求在那一刻当场放掉，
+//   不能指望"组件恰好会卸载"—— 注册与释放是同一份资源的两头，登记表让释放不依赖调用时机。
+const registeredFaces = new Set()
+
 /**
  * 把字体字节注册成当前页面可用的字体（不装机也能预览）。
  * @param {ArrayBuffer|Uint8Array} bytes TTF / woff 字节（本项目给的是 TTF）
@@ -112,7 +118,7 @@ export async function registerPreviewFont(bytes, family) {
   const face = new FontFace(family, copy)
   await face.load()
   document.fonts.add(face)
-  return {
+  const handle = {
     family,
     release() {
       try {
@@ -120,6 +126,21 @@ export async function registerPreviewFont(bytes, family) {
       } catch (e) {
         // 已经被移除（例如页面在注册途中被销毁）不算错误，不打扰用户
       }
+      registeredFaces.delete(handle)
     }
   }
+  registeredFaces.add(handle)
+  return handle
+}
+
+/**
+ * 释放本页注册过的**全部**预览字体（「清空项目」用，决策 五-8 的步骤 ①）。
+ * 为什么要有：清空之后内存里不该再留着上一套字体的字节，也不该留下一个能渲染出旧字形的族名。
+ * @returns {number} 释放了几个（界面可用它说明"顺手释放了 N 份预览字体"）
+ */
+export function releaseAllPreviewFonts() {
+  const list = Array.from(registeredFaces)
+  for (const handle of list) handle.release()
+  registeredFaces.clear()
+  return list.length
 }

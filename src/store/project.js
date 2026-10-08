@@ -131,7 +131,12 @@ export const useProjectStore = defineStore('project', {
     //   出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"）。它与 selection 不同 —— 切换它
     //   **不改已建批次的字序**（批次自己记了 order），所以不作废批次；也不进落盘数据（刷新回默认
     //   "按使用频率"，与它原先作为组件内状态的旧行为一致）
-    ui: { backupOpen: false, batchManagerOpen: false, orderMode: 'rank' },
+    //   resetToken / resetNotice —— 「清空项目」（决策 五-8）的两个信号，同样不进落盘数据：
+    //   resetToken 是自增计数器，App.vue 监听它把界面**强制推回第 1 步**（并让第 1 步整块重挂载）；
+    //   resetNotice 是那一次的结果消息（删了多少页分片、释放多少 MB），第 1 步读到即显示、随即清空。
+    //   为什么走 store 而不是父子传参：入口在顶栏、第 1 步在内容区，两者之间隔着 App.vue 一层
+    //   （与 backupOpen 同一个理由）
+    ui: { backupOpen: false, batchManagerOpen: false, orderMode: 'rank', resetToken: 0, resetNotice: '' },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -594,6 +599,39 @@ export const useProjectStore = defineStore('project', {
       }
       this.markDirty()
       schedulePersist(this)
+    },
+
+    /**
+     * 清空项目（决策 五-8）：把内存状态复位成"刚装上软件"的样子，并写一份全新的空项目。
+     * **只做五段式的第 ④⑤ 步**：调用方必须先把三样外部的按顺序清掉 ——
+     *   内存缓存（scanCache / buildFont / fontPreview）→ 字形分片（glyphStore.clearGlyphs）
+     *   → 本机存储（persist.clearProject：真相键 + 快照 + 导入保底键）。
+     * 为什么顺序不能换：前两步清的是"别人"，第三步清的是"盘上那一份"，把盘上删干净之后
+     *   内存里还留着旧数据没有关系（下一步就复位了）；反过来先复位内存，中间那一刻盘上还是旧项目，
+     *   万一此时用户刷新，读回来的就是旧项目。
+     *
+     * 为什么复位之后还要 persist 一次：落盘里总得有一份"当前项目"（否则启动时读到 null，
+     *   界面虽然也是空的，但 rev 与 storage 状态无从对齐）；而这一份的 rev 从 0 重新数起
+     *   （saveProject 写 currentRev + 1 = **1**），**IndexedDB 与 localStorage 快照两边同 rev** ——
+     *   下次启动因此不会走"快照更新"那条恢复分支。这一步是"旧项目复活"这个坑的最后一道封口。
+     *
+     * @param {string} [notice] 给界面看的结果消息（删除量由调用方算好传进来），落在第 1 步
+     * @returns {Promise<{ok: boolean, rev: number}>} ok=false 表示最后那次落盘失败（数据仍在内存里）
+     */
+    async resetProject(notice) {
+      // 先掐掉可能还排着的落盘防抖（400ms）：不清的话，排队中的那次"旧数据写入"会在这之后跑一遍
+      // （最终仍会被空项目覆盖，但没必要留这个中间态）
+      clearTimeout(persistTimer)
+      // token 与消息都在 $reset 的清除范围内，所以**必须先算好、复位后再写回**。
+      // 踩点：第二次清空时若不先算，token 会归零再被赋成与上次相同的值，App.vue 的 watch 不触发、
+      // 界面就停在原地不回第 1 步（第一次清空时恰好是 0 → 1，看不出问题）
+      const nextToken = (this.ui.resetToken || 0) + 1
+      this.$reset()
+      this.ui.resetToken = nextToken
+      this.ui.resetNotice = notice || ''
+      this.markDirty()
+      const ok = await this.persist()
+      return { ok, rev: this.rev }
     },
 
     // 项目备份弹窗（顶部入口与两处提醒条共用同一个弹窗）──────────────────
