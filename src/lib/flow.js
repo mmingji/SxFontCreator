@@ -161,6 +161,9 @@ export function stepIndex(key) {
 /**
  * 上一步 / 下一步能不能走。
  * 规则：**往回走永远允许**（回看已完成的步骤不该被拦）；往前走要求目标步骤 available。
+ * **当前界面不渲染这两个按钮**（2026-10-08 用户要求去掉步骤卡底部的导航栏，导航走顶部步骤条 ——
+ * 步骤条点不进去时给的是同一套 `step.reason`）；这两项推导保留为**流程相邻关系**的定义，
+ * `test/flow.mjs` 仍在验，将来若要加键盘快捷键或恢复按钮，规则现成。
  * @returns {{prevKey:string|null, nextKey:string|null, canPrev:boolean, canNext:boolean, nextReason:string}}
  */
 export function stepNavigation(state, currentKey) {

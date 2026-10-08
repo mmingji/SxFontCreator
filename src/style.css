@@ -599,16 +599,6 @@ label.text-file input {
   line-height: 1.7;
 }
 
-.step-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
 /* 步骤正文里的编号清单（手写与扫描那一步的操作要点） */
 .plain-list {
   margin: 0 0 8px;

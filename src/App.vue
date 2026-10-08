@@ -1,13 +1,14 @@
 <script setup>
 // 应用骨架（阶段一步骤 1.1；2026-10-04 按用户要求改成**向导式**：一次只显示一步）
-// 职责：顶栏（品牌 + 字体族名）+ 向导步骤条 + 当前步骤的内容 + 上一步 / 下一步 + 运行环境自检。
+// 职责：顶栏（品牌 + 项目备份）+ 向导步骤条 + 当前步骤的内容 + 运行环境自检。
+// 导航只有顶部「制作流程」步骤条一条路（2026-10-08 用户要求去掉步骤卡底部的「上一步 / 下一步」栏）。
 // 步骤与状态：全部来自 src/lib/flow.js 的 buildFlowState()（纯逻辑、可在 Node 里断言）——
 //   界面不维护第二份状态机，步骤条上的"已完成 / 当前 / 未开始 / 待接入"都是算出来的。
 // 内容按需加载：模板步骤依赖 pdf-lib + fontkit + pdf.js（构建后是独立 chunk），静态引入会让首屏一起下载
 //   （实测冷启动白屏 3.5 秒里一大半是它），所以第 1 步用 defineAsyncComponent 懒加载。
 import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
-import { buildFlowState, flowSummary, stepIndex, stepNavigation } from './lib/flow.js'
+import { buildFlowState, flowSummary, stepIndex } from './lib/flow.js'
 import { checkBrowserSupport } from './lib/browserSupport.js'
 import StepContent from './components/StepContent.vue'
 import GuideLink from './components/GuideLink.vue'
@@ -76,9 +77,12 @@ const flow = computed(() => buildFlowState(progress.value))
 // 打开页面时停在"第一个还没做完的步骤"（用户 2026-10-04 的界面形态要求：向导式）
 const currentKey = ref(flow.value.currentKey)
 const currentStep = computed(() => flow.value.steps[stepIndex(currentKey.value)])
-const nav = computed(() => stepNavigation(flow.value, currentKey.value))
 
-// 步骤条可点：已完成的步骤允许回看，可行的步骤允许直接进入；不可行的点了给中文原因（不做静默失败）
+// 步骤条可点：已完成的步骤允许回看，可行的步骤允许直接进入；不可行的点了给中文原因（不做静默失败）。
+// **导航只有这一条路**（2026-10-08 用户要求）：原来步骤卡底部还有一栏「上一步 / 下一步」，
+// 与步骤条是两套入口、冗余 —— 去掉它之后，"能去哪一步、为什么进不去"全由步骤条承担。
+// lib/flow.js 里"上一步 / 下一步"那两项推导（canPrev / canNext）仍保留：它们是流程相邻关系的定义，
+// 测试仍在验（将来若要加键盘快捷键或恢复按钮，规则现成）。
 const blockedReason = ref('')
 function goto(key) {
   const step = flow.value.steps[stepIndex(key)]
@@ -87,20 +91,6 @@ function goto(key) {
     blockedReason.value = ''
   } else {
     blockedReason.value = '「' + step.label + '」暂时进不去：' + step.reason
-  }
-}
-function goNext() {
-  if (nav.value.canNext) {
-    currentKey.value = nav.value.nextKey
-    blockedReason.value = ''
-  } else if (nav.value.nextReason) {
-    blockedReason.value = nav.value.nextReason
-  }
-}
-function goPrev() {
-  if (nav.value.canPrev) {
-    currentKey.value = nav.value.prevKey
-    blockedReason.value = ''
   }
 }
 
@@ -207,12 +197,6 @@ const recoverDismissed = ref(false)
         <BuildFont v-else-if="currentKey === 'build'" />
         <ResultDownload v-else-if="currentKey === 'download'" />
         <StepContent v-else :step="currentStep" />
-
-        <div class="step-actions">
-          <button type="button" :disabled="!nav.canPrev" @click="goPrev">上一步</button>
-          <button type="button" class="primary" :disabled="!nav.canNext" @click="goNext">下一步</button>
-          <span v-if="nav.nextReason" class="panel-hint">{{ nav.nextReason }}</span>
-        </div>
       </section>
     </main>
   </div>

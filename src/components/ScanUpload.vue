@@ -450,7 +450,7 @@ const zoomIsMarkedLabel = computed(() => {
         <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
       </ul>
       <p v-if="gate.canProceed" class="panel-message done">
-        这一批可以继续：点向导下面的「下一步」进入更正核对（只有被红笔圈掉的字才需要更正册）
+        这一批可以继续：点上方「制作流程」里的第 4 步「更正核对」进去（只有被红笔圈掉的字才需要更正册）
       </p>
       <!-- 决策 五-3：「识别完成」这个节点提醒一次导出项目包备份（不做常驻计数） -->
       <p v-if="gate.canProceed && store.backupReminder" class="step-note backup-reminder" data-role="backup-reminder">

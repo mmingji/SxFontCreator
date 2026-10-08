@@ -192,7 +192,7 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
         <p v-if="!hasMemoryBuild" class="panel-hint">
           字体字节在刷新后不在内存里了 —— 下载时会在打包步骤自动重建一次（约 30 秒），不用重扫。
         </p>
-        <p class="panel-hint">下一步「下载安装」里可以下载 zip（字体 + CSS + 使用说明 + 可双击的样张预览页）。</p>
+        <p class="panel-hint">第 6 步「下载安装」里可以下载 zip（字体 + CSS + 使用说明 + 可双击的样张预览页）。</p>
       </div>
 
       <p v-if="store.font.built && store.backupReminder" class="step-note backup-reminder" data-role="backup-reminder">
