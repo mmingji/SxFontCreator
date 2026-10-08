@@ -1,10 +1,12 @@
 // 生成内置参考字字体的子集（阶段一步骤 1.3 的依赖）
-// 职责：读开源楷体（霞鹜文楷 LXGW WenKai Regular）→ 只保留字表里的 6919 个码位 → 写出到 public/fonts/
-// 为什么要预子集：完整字体 24MB，随产品分发太重，而模板只用得到这 6919 个字。
+// 职责：读开源楷体（霞鹜文楷 LXGW WenKai Regular）→ 只保留字表里的 8274 个码位 → 写出到 public/fonts/
+// 为什么要预子集：完整字体 24MB，随产品分发太重，而模板只用得到这 8274 个字符（官方 8105 汉字 + 基础字符 169）。
+// **这里的回读校验就是"源字体覆盖全字表"的验证装置**（解析落盘产物的 cmap，逐码位确认有有效字形）：
+//   换成官方字表后字表里多了 196 个扩展 B 区汉字（代理对）与 169 个基础字符，缺任何一个都会在模板上印成空框。
 // 许可证：OFL-1.1 允许再分发与修改（含子集化），要求随附许可文本、不得单独售卖字体本身；
 //         字体内部 name 表（版权、字体名）保持原样，不改成别的字体名。
 // 源文件不入库（体积大，见 .gitignore 的 .font-sources/），产物入库。
-// 运行：node scripts/build-font-subset.mjs
+// 运行：npm run font-subset
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +20,7 @@ const SOURCE = join(ROOT, '.font-sources', 'LXGWWenKai-Regular.ttf')
 const OUT_DIR = join(ROOT, 'public', 'fonts')
 const OUT = join(OUT_DIR, 'lxgw-wenkai-subset.ttf')
 // 子集后必须覆盖的字表码位（缺一个都会让模板上出现空框）
-const EXPECT_COUNT = 6919
+const EXPECT_COUNT = 8274
 
 if (!existsSync(SOURCE)) {
   console.error('未找到字体源文件：' + SOURCE)
@@ -78,7 +80,8 @@ if (badGlyph.length) {
 }
 
 const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB'
-const extra = Object.keys(cmap).filter((k) => !unicodes.includes(Number(k)))
+const wanted = new Set(unicodes)
+const extra = Object.keys(cmap).filter((k) => !wanted.has(Number(k)))
 console.log('已生成字体子集：' + OUT)
 console.log('  源字体 ' + mb(sourceStat.size) + ' → 子集 ' + mb(outBuffer.length) +
   '（压缩到 ' + Math.round((outBuffer.length / sourceStat.size) * 100) + '%）')
