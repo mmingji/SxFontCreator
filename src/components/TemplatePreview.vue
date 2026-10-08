@@ -1,7 +1,7 @@
 <script setup>
 // 第 1 步：选字与出模板（阶段一步骤 1.3 的界面；2026-10-04 按用户要求改造成向导的第一步）
-// 职责：① 选用哪些字（**一组三选**：单页试打 / 全部字表 / 自定义选字，2026-10-07 由原来的
-//      「选字 + 生成范围」两组单选合并而来）② 选排列方式与参考字字体
+// 职责：① 选**写哪些字**（**一组三选**：单页试打 / 全量字表 / 自定义选字，2026-10-07 由原来的
+//      「选字 + 生成范围」两组单选合并而来）② 选排列方式与参考字体
 //   ③ **先看到模板第一页的真实预览**（pdf.js 渲染真实 PDF）④ 生成模板 PDF / 更正册并下载。
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
 // 数据来源：字表来自 src/lib/charset.js（6919 字）；字体来自 referenceFont.js（内置子集或本机字体）。
@@ -9,7 +9,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf, buildSamplePagePdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
 import { CHAR_RANK_META, getRankOrder, sortByRank } from '../lib/charRank.js'
-import { BUILTIN_FONT_LABEL, HANDWRITING_FONT_LABEL, loadBuiltinFont, loadHandwritingFont, loadFontFromFile } from '../lib/referenceFont.js'
+import { getLevelChars } from '../lib/frequency.js'
+import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadHandwritingFont, loadFontFromFile } from '../lib/referenceFont.js'
 import { useProjectStore } from '../store/project.js'
 import SelectionPanel from './SelectionPanel.vue'
 import PdfPreview from './PdfPreview.vue'
@@ -17,13 +18,18 @@ import PdfPreview from './PdfPreview.vue'
 const store = useProjectStore()
 const meta = getCharsetMeta()
 const totalPages = Math.ceil(meta.total / LAYOUT.perPage)
+// 字表构成的三个数字：全部从字表分级算出来（GB2312 一级 + 二级 = 6763 字），不硬编码 ——
+// 改字表时这句描述自动跟着变（"全量"两个字说明不了包含什么，用户会拿它跟别的字表对照）
+const gb2312Count = getLevelChars('gb1').length + getLevelChars('gb2').length
+const extraCount = getLevelChars('extra').length
+const symbolCount = getLevelChars('symbols').length
 
-// 用哪些字出模板：**一组三选**（2026-10-07 用户要求把原来的「选字 + 生成范围」两组单选合并成一组）。
+// 写哪些字出模板：**一组三选**（2026-10-07 用户要求把原来的「选字 + 生成范围」两组单选合并成一组）。
 //   single —— 单页试打：只出第 1 页（前 136 字）+ 自检页，先确认版式与打印设置；**不记批次**
-//   full   —— 全部字表：6919 字全出（按当前排列方式）
-//   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全部字表"等价
+//   full   —— 全量字表：6919 字全出（按当前排列方式）
+//   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量字表"等价
 // 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
-// 正式范围（全部字表 / 自定义选字）出模板时会记一个批次，单页试打不记。
+// 正式范围（全量字表 / 自定义选字）出模板时会记一个批次，单页试打不记。
 const scope = ref('single')
 const pickerOpen = computed(() => scope.value === 'custom')
 // 字体来源：内置子集 / 用户选的本机字体
@@ -43,9 +49,10 @@ const lastResult = ref(null) // { name, pages, bytes }
 const previewBytes = ref(null)
 const previewBusy = ref(false)
 
-// 填写示意（用户 2026-10-07 要求）：与模板**同版式**的一页，但每个书写格里已经用工整手写体写好了那个字，
-// 让用户一眼看到"这个格子应该写成什么样"（口径见《决策记录》一-13：笔画多的字撑满格、天生小的字居中写小）。
-// 三点约束：① 只用**第 1 页的 136 个字**（与模板预览第 1 页同一批字，两边一一对应）；
+// 书写示意（用户 2026-10-07 要求，原名"填写示意"、2026-10-08 按用户要求改名）：与模板**同版式**的一页，
+// 但每个书写格里已经用工整手写体写好了那个字，让用户一眼看到"这个格子应该写成什么样"
+// （口径见《决策记录》一-13：笔画多的字撑满格、天生小的字居中写小）。
+// 三点约束：① **页数与当前范围一致**（2026-10-08 由"只出第 1 页"改成跟着范围逐页生成、可翻页，见一-14 ②）；
 //   ② **不进正式模板 PDF**（它是给人看的示范，不是打印件，也不画定位块与页脚编码）；
 //   ③ 参考字用当前选的字体，示范字固定用内置手写体子集（悠哉字体，OFL-1.1）。
 const sampleBytes = ref(null)
@@ -71,7 +78,7 @@ async function refreshSample(fontBytes, chars) {
     sampleNote.value = ''
   } catch (e) {
     // 示意页失败不影响模板预览与生成：只在这一块显示中文原因
-    sampleNote.value = '填写示意生成失败：' + (e && e.message ? e.message : e)
+    sampleNote.value = '书写示意生成失败：' + (e && e.message ? e.message : e)
   } finally {
     sampleBusy.value = false
   }
@@ -126,9 +133,10 @@ const scopeHint = computed(() => {
   if (scope.value === 'custom') {
     return store.selectedCount
       ? '自定义选字：已选 ' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
-      : '自定义选字：还没有选字 —— 一个字都没选时按全部字表 ' + meta.total + ' 字出，下面是选字面板'
+      : '自定义选字：还没有选字 —— 一个字都没选时按全量字表 ' + meta.total + ' 字出，下面是选字面板'
   }
-  return '全部字表：' + meta.total + ' 字／' + totalPages + ' 页（内置字表全部排进去）'
+  return 'GB2312 全部 ' + gb2312Count + ' 字 + 超纲字 ' + extraCount + ' + 符号 ' + symbolCount +
+    ' = ' + meta.total + ' 字／' + totalPages + ' 页'
 })
 
 // 排列方式：默认**按使用频率** —— 最常用的字排在最前，前 2000 字覆盖日常语料 97.1%（约 15 页），
@@ -231,7 +239,7 @@ async function refreshPreview() {
   try {
     const { out, font, chars } = await buildCurrentPdf()
     previewBytes.value = out.bytes
-    // 示意页跟在模板预览之后生成：**同一批字、同一个参考字字体**（换本机字体时两块一起变），
+    // 书写示意跟在模板预览之后生成：**同一批字、同一个参考字字体**（换本机字体时两块一起变），
     // 页数与模板一致（2026-10-07 用户拍板），所以全量时这里会多花约 1 秒生成 51 页
     await refreshSample(font.bytes, chars)
   } catch (e) {
@@ -312,13 +320,13 @@ async function generateCorrectionBook() {
 
 <template>
   <div class="step-body">
-    <!-- 用哪些字：**一组三选**（2026-10-07 把原来的「选字」与「生成范围」两组单选合并成这一组；
+    <!-- 写哪些字：**一组三选**（2026-10-07 把原来的「选字」与「生成范围」两组单选合并成这一组；
          选字面板只在「自定义选字」时展开，避免默认状态就把整个字网格铺在第一步里） -->
     <div class="panel-row">
       <div class="panel-field">
-        <span class="field-label">用哪些字</span>
+        <span class="field-label">写哪些字</span>
         <label class="radio"><input v-model="scope" type="radio" value="single" :disabled="busy" />单页试打</label>
-        <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全部字表（{{ meta.total }} 字）</label>
+        <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全量字表（{{ meta.total }} 字）</label>
         <label class="radio"><input v-model="scope" type="radio" value="custom" :disabled="busy" />自定义选字</label>
         <span class="panel-hint">{{ scopeHint }}</span>
       </div>
@@ -336,7 +344,7 @@ async function generateCorrectionBook() {
 
     <div class="panel-row">
       <div class="panel-field">
-        <span class="field-label">参考字字体</span>
+        <span class="field-label">参考字体</span>
         <label class="radio"><input v-model="fontSource" type="radio" value="builtin" :disabled="busy" />{{ BUILTIN_FONT_LABEL }}</label>
         <label class="radio"><input v-model="fontSource" type="radio" value="local" :disabled="busy || !localFont" />本机字体{{ localFontName ? '（' + localFontName + '）' : '' }}</label>
         <label class="file-button">
@@ -373,35 +381,30 @@ async function generateCorrectionBook() {
       </div>
     </div>
 
-    <!-- 预览：真实 PDF 渲染（与点「生成模板 PDF」得到的内容完全一致） -->
-    <div class="panel-row">
-      <div class="panel-field">
-        <span class="field-label">打印预览</span>
-        <span class="panel-hint">
-          左边是模板**第 1 页**的真实渲染，右边「填写示意」用内置手写体（{{ HANDWRITING_FONT_LABEL }}）在书写格里
-          示范写法：笔画多的字撑满格、笔画少的字居中写小（口径见第 1 步下方的「书写要求」）。
-          两块都**与当前范围同页数、可以翻页**（改了范围 / 排列方式 / 选字后会自动重出）；
-          <strong>示意页只看不打印</strong>，它不在正式模板 PDF 里、也不带定位块与页脚编码。
-          <span v-if="previewBusy">正在生成预览…</span>
-        </span>
-        <button class="text" type="button" :disabled="previewBusy || busy" @click="refreshPreview">更新预览</button>
-      </div>
-    </div>
-    <!-- 两块预览并排：左边是**真会打印出来的模板**，右边是"照着写好的样子"（填写示意）。
+    <!-- 预览：真实 PDF 渲染（与点「生成模板 PDF」得到的内容完全一致）。
+         原来这里有一行「打印预览」标签 + 一段说明（左边是模板、右边是「书写示意」、示意只看不打印……）——
+         2026-10-08 按用户要求收进《使用说明》：界面上每多一段长文，真正的操作按钮就更难找。
+         「更新预览」按钮改由 Teleport 送到步骤标题行（「查看完整说明」左边），见下面的 Teleport -->
+    <Teleport to="#step-head-actions">
+      <button class="text" type="button" :disabled="previewBusy || busy" @click="refreshPreview">
+        {{ previewBusy ? '正在生成预览…' : '更新预览' }}
+      </button>
+    </Teleport>
+    <!-- 两块预览并排：左边是**真会打印出来的模板**，右边是"照着写好的样子"（书写示意）。
          版式都由 LAYOUT 统一控制，两边逐格对应；窄窗口自动改为上下堆叠（style.css 的 .preview-pair） -->
     <div class="preview-pair">
       <PdfPreview
         :bytes="previewBytes"
         :loading="previewBusy"
         :max-width="640"
-        title="模板预览（与实际打印逐格一致）"
+        title="模板预览（与实际打印逐格一致，最后一页是打印自检页）"
       />
       <PdfPreview
         :bytes="sampleBytes"
         :loading="sampleBusy"
         :max-width="640"
-        title="填写示意（书写格里已写好示范字，只看不打印）"
-        empty-text="填写示意还没生成出来"
+        title="书写示意（按悠哉字体示意书写格式）"
+        empty-text="书写示意还没生成出来"
       />    </div>
     <p v-if="sampleNote" class="panel-message error">{{ sampleNote }}</p>
 

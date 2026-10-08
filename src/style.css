@@ -282,29 +282,6 @@ small {
   color: var(--danger);
 }
 
-/* 单行状态栏（2026-10-07 用户要求）：把原来"标题 + 逐项两列"的环境自检压成一行小字。
-   项与项之间用 gap 分隔，窄屏自动换行；不再有分隔虚线与标题，免得占掉半屏 */
-.checkline {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 14px;
-  font-size: 12px;
-}
-
-.checkline li {
-  padding: 0;
-  border-bottom: none;
-  font-size: 12px;
-}
-
-.hint {
-  margin: 10px 0 0;
-  font-size: 12px;
-  color: var(--text-2);
-  line-height: 1.7;
-}
-
 /* ── 异常提示条（仅在保存失败 / 从快照恢复时出现）───────────────────── */
 
 .notice {
@@ -586,7 +563,7 @@ button.text:hover {
   font-size: 13px;
 }
 
-/* 第 1 步的两块预览并排（左：模板 / 右：填写示意）：宽屏左右各半，窄屏自动堆叠 */
+/* 第 1 步的两块预览并排（左：模板 / 右：书写示意）：宽屏左右各半，窄屏自动堆叠 */
 .preview-pair {
   display: flex;
   flex-wrap: wrap;

@@ -1,7 +1,7 @@
 // file:// 形态的内联资源装载器（资源由构建期生成的 `assets/inline-*.js` 提供）
 // 背景（《待办与风险清单》三-8 的实测结论）：file:// 下 `fetch` 与 `XMLHttpRequest` 读同目录文件都会被浏览器拦下，
 //   所以"本来按 URL 取"的几样东西在交付形态里改成构建期内联成 base64、运行时按需插 `<script>` 取回：
-//   ① 两个内置字体子集（参考字 + 填写示意的手写体）；② pdf.js 的 worker（转成 Blob URL 交给 pdf.js）；
+//   ① 两个内置字体子集（参考字 + 书写示意的手写体）；② pdf.js 的 worker（转成 Blob URL 交给 pdf.js）；
 //   ③ woff2 编码器的 wasm（转成 data URL 交给 emscripten）；④ 《使用说明》的 HTML（「保存到本地」用）。
 // 为什么用普通 `<script>` 而不是 ES module：file:// 下模块脚本被 CORS 拦（origin 为 null），普通脚本不受限制 ——
 //   这也正是本项目构建成 IIFE 的原因。

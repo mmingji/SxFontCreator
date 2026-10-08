@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | `public/fonts/lxgw-wenkai-subset.ttf` | **OFL-1.1** | 霞鹜文楷 LXGW WenKai v1.522 Regular 的 6919 字子集，仅用于打印在模板上的参考字；许可全文见 `public/fonts/OFL.txt` |
 | `public/fonts/OFL.txt` | OFL-1.1 | 上述字体的许可全文，随字体一并分发（OFL 的硬性要求） |
-| `public/fonts/yozai-subset.ttf` | **OFL-1.1** | 悠哉字体 Yozai v0.868 Regular 的 6919 字子集（3.84MB），**只用于第 1 步「填写示意」在书写格里示范写法**（不进正式模板 PDF、不参与识别）；许可全文见 `public/fonts/OFL-yozai.txt`。选型依据（覆盖 6919 字全中）见《提交历史》第 59 条 |
+| `public/fonts/yozai-subset.ttf` | **OFL-1.1** | 悠哉字体 Yozai v0.868 Regular 的 6919 字子集（3.84MB），**只用于第 1 步「书写示意」在书写格里示范写法**（原名"填写示意"，2026-10-08 改名；不进正式模板 PDF、不参与识别）；许可全文见 `public/fonts/OFL-yozai.txt`。选型依据（覆盖 6919 字全中）见《提交历史》第 59 条 |
 | `public/fonts/OFL-yozai.txt` | OFL-1.1 | 上述字体的许可全文，随字体一并分发 |
 | `public/woff2.wasm` | **MIT**（Google woff2 / woff2-asm） | woff2 编码器（727KB）：`fonteditor-core` 的 `exports` 字段不允许直接 import 包内的 wasm，故复制到这里按 URL 加载（清单 四-20）。**自用无分发义务**，对外分发时随附其许可声明 |
 

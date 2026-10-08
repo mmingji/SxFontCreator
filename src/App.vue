@@ -7,10 +7,8 @@
 //   （实测冷启动白屏 3.5 秒里一大半是它），所以第 1 步用 defineAsyncComponent 懒加载。
 import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
-import { getCharsetMeta } from './lib/charset.js'
 import { buildFlowState, flowSummary, stepIndex, stepNavigation } from './lib/flow.js'
 import { checkBrowserSupport } from './lib/browserSupport.js'
-import { glyphStoreStats } from './lib/glyphStore.js'
 import StepContent from './components/StepContent.vue'
 import GuideLink from './components/GuideLink.vue'
 import ProjectBackup from './components/ProjectBackup.vue'
@@ -56,7 +54,6 @@ const ResultDownload = defineAsyncComponent({
 })
 
 const store = useProjectStore()
-const charset = getCharsetMeta() // 内置字表的真实规模，供自检展示
 
 // 流程进度快照：全部来自真实数据（批次 / 识别结果 / 更正确认 / 字体产物），六个步骤的状态与
 // "下一步能不能走"都由 lib/flow.js 按它推导 —— 界面不维护第二份状态机
@@ -113,37 +110,10 @@ function goPrev() {
 // 更全的能力检测见 lib/browserSupport.js：那份清单只在**缺失时**出一条中文提示条（决策 六-10），
 // 不挤进这条单行状态栏 —— 状态栏是"平时就要看到的三项"，提示条是"出问题才出现的"
 const browserCheck = checkBrowserSupport()
-const fontPickerSupported =
-  typeof window !== 'undefined' && typeof File !== 'undefined' && typeof File.prototype.arrayBuffer === 'function'
-const canvas2dSupported = (() => {
-  try {
-    return !!document.createElement('canvas').getContext('2d')
-  } catch {
-    return false
-  }
-})()
-
-const checks = computed(() => [
-  // 顺序即显示顺序：能力 → 字体读取 → 画布
-  { label: '本地数据库', ok: store.storage.idb },
-  { label: '本机字体读取', ok: fontPickerSupported },
-  { label: '画布 2D', ok: canvas2dSupported }
-])
-
-// 内置字表的一句话描述（单行状态栏末尾）。**不再显示数据来源文件名**（`做字体网标准模板V4.0.txt`）
-// —— 那是构建期的中间产物，用户不需要知道，也看不出这个字表覆盖什么（2026-10-07 用户提出）。
-// 改成说清口径：GB2312 的全部 6763 个汉字 + 49 个超纲字 + 107 个符号 = 6919。
-const charsetDesc = '内置字表：GB2312 全部 ' + (charset.han - 49) + ' 字 + 超纲字 49 + 符号 ' +
-  charset.symbol + ' = ' + charset.total + ' 字'
 
 // 保存状态与快照恢复：**只在异常时提示**（原来底部状态栏常驻一句"数据只在本机"属噪音，已去掉）
 const saveFailed = computed(() => store.saveState === 'failed')
 const recoverDismissed = ref(false)
-
-// 落盘字形（自检区展示）：它是"关掉浏览器不白写"的兑现，也是导入项目包之后**一眼能看出数据回来了**的地方
-// （字形分片在 IndexedDB 里，刷新后仍在；不显示的话，导入成功与否要走到第 5 步才知道）
-const savedGlyphs = ref(null)
-glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
 </script>
 
 <template>
@@ -222,6 +192,9 @@ glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
             <span class="step-hint">{{ currentStep.hint }}</span>
           </h2>
           <span class="step-head-right">
+            <!-- 步骤级操作位：当前步骤可以把自己的操作按钮 Teleport 到这里（第 1 步的「更新预览」），
+                 顺序上排在「查看完整说明」之前 —— 操作在左、说明入口在右（2026-10-08 用户要求） -->
+            <span id="step-head-actions"></span>
             <!-- 每一步都能打开同一份《使用说明》（单文件 HTML，新标签页）：界面只留摘要，正文只有一份 -->
             <GuideLink />
           </span>
@@ -240,31 +213,6 @@ glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
           <button type="button" class="primary" :disabled="!nav.canNext" @click="goNext">下一步</button>
           <span v-if="nav.nextReason" class="panel-hint">{{ nav.nextReason }}</span>
         </div>
-      </section>
-
-      <section class="card">
-        <!-- 运行环境：**单行状态栏**（2026-10-07 用户要求去掉标题）。只留"能影响后续步骤"的浏览器能力，
-             分两行会占掉半屏而其中多数项永远是通过的；内置字表不是环境问题（它是产品的固定内容），
-             写成一句描述放在末尾 -->
-        <ul class="checklist checkline" data-role="env-status">
-          <li v-for="check in checks" :key="check.label">
-            <span class="check-value" :class="check.ok ? 'ok' : 'warn'">
-              {{ check.ok ? '可用' : '不可用' }} · {{ check.label }}
-            </span>
-          </li>
-          <li v-if="savedGlyphs && savedGlyphs.glyphs">
-            <span class="check-value ok" data-role="saved-glyphs">
-              已落盘 {{ savedGlyphs.pages }} 页 / {{ savedGlyphs.glyphs }} 个字
-            </span>
-          </li>
-          <li>
-            <span class="check-value">{{ charsetDesc }}</span>
-          </li>
-        </ul>
-        <p class="hint">
-          数据只保存在本机浏览器里：复制程序目录不会带走数据，换电脑或换浏览器前，请先用右上角的
-          <strong>「项目备份」</strong> 导出一份项目包。
-        </p>
       </section>
     </main>
   </div>

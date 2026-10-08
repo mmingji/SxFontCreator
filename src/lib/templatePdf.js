@@ -363,9 +363,10 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
   return { bytes, pageCount }
 }
 
-// 填写示意页的绘制参数（导出给测试断言）。
+// 书写示意页的绘制参数（导出给测试断言）。
 // 这一页**不进正式模板 PDF**：只由界面在第 1 步与模板预览并排显示，让用户一眼看到"这个格子里应该写成什么样"
-// （用户 2026-10-07 的要求：和模板一样的一页，只是每个书写格里已经用工整的手写体写好了那个字）。
+// （用户 2026-10-07 的要求：和模板一样的一页，只是每个书写格里已经用工整的手写体写好了那个字；
+//   2026-10-08 由"填写示意"改名为"书写示意"，并改成跟着范围逐页生成）
 export const SAMPLE_PAGE = {
   // 示范字的字号 = 书写格边长 × 1.0（即 1em = 格边长）。依据（2026-10-07 实测悠哉字体子集里 6812 个汉字的
   // 墨迹外框）：中位高 0.889em / 宽 0.879em、p90 0.924 / 0.917、最大 0.977 / 0.972 —— 取 1em = 格边长时
@@ -399,24 +400,24 @@ function drawSampleChar(page, cell, char, font, glyphBoxes) {
 }
 
 /**
- * 生成"填写示意"PDF（单页，仅界面预览用，**不进正式模板**）
+ * 生成"书写示意"PDF（仅界面预览用，**不进正式模板**）
  * 与模板**同版式**（同样的 17 × 8 字位、参考字、书写格与田字格），差别只有两处：
  *   ① 每个书写格里已经用工整手写体写好了那一格的字（示范"怎么写"）；
  *   ② **不画四角定位块与页脚编码标记** —— 它是给人看的，不是给机器认的，也避免被误当成可打印的模板。
  * @param {object} options
- * @param {string[]} [options.chars] 本页要排的字（超过一页只取前 136 个，与模板第一页对应）
+ * @param {string[]} [options.chars] 要排的字（按当前范围**逐页**生成，页数与模板一致）
  * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（与模板同一字体）
  * @param {ArrayBuffer|Uint8Array} options.sampleFontBytes 示范手写体字节（内置悠哉字体子集）
  * @returns {Promise<{bytes:Uint8Array, pageCount:number, glyphCount:number, fontScale:number}>}
  */
 export async function buildSamplePdf({ chars, fontBytes, sampleFontBytes }) {
-  if (!sampleFontBytes) throw new Error('生成填写示意失败：没有手写示范字体')
+  if (!sampleFontBytes) throw new Error('生成书写示意失败：没有手写示范字体')
   const list = chars && chars.length ? Array.from(chars) : getAllChars()
   // 按当前范围**逐页**生成（2026-10-07 用户拍板：与模板同页数、可翻页看）
   const pageCount = Math.max(1, Math.ceil(list.length / LAYOUT.perPage))
 
   const pdf = await PDFDocument.create()
-  pdf.setTitle('SxFontCreator 填写示意')
+  pdf.setTitle('SxFontCreator 书写示意')
   pdf.setCreator('SxFontCreator')
   pdf.registerFontkit(fontkit)
   const font = await pdf.embedFont(fontBytes, { subset: true })

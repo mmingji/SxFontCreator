@@ -13,8 +13,8 @@ import { ensureInlineBytes } from './inlineAssets.js'
 export const BUILTIN_FONT_URL = './fonts/lxgw-wenkai-subset.ttf'
 export const BUILTIN_FONT_LABEL = '内置楷体（霞鹜文楷子集）'
 
-// 填写示意的示范手写体：悠哉字体 Yozai 子集（OFL-1.1，2026-10-07 定案）。
-// 为什么单列一条：它只服务第 1 步「填写示意」那一页（在书写格里示范"这个字该怎么写"），
+// 书写示意的示范手写体：悠哉字体 Yozai 子集（OFL-1.1，2026-10-07 定案）。
+// 为什么单列一条：它只服务第 1 步「书写示意」那一块（在书写格里示范"这个字该怎么写"），
 // 与参考字的楷体是两回事 —— 参考字要端正易辨认，示范字要像"人手写出来的样子"。
 // 选型依据（覆盖字表 6919 字全中、字号子集 3.84MB）与其余候选的对比见《提交历史》第 59 条。
 export const HANDWRITING_FONT_URL = './fonts/yozai-subset.ttf'
@@ -57,7 +57,7 @@ export async function loadBuiltinFont() {
   return loadFontBytes(BUILTIN_FONT_URL, '内置字体')
 }
 
-// 读取内置示范手写体子集（悠哉字体）；只给"填写示意"用
+// 读取内置示范手写体子集（悠哉字体）；只给"书写示意"用
 export async function loadHandwritingFont() {
   return loadFontBytes(HANDWRITING_FONT_URL, '手写示范字体')
 }

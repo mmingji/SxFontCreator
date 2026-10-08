@@ -27,9 +27,9 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   // 预览画布的最大宽度（px）；实际按容器宽度自适应，超过这个值就居中留白
   maxWidth: { type: Number, default: 900 },
-  // 标题：第 1 步并排两块预览（模板 / 填写示意），各自要写清自己是什么
+  // 标题：第 1 步并排两块预览（模板 / 书写示意），各自要写清自己是什么
   title: { type: String, default: '模板预览（第 1 页与实际打印完全一致）' },
-  // 没有字节时的占位文案（如填写示意还没生成出来）
+  // 没有字节时的占位文案（如书写示意还没生成出来）
   emptyText: { type: String, default: '' }
 })
 
@@ -271,7 +271,6 @@ onBeforeUnmount(() => {
         <button class="text" type="button" :disabled="pageNo <= 1 || status === 'rendering'" @click="goto(-1)">上一页</button>
         <span class="pdf-preview-page">第 {{ pageNo }} / {{ pageCount || 1 }} 页</span>
         <button class="text" type="button" :disabled="pageNo >= pageCount || status === 'rendering'" @click="goto(1)">下一页</button>
-        <span v-if="pageCount > 1" class="pdf-preview-tip">最后一页是打印自检页</span>
       </span>
     </div>
     <div class="pdf-preview-body">
