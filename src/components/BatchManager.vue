@@ -153,7 +153,7 @@ async function doDelete(batch) {
               <span class="batch-state" :class="isActive(row.batch) ? 'active' : 'void'">{{ isActive(row.batch) ? '仍有效' : '已作废' }}</span>
               <span class="batch-main">
                 {{ row.batch.charCount }} 字 / {{ row.batch.pageCount }} 页 ·
-                {{ row.batch.order === 'rank' ? '按使用频率' : '字表顺序' }} · 校验码 {{ row.batch.batchCode }}
+                {{ row.batch.order === 'rank' ? '按使用频率' : '笔画序' }} · 校验码 {{ row.batch.batchCode }}
               </span>
             </div>
             <div class="batch-line sub">

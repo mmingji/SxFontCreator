@@ -173,7 +173,7 @@ async function downloadSingle(kind) {
 
 // ── 字形总览图（阶段三 3.6，版权登记辅助）────────────────────────────────
 // 用**生成的字体字节**渲染（FontFace 注册，与上面的网页预览同一条路），好处是图上的字形与产物一致；
-// 全量 6919 字约 740 × 9016 像素，画完再编码 PNG，实测约 1~3 秒。
+// 全量 8274 字 → 331 行（一行 25 字，尺寸由 glyphOverview.js 的版式常量决定），画完再编码 PNG，实测约 1~3 秒。
 async function exportOverview() {
   if (busy.value) return
   busy.value = true
@@ -264,7 +264,8 @@ async function exportOverview() {
       <p class="panel-hint">
         <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录，
         然后 <code>font-family: "{{ font.familyName }}";</code>。
-        <strong>没写的字</strong>在 Word 里会显示成方框、在 PS 里可能回退到别的字体 —— 想要一套完整可用的字体，建议先把常用字补齐。
+        <strong>没写的字</strong>在 Word 里会显示成方框、在 PS 与浏览器里会回退到别的字体；<strong>已写的字完全不受影响</strong> ——
+        所以不必写完也能先生成一套字体用起来，之后补写新字、重新生成即可（多批次的字形会合并进同一套字库）。
       </p>
       <p v-if="font.projectExportedAt" class="step-note">
         已经导出过项目包了。提醒一次：数据只在本机浏览器里 —— 又写了新的字之后，记得再导出一份。

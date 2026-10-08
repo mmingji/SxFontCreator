@@ -1,15 +1,23 @@
 <script setup>
 // 第 1 步：选字与出模板（阶段一步骤 1.3 的界面；2026-10-04 按用户要求改造成向导的第一步）
-// 职责：① 选**写哪些字**（**一组三选**：单页试打 / 全量字表 / 自定义选字，2026-10-07 由原来的
-//      「选字 + 生成范围」两组单选合并而来）② 选排列方式与参考字体
+// 职责：① 选**写哪些字**（**一组三选**：单页试打 / 常用 6500 字 / 自定义选字，2026-10-07 由原来的
+//      「选字 + 生成范围」两组单选合并而来；2026-10-08 换官方字表后第二项由"全量字表"改为"常用 6500 字"）
+//   ② 选排列方式与参考字体
 //   ③ **先看到模板第一页的真实预览**（pdf.js 渲染真实 PDF）④ 生成模板 PDF / 更正册并下载。
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
-// 数据来源：字表来自 src/lib/charset.js（6919 字）；字体来自 referenceFont.js（内置子集或本机字体）。
+// 数据来源：字表来自 src/lib/charset.js（8274 字 = 官方 8105 + 基础字符 169，决策 三-1、八-1、八-2）；
+//   字体来自 referenceFont.js（内置子集或本机字体）。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf, buildSamplePagePdf } from '../lib/templatePdf.js'
 import { getAllChars, getCharsetMeta } from '../lib/charset.js'
 import { CHAR_RANK_META, getRankOrder, sortByRank } from '../lib/charRank.js'
 import { getLevelChars } from '../lib/frequency.js'
+import {
+  CHARSET_STANDARD_TITLE,
+  CHARSET_STANDARD_NOTES,
+  CHARSET_STANDARD_SOURCES,
+  CHARSET_SCOPE_LINE
+} from '../lib/charsetStandard.js'
 import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadHandwritingFont, loadFontFromFile } from '../lib/referenceFont.js'
 import { useProjectStore } from '../store/project.js'
 import SelectionPanel from './SelectionPanel.vue'
@@ -17,19 +25,21 @@ import PdfPreview from './PdfPreview.vue'
 
 const store = useProjectStore()
 const meta = getCharsetMeta()
-const totalPages = Math.ceil(meta.total / LAYOUT.perPage)
-// 字表构成的三个数字：全部从字表分级算出来（GB2312 一级 + 二级 = 6763 字），不硬编码 ——
-// 改字表时这句描述自动跟着变（"全量"两个字说明不了包含什么，用户会拿它跟别的字表对照）
-const gb2312Count = getLevelChars('gb1').length + getLevelChars('gb2').length
-const extraCount = getLevelChars('extra').length
-const symbolCount = getLevelChars('symbols').length
+// 字表构成的几个数字**全部从字表分级算出来**，不硬编码 —— 改字表时口径说明自动跟着变。
+// 「常用 6500 字」档 = 一级 3500 + 二级 3000 + 基础字符 169 = 6669 字；
+// 全量（8274 字）走「自定义选字」里的「全选全部」。
+const l1Count = getLevelChars('l1').length
+const l2Count = getLevelChars('l2').length
+const baseCount = getLevelChars('base').length
+const commonCount = l1Count + l2Count + baseCount
+const commonPages = Math.ceil(commonCount / LAYOUT.perPage)
 
 // 写哪些字出模板：**一组三选**（2026-10-07 用户要求把原来的「选字 + 生成范围」两组单选合并成一组）。
 //   single —— 单页试打：只出第 1 页（前 136 字）+ 自检页，先确认版式与打印设置；**不记批次**
-//   full   —— 全量字表：6919 字全出（按当前排列方式）
-//   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量字表"等价
+//   common —— 常用 6500 字：一级 + 二级 + 基础字符全出（按当前排列方式）
+//   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量"（8274 字）等价
 // 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
-// 正式范围（全量字表 / 自定义选字）出模板时会记一个批次，单页试打不记。
+// 正式范围（常用 6500 字 / 自定义选字）出模板时会记一个批次，单页试打不记。
 const scope = ref('single')
 const pickerOpen = computed(() => scope.value === 'custom')
 // 字体来源：内置子集 / 用户选的本机字体
@@ -84,37 +94,56 @@ async function refreshSample(fontBytes, chars) {
   }
 }
 
-// 「本机字体怎么选」的浮窗：这段说明较长（Windows 字体目录带「系统」属性、两条绕开办法、macOS 目录），
-// 常驻会把面板撑长，所以收进问号按钮后面，点击展开；点击别处或按 Esc 收起。
+// 两个问号浮窗共用同一套开合与定位：①「本机字体怎么选」（Windows 字体目录带「系统」属性、两条绕开
+// 办法、macOS 目录，常驻会把面板撑长）；②「字表标准与收字口径」（2026-10-08 新增，显示《通用规范汉字表》
+// 官方说明全文十条 + 来源声明）。同一时刻只开一个。
 const fontHelpOpen = ref(false)
+const standardHelpOpen = ref(false)
 // 浮窗位置在打开时按按钮位置算，并夹进视口：实测固定的 left / right 都不行 ——
 // 1180px 视口下向左展开会把文字裁在视口外（左边缘到 -53px），900px 视口下向右展开又顶出右边界。
 const fontHelpStyle = ref({ left: '0px', top: 'calc(100% + 8px)' })
-function toggleFontHelp(e) {
-  if (fontHelpOpen.value) {
-    fontHelpOpen.value = false
-    return
-  }
-  const holder = e.currentTarget.closest('.font-help')
-  const btnRect = e.currentTarget.getBoundingClientRect()
+const standardHelpStyle = ref({ left: '0px', top: 'calc(100% + 8px)' })
+
+// 相对 .help-holder 的偏移，三级优先：① 右对齐到按钮右边缘（浮窗贴问号左下）② 放不下就左对齐到按钮
+// ③ 仍放不下（窄窗口）再夹进视口 —— 这样 1180px 下浮窗正好落在问号下方，900px 下贴着右边界也不溢出
+function placePopover(buttonEl, width) {
+  const holder = buttonEl.closest('.help-holder')
+  const btnRect = buttonEl.getBoundingClientRect()
   const holderRect = holder.getBoundingClientRect()
-  const width = Math.min(560, window.innerWidth - 48)
+  const w = Math.min(width, window.innerWidth - 48)
   const minLeft = 12 - holderRect.left
-  const maxLeft = window.innerWidth - width - 12 - holderRect.left
-  // 相对 .font-help 的偏移，三级优先：① 右对齐到按钮右边缘（浮窗贴问号左下）② 放不下就左对齐到按钮
-  // ③ 仍放不下（窄窗口）再夹进视口 —— 这样 1180px 下浮窗正好落在问号下方，900px 下贴着右边界也不溢出
-  let left = btnRect.right - holderRect.left - width
+  const maxLeft = window.innerWidth - w - 12 - holderRect.left
+  let left = btnRect.right - holderRect.left - w
   if (left < minLeft) left = btnRect.left - holderRect.left
   left = Math.max(minLeft, Math.min(maxLeft, left))
-  fontHelpStyle.value = { left: Math.round(left) + 'px', top: 'calc(100% + 8px)', width: Math.round(width) + 'px' }
-  fontHelpOpen.value = true
+  return { left: Math.round(left) + 'px', top: 'calc(100% + 8px)', width: Math.round(w) + 'px' }
 }
+
+function toggleFontHelp(e) {
+  fontHelpOpen.value = !fontHelpOpen.value
+  if (!fontHelpOpen.value) return
+  standardHelpOpen.value = false
+  fontHelpStyle.value = placePopover(e.currentTarget, 560)
+}
+
+function toggleStandardHelp(e) {
+  standardHelpOpen.value = !standardHelpOpen.value
+  if (!standardHelpOpen.value) return
+  fontHelpOpen.value = false
+  standardHelpStyle.value = placePopover(e.currentTarget, 620)
+}
+
 function onDocumentClick(e) {
-  // 点在任何 .font-help 区域（问号或浮窗）内都不关闭 —— 否则"点问号展开"会被同一次冒泡立刻收掉
-  if (!e.target || !e.target.closest || !e.target.closest('.font-help')) fontHelpOpen.value = false
+  // 点在任何 .help-holder 区域（问号或浮窗）内都不关闭 —— 否则"点问号展开"会被同一次冒泡立刻收掉
+  if (e.target && e.target.closest && e.target.closest('.help-holder')) return
+  fontHelpOpen.value = false
+  standardHelpOpen.value = false
 }
 function onDocumentKeydown(e) {
-  if (e.key === 'Escape') fontHelpOpen.value = false
+  if (e.key === 'Escape') {
+    fontHelpOpen.value = false
+    standardHelpOpen.value = false
+  }
 }
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
@@ -133,16 +162,16 @@ const scopeHint = computed(() => {
   if (scope.value === 'custom') {
     return store.selectedCount
       ? '自定义选字：已选 ' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
-      : '自定义选字：还没有选字 —— 一个字都没选时按全量字表 ' + meta.total + ' 字出，下面是选字面板'
+      : '自定义选字：还没有选字 —— 一个字都没选时按全部 ' + meta.total + ' 字出（等于「全选全部」），下面是选字面板'
   }
-  return 'GB2312 全部 ' + gb2312Count + ' 字 + 超纲字 ' + extraCount + ' + 数字字母与标点 ' + symbolCount +
-    ' = ' + meta.total + ' 字／' + totalPages + ' 页'
+  return '一级 ' + l1Count + ' 字 + 二级 ' + l2Count + ' 字 + 基础字符 ' + baseCount +
+    ' = 常用 ' + commonCount + ' 字／' + commonPages + ' 页'
 })
 
-// 排列方式：默认**按使用频率** —— 最常用的字排在最前，前 2000 字覆盖日常语料 97.1%（约 15 页），
-// 整套 51 页里前 28 页就够日常使用；频序本身也把同偏旁的字打散了（拼音字序会让同偏旁的字挨在一起，很疲劳）。
-// 「字表顺序」保留给想跟做字体网 V4.0 模板对齐的人；两种顺序都能被识别 —— 批次记的是实际字序，
-// 页脚校验码也是按字序算的（决策 八-6、八-10），换顺序不会影响"扫描件与批次匹配"的判定。
+// 排列方式：默认**按使用频率** —— 最常用的字排在最前，前 2000 字覆盖日常语料 97.13%（约 15 页）、
+// 前 6500 字覆盖 99.99%（约 48 页），频序本身也把同偏旁的字打散了（笔画序会让同偏旁的字挨在一起，很疲劳）。
+// 「笔画序」= 《通用规范汉字表》的官方字序（说明第八条：遵循《GB 13000.1 字符集汉字字序（笔画序）规范》）。
+// 两种顺序都能被识别 —— 批次记的是实际字序，页脚校验码也按字序算（决策 八-6、八-10），换顺序不影响比对。
 const orderMode = computed({
   get: () => store.ui.orderMode,
   set: (value) => store.setOrderMode(value)
@@ -151,20 +180,27 @@ const orderHint = computed(() => {
   if (orderMode.value === 'rank') {
     return '按使用频率：最常用的字在最前（前 2000 字覆盖语料 ' + CHAR_RANK_META.cumAt2000 + '%，约 ' +
       Math.ceil(2000 / LAYOUT.perPage) + ' 页即可日常使用）；' + CHAR_RANK_META.missing +
-      ' 个未被字频表收录的字（部首、超纲字与符号）排在最后'
+      ' 个未被字频表收录的字（' + (CHAR_RANK_META.missing - baseCount) + ' 个汉字 + 基础字符 ' + baseCount +
+      '）按官方笔画序排在最后'
   }
-  return '字表顺序（拼音）：与做字体网 V4.0 模板一致，同偏旁的字容易挨在一起'
+  return '笔画序：《通用规范汉字表》的官方字序（说明第八条：字序遵循《GB 13000.1 字符集汉字字序（笔画序）规范》）'
 })
 
 // 实际要排的字：先按"排列方式"定全序，再按上面三选一取子集
-// （单页试打取前 136 字 —— 频序下就是最常用的 136 字；自定义选字取已选的字；全部字表取全序）
+// （单页试打取前 136 字 —— 频序下就是最常用的 136 字；常用 6500 字取一级 + 二级 + 基础字符；
+//  自定义选字取已选的字，一个字都没选时按全量 8274 字）
 function charsForScope() {
-  const base = orderMode.value === 'rank' ? getRankOrder() : getAllChars()
+  const wantRank = orderMode.value === 'rank'
+  const base = wantRank ? getRankOrder() : getAllChars()
   if (scope.value === 'single') return base.slice(0, LAYOUT.perPage)
+  if (scope.value === 'common') {
+    const picked = [...getLevelChars('l1'), ...getLevelChars('l2'), ...getLevelChars('base')]
+    return wantRank ? sortByRank(picked) : picked
+  }
   if (scope.value === 'custom') {
     const picked = Array.from(store.charsForTemplate)
     if (!picked.length) return base
-    return orderMode.value === 'rank' ? sortByRank(picked) : picked
+    return wantRank ? sortByRank(picked) : picked
   }
   return base
 }
@@ -324,23 +360,58 @@ async function generateCorrectionBook() {
 <template>
   <div class="step-body">
     <!-- 写哪些字：**一组三选**（2026-10-07 把原来的「选字」与「生成范围」两组单选合并成这一组；
-         选字面板只在「自定义选字」时展开，避免默认状态就把整个字网格铺在第一步里） -->
+         2026-10-08 换官方字表后第二项由「全量字表（6919 字）」改为「常用 6500 字」，全量走自定义选字里的
+         「全选全部」—— 口径见《决策记录》三-1、八-1；右侧问号是《通用规范汉字表》官方说明全文） -->
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">写哪些字</span>
         <label class="radio"><input v-model="scope" type="radio" value="single" :disabled="busy" />单页试打</label>
-        <label class="radio"><input v-model="scope" type="radio" value="full" :disabled="busy" />全量字表（{{ meta.total }} 字）</label>
+        <label class="radio"><input v-model="scope" type="radio" value="common" :disabled="busy" />常用 6500 字</label>
         <label class="radio"><input v-model="scope" type="radio" value="custom" :disabled="busy" />自定义选字</label>
+        <span class="help-holder">
+          <button
+            class="help-button"
+            type="button"
+            data-role="charset-help"
+            :aria-expanded="standardHelpOpen ? 'true' : 'false'"
+            aria-label="字表按什么标准收字"
+            @click="toggleStandardHelp"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M6.1 6.2a1.9 1.9 0 0 1 3.7.6c0 1.1-1.8 1.2-1.8 2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+              <circle cx="8" cy="11.4" r="0.8" fill="currentColor" />
+            </svg>
+          </button>
+          <div v-if="standardHelpOpen" class="help-popover" data-role="charset-help-popover" :style="standardHelpStyle" role="dialog" aria-label="字表标准与收字口径">
+            <p class="help-title">{{ CHARSET_STANDARD_TITLE }}官方说明（全文）</p>
+            <ol class="help-notes">
+              <li v-for="note in CHARSET_STANDARD_NOTES" :key="note.no">{{ note.text }}</li>
+            </ol>
+            <div class="help-source">
+              <p class="help-title">来源与核对</p>
+              <ul class="help-notes">
+                <li v-for="(line, i) in CHARSET_STANDARD_SOURCES" :key="i">{{ line }}</li>
+              </ul>
+              <p>{{ CHARSET_SCOPE_LINE }}</p>
+            </div>
+            <button class="text" type="button" @click="standardHelpOpen = false">关闭</button>
+          </div>
+        </span>
         <span class="panel-hint">{{ scopeHint }}</span>
       </div>
     </div>
+    <p class="panel-hint">
+      没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> ——
+      所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。
+    </p>
     <SelectionPanel v-if="pickerOpen" nested />
 
     <div class="panel-row" data-role="order-mode-row">
       <div class="panel-field">
         <span class="field-label">排列方式</span>
         <label class="radio"><input v-model="orderMode" type="radio" value="rank" :disabled="busy" />按使用频率</label>
-        <label class="radio"><input v-model="orderMode" type="radio" value="charset" :disabled="busy" />字表顺序（拼音）</label>
+        <label class="radio"><input v-model="orderMode" type="radio" value="charset" :disabled="busy" />笔画序</label>
         <span class="panel-hint">{{ orderHint }}</span>
       </div>
     </div>
@@ -354,10 +425,11 @@ async function generateCorrectionBook() {
           选择本机字体
           <input type="file" accept=".ttf,.otf,.ttc,.woff,font/ttf,font/otf" :disabled="busy" @change="pickLocalFont" />
         </label>
-        <span class="font-help">
+        <span class="help-holder">
           <button
             class="help-button"
             type="button"
+            data-role="font-help"
             :aria-expanded="fontHelpOpen ? 'true' : 'false'"
             aria-label="本机字体怎么选"
             @click="toggleFontHelp"
@@ -368,7 +440,7 @@ async function generateCorrectionBook() {
               <circle cx="8" cy="11.4" r="0.8" fill="currentColor" />
             </svg>
           </button>
-          <div v-if="fontHelpOpen" class="help-popover" :style="fontHelpStyle" role="dialog" aria-label="本机字体怎么选">
+          <div v-if="fontHelpOpen" class="help-popover" data-role="font-help-popover" :style="fontHelpStyle" role="dialog" aria-label="本机字体怎么选">
             <p>
               选不到 <code>C:\Windows\Fonts</code>？该目录带「系统」属性，Windows 的文件选择框默认不显示它（目录本身可读，只是被当成受保护的系统项）。
               两个办法：① 在选择框下方的「文件名」输入框里直接粘贴完整路径（例如 <code>C:\Windows\Fonts\simkai.ttf</code>）再回车；

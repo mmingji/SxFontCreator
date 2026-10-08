@@ -13,11 +13,27 @@ export function resolveBatchChars(batch) {
   return getAllChars().join('')
 }
 
+// 字符串 → 码点数组，带**单槽缓存**。两件事一起解决：
+//   ① **正确性**：字表里有 196 个扩展 B 区汉字（UTF-16 代理对），字符串下标 chars[i] 按码元取，
+//      遇到它们会取到半个字符、后面的索引整体错位（旧字表全在 BMP 内，这条一直没暴露）；
+//   ② **性能**：识别一页要按格取字 136 次，若每次都 Array.from 会把八千多字的字符串重扫 136 遍。
+//   缓存只留最近一次用到的那个字符串 —— 识别是串行按批处理的，同一批的 chars 在整页处理期间不变。
+let cachedText = null
+let cachedList = null
+function toCharList(chars) {
+  if (Array.isArray(chars)) return chars
+  if (chars === cachedText) return cachedList
+  cachedText = chars
+  cachedList = Array.from(chars)
+  return cachedList
+}
+
 /** 页内格号 → 字（决策 二-8 ⑤：全量字序 = (页码−1)×136 + 格号）；页码未知（页脚读不出且未手选）时返回 null */
 export function charAtCell(chars, pageNumber, cellIndex) {
   if (!chars || !pageNumber) return null
+  const list = toCharList(chars)
   const i = (pageNumber - 1) * LAYOUT.perPage + cellIndex
-  return i >= 0 && i < chars.length ? chars[i] : null
+  return i >= 0 && i < list.length ? list[i] : null
 }
 
 /** 某一页能不能继续用于字形识别（页脚读不出的页，只要用户手选了页序也算能收 —— 决策 二-7） */

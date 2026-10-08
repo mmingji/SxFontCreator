@@ -46,7 +46,7 @@ const gate = computed(() => evaluateScanGate({
 const batchOptions = computed(() => [...store.batches].reverse().map((b, i) => ({
   id: b.id,
   label: '第 ' + (store.batches.length - i) + ' 批 · ' + b.charCount + ' 字 / ' + b.pageCount + ' 页 · 校验码 ' + b.batchCode +
-    (b.order === 'rank' ? ' · 按使用频率' : ' · 字表顺序') + (b.status === 'void' ? ' · 已作废' : '')
+    (b.order === 'rank' ? ' · 按使用频率' : ' · 笔画序') + (b.status === 'void' ? ' · 已作废' : '')
 })))
 const batchId = computed({
   get: () => store.scan.batchId,

@@ -2,7 +2,7 @@
 // 数据结构（也是「导出项目包」的内容，决策记录 五-2）：
 //   meta      —— 字体名称表字段（族名、子族名、版本、设计者、版权、许可…），全部有默认值（四-1）
 //   glyphs    —— 字形数据：码位 → 轮廓（阶段一后续步骤填充）
-//   template  —— 模板配置：字表顺序、版面参数（阶段一步骤 1.3 填充）
+//   template  —— 模板配置：排列方式、版面参数（阶段一步骤 1.3 填充）
 //   selection —— 当前选字：用哪套频次标准、选了哪些字（决策 八-1、八-2）
 //   batches   —— 批次列表：一次「生成模板 → 打印 → 手写 → 扫描 → 识别」的过程（八-6）
 //   rev       —— 版本号，由 persist 递增；用来判断 IndexedDB 与 localStorage 快照哪份更新（五-4）
@@ -43,14 +43,14 @@ export const useProjectStore = defineStore('project', {
     },
     glyphs: {},
     template: {},
-    // 选字：chars 是选中的字（**按字表顺序**的字符串）。
+    // 选字：chars 是选中的字（**按字表字序排列**的字符串，字序 = 官方笔画序）。
     // 用字符串而不是数组：八千多字的数组拖进 Pinia 响应式开销大，字符串轻、天然有序、易于比对（八-6）。
     // 代价：**字数一律要用 countChars 按码点算**（字表里有 196 个扩展 B 区汉字是代理对，.length 会虚高）。
     // 2026-10-08 修订（决策 八-2 重写）：分级改用《通用规范汉字表》规范三级 + 基础字符，
     // 原来的 GB2312 与"频次标准"字段都已删除
     selection: { chars: '' },
     // 批次列表（八-6、八-9、八-10）。每个批次记：
-    //   chars     —— 该批选字（按全量字表位置排序，保证字序可复现）；空串表示全量
+    //   chars     —— 该批选字（按字表位置排序，保证字序可复现）；空串表示全部 8274 字
     //   pageCount —— 该批模板的字表页数
     //   batchCode —— 12 位校验码，与印在页脚的高 12 位一致（八-10）
     //   status    —— active 可上传 / void 已作废（选字一改即作废，不再接受上传，除非用户显式勾选）
@@ -183,8 +183,8 @@ export const useProjectStore = defineStore('project', {
         if (data.meta && typeof data.meta === 'object') Object.assign(this.meta, data.meta)
         if (data.glyphs && typeof data.glyphs === 'object') this.glyphs = data.glyphs
         if (data.template && typeof data.template === 'object') this.template = data.template
-        // 只取 chars：2026-10-07 之前的项目对象里还有 selection.standard（频次标准，决策 八-2 已修订为
-        // 只留 GB2312），那是个老字段，直接忽略 —— 免得它又被写回落盘数据里
+        // 只取 chars：2026-10-07 之前的项目对象里还有 selection.standard（频次标准，决策 八-2 已重写为
+        // 规范三级 + 基础字符），那是个老字段，直接忽略 —— 免得它又被写回落盘数据里
         if (data.selection && typeof data.selection === 'object') {
           this.selection.chars = typeof data.selection.chars === 'string' ? data.selection.chars : ''
         }
@@ -241,7 +241,7 @@ export const useProjectStore = defineStore('project', {
     },
 
     /**
-     * 设置选字（顺带做三件事：过滤字表外的字符、按字表顺序排序、去重 —— 决策 八-6）
+     * 设置选字（顺带做三件事：过滤字表外的字符、按字表字序（官方笔画序）排序、去重 —— 决策 八-6）
      * 字序一变，已打印的模板随即失效，因此**已有批次立即作废**（八-9）
      * @param {string|string[]} chars
      * @returns {{changed: boolean, count: number, voided: number}}
@@ -278,7 +278,7 @@ export const useProjectStore = defineStore('project', {
      * @param {object} info
      * @param {number} info.pageCount 该批模板的字表页数
      * @param {string} [info.chars] 指定字序（默认取当前选字；空选字 = 全量）
-     * @param {string} [info.order] 排列方式：'rank' 按使用频率 / 'charset' 字表顺序（八-6 的修订）
+     * @param {string} [info.order] 排列方式：'rank' 按使用频率 / 'charset' 笔画序（八-6 的修订、八-11）
      * @returns {object} 新建的批次
      */
     addBatch({ pageCount, chars, order } = {}) {

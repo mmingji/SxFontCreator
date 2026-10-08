@@ -1,15 +1,17 @@
 <script setup>
 // 选字面板（阶段一「选字」步骤，决策记录 八-1 ~ 八-6）
-// 职责：按频次分级缩小范围 → 检索或用字网格挑字 → 得到一份"要写的字"清单，交给模板生成。
-// 数据来源：分类数据来自 lib/frequency.js（单一标准 GB2312 + 「数字、字母与标点」/「其它」两类兜底 ——
-//   2026-10-07 修订决策 八-2：原两套标准（GB2312 与《通用规范汉字表》2013）只留 GB2312）；
-//   已选清单存在 store.selection，模板生成时按它排版（空 = 全量）。
+// 职责：按分类缩小范围 → 检索或用字网格挑字 → 得到一份"要写的字"清单，交给模板生成。
+// 数据来源：分类数据来自 lib/frequency.js（2026-10-08 换官方口径：规范三级 + 基础字符共四类 ——
+//   一级 3500 / 二级 3000 / 三级 1605 / 基础字符 169；原 GB2312 两套分级已删，修订决策 八-2）；
+//   已选清单存在 store.selection，模板生成时按它排版（空 = 全部 8274 字）。
 // 界面形态（八-4）：左侧分类树 + 上方检索框 + 中间字网格 + 右侧已选清单；
-//   分类节点的「全选本类 / 取消本类」**必须二次确认**（一次点击可能加入 3755 个字）。
-// 为什么分页：最大一类 3755 字，一次性渲染几千个节点会让切换明显卡顿；每页 340 字（约一屏多）。
+//   分类节点的「全选本类 / 取消本类」与「全选全部」**必须二次确认**（一次点击可能加入几千个字，
+//   全选全部是 8274 个 —— 点错一次要按 61 页纸重写）。
+// 为什么分页：最大一类 3500 字，一次性渲染几千个节点会让切换明显卡顿；每页 340 字（约一屏多）。
 import { computed, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { SELECTION_LEVELS, getLevelChars, searchChars } from '../lib/frequency.js'
+import { getAllChars, countChars } from '../lib/charset.js'
 import { sortByRank } from '../lib/charRank.js'
 
 // nested：作为「选字与出模板」步骤的下级出现（用户 2026-10-04 拍板的两级结构）——
@@ -45,7 +47,7 @@ const treeNodes = computed(() =>
 
 // 当前展示的字：检索优先，否则看选中的分类。
 // 排序：切到"按使用频率"时本类内按频序排；**未被字频表收录的字排在最后并保持字表顺序** ——
-//   全表有 209 个这样的字（部首、超纲字与 107 个数字字母标点），所以"数字、字母与标点"这一类
+//   全表有 1298 个这样的字（1129 个汉字与全部 169 个基础字符），所以"基础字符"这一类
 //   在两种排序下看起来几乎一样，这是预期行为，不是没生效。
 // 检索结果不参与排序：决策 八-5 要求按粘贴顺序返回，方便"粘贴一段话照着写"
 const listing = computed(() => {
@@ -91,13 +93,32 @@ function onLevelAll(select) {
   const level = activeLevel.value
   if (!level) return
   const action = select ? '全选' : '取消'
-  // 二次确认：一次点击可能加入或移除几千个字（八-4）
-  if (!window.confirm('确认要' + action + '「' + level.label + '」的 ' + level.count + ' 个字吗？')) return
-  reportChange(store.setLevelSelected(Array.from(level.chars), select), action + '「' + level.label + '」')
+  // 二次确认：一次点击可能加入或移除几千个字（八-4）。
+  // 注意 `level.chars.length` 是**数组长度**（按码点算）：字表里有扩展 B 区汉字，字符串的 .length 会虚高
+  if (!window.confirm('确认要' + action + '「' + level.label + '」的 ' + level.chars.length + ' 个字吗？')) return
+  reportChange(store.setLevelSelected(level.chars, select), action + '「' + level.label + '」')
+}
+
+// 全选全部（2026-10-08 新增）：这是"打全量"的入口 —— 第 1 步的第二个档位只到「常用 6500 字」，
+// 想做全量 8274 字（61 页）就走这里。与"全选本类"同一规格：**必须二次确认**。
+function onSelectAllLevels() {
+  const all = getAllChars()
+  if (!window.confirm('确认要全选全部 ' + all.length + ' 个字吗？全量约 ' + Math.ceil(all.length / 136) + ' 页，是一次长期工程')) return
+  reportChange(store.setLevelSelected(all, true), '全选全部')
+}
+
+// 清空已选（一次点掉全部）
+function onClearAllLevels() {
+  if (!store.selectedCount) {
+    setMessage('还没有选字', 'info')
+    return
+  }
+  if (!window.confirm('确认清空已选的 ' + store.selectedCount + ' 个字吗？')) return
+  reportChange(store.setSelection(''), '清空已选')
 }
 
 // 页级全选 / 取消（2026-10-08 用户要求）：只动当前这一页的字（最多 340 个），**不弹确认** ——
-// 与"全选本类"（一次 3755 字、必须二次确认）不同，页级误点之后点「取消本页」就回来了
+// 与"全选本类"（一次 3500 字、必须二次确认）不同，页级误点之后点「取消本页」就回来了
 function onSelectPage(select) {
   const chars = pageChars.value
   if (!chars.length) return
@@ -115,15 +136,6 @@ function onAddSearchResults() {
   reportChange(store.setSelection([...merged]), '把检索到的 ' + hits.length + ' 个字加入已选')
 }
 
-function onClearAll() {
-  if (!store.selectedCount) {
-    setMessage('还没有选字', 'info')
-    return
-  }
-  if (!window.confirm('确认清空已选的 ' + store.selectedCount + ' 个字吗？（清空后出模板等于全量 6919 字）')) return
-  reportChange(store.setSelection(''), '清空已选')
-}
-
 // 已选清单：按分类给出分布，让用户知道"哪些类还没写"
 const selectedStats = computed(() => {
   const stats = []
@@ -135,7 +147,9 @@ const selectedStats = computed(() => {
   return stats
 })
 
-const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.length / 136)))
+// 出模板的页数：按**码点**数已选字数（countChars）—— store.charsForTemplate 是字符串，
+// 直接用 .length 会被扩展 B 区汉字（代理对）多算一个
+const pageCount = computed(() => Math.max(1, Math.ceil(countChars(store.charsForTemplate) / 136)))
 </script>
 
 <template>
@@ -145,8 +159,8 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
     <h2 v-if="!nested">选字</h2>
 
     <p class="panel-hint">
-      按 GB2312 分级：一级常用字覆盖日常使用频度约 99.9%；数字、字母与标点单独成一类。
-      先写「一级常用字 + 数字字母标点」（约 28 页）就能得到一套日常可用的字体。
+      按《通用规范汉字表》分级：一级 3500 / 二级 3000 / 三级 1605，另加基础字符 169（半角 ASCII + 中文标点 + 全角符号）。
+      先写「一级常用字 + 基础字符」（约 27 页）就能得到一套日常可用的字体；打全量（8274 字 / 61 页）用下面的「全选全部」。
     </p>
 
     <div class="panel-row">
@@ -158,7 +172,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
           class="search-input"
           placeholder="输入汉字，或直接粘贴一整段（如：我们你好世界）"
         />
-        <button :disabled="!query.trim()" @click="onAddSearchResults">把检索到的字全部加入</button>
+        <button data-role="add-search-results" :disabled="!query.trim()" @click="onAddSearchResults">把检索到的字全部加入</button>
         <span v-if="query.trim()" class="panel-hint">
           命中 {{ listing.length }} 个字（只认字表内的字；半角数字与字母也在字表里）
         </span>
@@ -179,6 +193,9 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
         <div class="tree-actions">
           <button :disabled="!activeLevel" @click="onLevelAll(true)">全选本类</button>
           <button :disabled="!activeLevel" @click="onLevelAll(false)">取消本类</button>
+          <!-- 全选全部 = 打全量的入口（第 1 步第二个档位只到「常用 6500 字」，全量 8274 字走这里）；
+               点错了要收回：右侧的「清空已选」（或用「取消本类」逐类退） -->
+          <button @click="onSelectAllLevels">全选全部</button>
         </div>
       </aside>
 
@@ -186,7 +203,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
         <div class="grid-head">
           <span class="panel-hint">
             <template v-if="query.trim()">检索结果 {{ listing.length }} 字</template>
-            <template v-else-if="activeLevel">「{{ activeLevel.label }}」共 {{ activeLevel.count }} 字</template>
+            <template v-else-if="activeLevel">「{{ activeLevel.label }}」共 {{ activeLevel.chars.length }} 字</template>
             <template v-else>请选择左侧分类，或在上方检索</template>
             （第 {{ page + 1 }} / {{ totalPages }} 页）
           </span>
@@ -194,7 +211,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
             <!-- 排序与模板那一块的「排列方式」是同一份状态：在这里切换，出模板的字序也跟着变 -->
             <span class="sort-picker">
               <label class="radio"><input v-model="orderMode" type="radio" value="rank" />按使用频率</label>
-              <label class="radio"><input v-model="orderMode" type="radio" value="charset" />字表顺序（拼音）</label>
+              <label class="radio"><input v-model="orderMode" type="radio" value="charset" />笔画序</label>
             </span>
             <span class="pager">
               <button :disabled="!pageChars.length" @click="onSelectPage(true)">全选本页</button>
@@ -226,20 +243,21 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
           <li v-for="item in selectedStats" :key="item.key">
             <span>{{ item.label }}</span><span>{{ item.count }}</span>
           </li>
-          <li v-if="!selectedStats.length" class="muted">（未选字时出模板为全量 6919 字）</li>
+          <li v-if="!selectedStats.length" class="muted">（未选字时出模板 = 全部 8274 字）</li>
         </ul>
         <p class="panel-hint">
-          出模板将排 {{ store.charsForTemplate.length }} 字 ≈ {{ pageCount }} 页（每页 136 格）。
+          出模板将排 {{ countChars(store.charsForTemplate) }} 字 ≈ {{ pageCount }} 页（每页 136 格）。
         </p>
-        <button class="clear-button" :disabled="!store.selectedCount" @click="onClearAll">清空已选</button>
+        <button class="clear-button" :disabled="!store.selectedCount" @click="onClearAllLevels">清空已选</button>
       </aside>
     </div>
 
     <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
 
     <p class="panel-hint">
-      字序规则：出模板时按<strong>全量字表的位置顺序</strong>排版（与您点选的先后无关），这样同一份选字每次都排成同一版，
-      页码与格位可复现（决策记录 八-6）。改动选字会让已打印的模板作废 —— 界面会提示，识别阶段也会拦下不匹配的扫描件。
+      字序规则：出模板时按<strong>当前排列方式</strong>排版（按使用频率时为频序、笔画序时为《通用规范汉字表》的官方字序），
+      与您点选的先后无关，这样同一份选字每次都排成同一版，页码与格位可复现（决策记录 八-6）。
+      改动选字会让已打印的模板作废 —— 界面会提示，识别阶段也会拦下不匹配的扫描件。
     </p>
   </section>
 </template>

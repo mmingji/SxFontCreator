@@ -373,11 +373,12 @@ button.text:hover {
   display: none;
 }
 
-/* 「本机字体怎么选」的问号入口：那段说明较长（系统字体目录的两条绕开办法 + macOS 目录），
-   常驻会把面板撑长，所以收进浮窗：点问号展开，点别处或按 Esc 收起。
+/* 问号浮窗（两处共用）：①「本机字体怎么选」—— 那段说明较长（系统字体目录的两条绕开办法 + macOS 目录），
+   常驻会把面板撑长；②「字表按什么标准收字」—— 《通用规范汉字表》官方说明全文十条 + 来源声明。
+   都是点问号展开，点别处或按 Esc 收起。
    浮窗的 left / top / width 由组件在打开时按按钮位置算好（并夹进视口）——固定的 left 或 right 都不行：
    1180px 视口下向左展开会把文字裁在视口外，900px 视口下向右展开又顶出右边界。 */
-.font-help {
+.help-holder {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -418,6 +419,31 @@ button.text:hover {
   font-size: 12px;
   line-height: 1.7;
   color: var(--text-2);
+}
+
+/* 官方说明的十条与来源清单：字号 12px（渲染后最小字号下限），行距放宽便于逐条读 */
+.help-popover .help-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.help-popover .help-notes {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.help-popover .help-notes li {
+  margin-bottom: 4px;
+}
+
+.help-popover .help-source {
+  margin-bottom: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
 }
 
 .panel-actions {

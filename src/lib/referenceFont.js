@@ -1,6 +1,6 @@
 // 参考字字体来源：模板 PDF 里每个字位上方印的那个字用什么字体画
 // 两条来源（决策记录 一-11）：
-//   ① 内置子集 —— public/fonts/lxgw-wenkai-subset.ttf，霞鹜文楷（OFL-1.1），只含字表 6919 字，零配置可用
+//   ① 内置子集 —— public/fonts/lxgw-wenkai-subset.ttf，霞鹜文楷（OFL-1.1），只含字表 8274 字，零配置可用
 //   ② 本机字体文件 —— 用户自己选（如 C:\Windows\Fonts\simkai.ttf），只在本机内存里用，不上传、不入库
 // 格式支持（2026-09-29 扩展）：ttf / otf 直接用；ttc 由 fontFormat.js 零依赖提取出单个字体；
 //   woff 解包成 sfnt；woff2 明确不支持并给中文提示（见 fontFormat.js 顶部说明与实测结论）。
@@ -16,7 +16,7 @@ export const BUILTIN_FONT_LABEL = '内置楷体（霞鹜文楷子集）'
 // 书写示意的示范手写体：悠哉字体 Yozai 子集（OFL-1.1，2026-10-07 定案）。
 // 为什么单列一条：它只服务第 1 步「书写示意」那一块（在书写格里示范"这个字该怎么写"），
 // 与参考字的楷体是两回事 —— 参考字要端正易辨认，示范字要像"人手写出来的样子"。
-// 选型依据（覆盖字表 6919 字全中、字号子集 3.84MB）与其余候选的对比见《提交历史》第 59 条。
+// 选型依据（覆盖字表 8274 字全中）与其余候选的对比见《提交历史》第 59 条；子集体积见《决策记录》一-14。
 export const HANDWRITING_FONT_URL = './fonts/yozai-subset.ttf'
 export const HANDWRITING_FONT_LABEL = '悠哉字体（手写体子集）'
 
