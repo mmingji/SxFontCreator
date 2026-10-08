@@ -121,7 +121,9 @@ export const useProjectStore = defineStore('project', {
     // 界面开关（不进"数据"的范畴，但也要能在组件之间共享）：
     //   backupOpen —— 顶栏「项目备份」弹窗是否打开。放在 store 里是为了让**第 3 / 第 5 步的提醒条**
     //   也能打开同一个弹窗，而不必把事件从页面根部一层层传下来
-    ui: { backupOpen: false },
+    //   batchManagerOpen —— 第 3 步「批次管理」弹窗是否打开（清单 一-6）。同样放这里：入口在第 3 步，
+    //   但"删掉批次后要刷新第 3 步的批次选择"这类联动需要跨组件读同一个状态
+    ui: { backupOpen: false, batchManagerOpen: false },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -316,6 +318,29 @@ export const useProjectStore = defineStore('project', {
         }
       }
       return count
+    },
+
+    /**
+     * 删除一个批次（清单 一-6，口径见《决策记录》八-11）
+     * 两条约束：
+     *   ① **只删已作废的**：仍有效的批次对应的纸可能还在用户手上，直接删掉会让那批纸彻底失去上传资格 ——
+     *      界面上先「作废」再「删除」，是一条明确放弃的路径（作废语义沿用 八-9）。
+     *   ② 这里删的是**批次记录**；该批已落盘的字形分片由调用方先清（分片在 IndexedDB 里，store 不碰存储层）——
+     *      顺序反过来会出现"界面里批次没了、分片还在"的孤儿数据，见 BatchManager.vue 的删除流程。
+     * 若删掉的正是"上传识别"当前选中的批次，顺带清空那个选择：否则界面上会留着一个已经不存在的批次，
+     * 上传时才发现对不上（识别结果与落盘字形不受影响，它们里面的字在识别时就已固化）。
+     * @returns {{ok: boolean, reason?: 'not-found'|'active', clearedScanBatch?: boolean}}
+     */
+    removeBatch(id) {
+      const index = this.batches.findIndex((item) => item.id === id)
+      if (index < 0) return { ok: false, reason: 'not-found' }
+      if (this.batches[index].status !== 'void') return { ok: false, reason: 'active' }
+      const clearedScanBatch = this.scan.batchId === id
+      this.batches.splice(index, 1)
+      if (clearedScanBatch) this.setScanBatch(null) // 一并复位"已确认"与"作废放行"两个勾选
+      this.markDirty()
+      schedulePersist(this)
+      return { ok: true, clearedScanBatch }
     },
 
     // ── 扫描识别（阶段一「界面串联」B2）────────────────────────────────────
@@ -531,6 +556,14 @@ export const useProjectStore = defineStore('project', {
     },
     closeBackup() {
       this.ui.backupOpen = false
+    },
+
+    // 批次管理弹窗（第 3 步批次选择旁的入口）────────────────────────────
+    openBatchManager() {
+      this.ui.batchManagerOpen = true
+    },
+    closeBatchManager() {
+      this.ui.batchManagerOpen = false
     },
 
     // 导出过项目包（决策 五-3：识别完成与字体生成后各提醒一次，导出过就不再提醒）

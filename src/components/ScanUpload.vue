@@ -14,6 +14,7 @@ import { applyPageOrder, evaluateScanGate, recognizeBatch, resolveBatchChars } f
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { LAYOUT } from '../lib/layout.js'
+import BatchManager from './BatchManager.vue'
 
 const store = useProjectStore()
 
@@ -284,10 +285,14 @@ const zoomIsMarkedLabel = computed(() => {
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">批次</span>
-        <select v-model="batchId" class="scan-select" :disabled="running">
-          <option :value="null">请选择这批扫描件属于哪个批次</option>
-          <option v-for="item in batchOptions" :key="item.id" :value="item.id">{{ item.label }}</option>
-        </select>
+        <div class="batch-row">
+          <select v-model="batchId" class="scan-select" :disabled="running">
+            <option :value="null">请选择这批扫描件属于哪个批次</option>
+            <option v-for="item in batchOptions" :key="item.id" :value="item.id">{{ item.label }}</option>
+          </select>
+          <!-- 批次管理（清单 一-6）：批次多了要能一次看全、把作废的清掉 —— 放在"选批次"旁边最顺手 -->
+          <BatchManager />
+        </div>
         <span v-if="batch" class="panel-hint">
           这一批要写 {{ batch.charCount }} 字 / {{ batch.pageCount }} 页；上传后按它的字序把"页内格号"还原成字
         </span>
