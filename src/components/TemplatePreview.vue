@@ -499,7 +499,8 @@ async function generateCorrectionBook() {
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
     </div>
 
-    <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
+    <!-- data-role：给自动化测试一个稳定锚点（本步还有一条"书写示意失败"的消息，同样用 .panel-message） -->
+    <p v-if="message" class="panel-message" :class="messageType" data-role="template-message">{{ message }}</p>
     <p v-if="lastResult" class="panel-hint">
       最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}，批次校验码 {{ lastResult.batchCode }}）
     </p>
