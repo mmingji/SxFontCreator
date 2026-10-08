@@ -21,7 +21,8 @@ const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 // 本地开发（`npm run dev`）不走这条路：dev 下没有内联标记，各调用方照旧 fetch / 用 ?url。
 
 // 需要内联成 `assets/inline-<name>.js` 的资源：name 是运行时约定（见 src/lib/inlineAssets.js）
-const INLINE_ASSETS = [
+// 导出是给下游用的单源：`scripts/pack-dist.mjs`（打包时核对产物）与 `test/pack-dist.mjs`（断言包内容）
+export const INLINE_ASSETS = [
   { name: 'font-lxgw', file: 'public/fonts/lxgw-wenkai-subset.ttf', kind: 'base64' },
   { name: 'font-yozai', file: 'public/fonts/yozai-subset.ttf', kind: 'base64' },
   { name: 'pdf-worker', file: 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs', kind: 'base64' },
@@ -30,7 +31,8 @@ const INLINE_ASSETS = [
 ]
 
 // 已经内联进脚本、不必再随产物复制一份的文件（否则交付体积白翻一倍）
-const DROP_AFTER_BUILD = [
+// 同样导出给下游：打包前用它拦下"构建收尾没跑完"的产物（否则交付 zip 里会多带 9MB）
+export const DROP_AFTER_BUILD = [
   'fonts/lxgw-wenkai-subset.ttf',
   'fonts/yozai-subset.ttf',
   'woff2.wasm',
