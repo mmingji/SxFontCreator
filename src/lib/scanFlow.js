@@ -25,12 +25,17 @@ export {
   buildFinalGlyphPlan,
   charAtCell,
   collectGlyphStats,
+  evaluateRescanAccept,
   evaluateScanGate,
   pairCorrections,
   reorderPages,
   resolveBatchChars,
   usableForGlyphs
 } from './scanMeta.js'
+
+// 整批汇总判定（页号重复 / 批次码不符 / 缺页 / 闸门）在 gridDetector.js 里，这里再导出一次：
+// 单页重传（清单 一-8）替换完一页后要重算整批，界面不该为此再记一个模块入口
+export { summarizeBatch }
 
 export const SCAN_DEFAULTS = {
   autoOrient: true, // 整页方向不对时自动纠正（决策 二-11）

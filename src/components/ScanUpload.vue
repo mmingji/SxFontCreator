@@ -10,7 +10,7 @@
 //   轻量页记录落盘在 store.scan —— 口径见《决策记录》二-15。
 import { computed, onMounted, ref } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { applyPageOrder, evaluateScanGate, recognizeBatch, resolveBatchChars } from '../lib/scanFlow.js'
+import { applyPageOrder, evaluateRescanAccept, evaluateScanGate, recognizeBatch, recognizePage, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { LAYOUT } from '../lib/layout.js'
@@ -171,6 +171,93 @@ function clearAll() {
     setMessage('已清空识别结果、内存缓存与落盘的字形' + (r && r.removed ? '（删除 ' + r.removed + ' 页分片）' : ''), 'info')
   })
   store.clearScan()
+}
+
+// ── 单页重传（清单 一-8）──────────────────────────────────────────────────
+// 场景：某一页写坏了 / 扫描有折痕，重扫那一页就够，不必整批重来（整批 51 页要重跑约 85 秒）。
+// 三条口径（2026-10-08 用户拍板，见《决策记录》八-14）：
+//   ① 入口在页级结果的每一行 —— 局部、明确，现有的"整批识别"流程一个字不改；
+//   ② **复用原页的 fileIndex**：分片键（`sxfont.glyphs.v1.<批次>.<fileIndex>`）与内存缓存都按它命名，
+//      复用即"原地覆盖"，页序机制一行都不用动；
+//   ③ 整页失败、或页脚校验码与所选批次不符 → **明确失败、不写入**（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）。
+const rescanning = ref(null) // 正在重传的页 fileIndex（同一时刻只允许一页在跑）
+
+async function rescanPage(page, event) {
+  const file = (event.target.files || [])[0]
+  event.target.value = '' // 清空，便于再选同一个文件
+  if (!file || running.value || rescanning.value !== null) return
+  // 没有所选批次时直接拒绝：字形分片键是「批次 + 页序」，批次为空会落成 `default` 键，
+  // 之后既不属于任何批次、也没法在批次管理里清掉（冒烟里踩到过：选回"请选择"再重传就写出了孤儿分片）
+  if (!store.scan.batchId) {
+    setMessage('请先选择这批扫描件属于哪个批次，再重传这一页', 'error')
+    return
+  }
+  rescanning.value = page.fileIndex
+  setMessage('正在重传第 ' + (page.pageNumber || '?') + ' 页（' + file.name + '）…', 'info')
+  try {
+    const expectedBatchCode = batch.value && typeof batch.value.batchCode === 'number' ? batch.value.batchCode : null
+    const { record, cache } = await recognizePage(file, {
+      chars: chars.value,
+      expectedBatchCode,
+      fileIndex: page.fileIndex, // 复用原页序号：分片键与缓存键都按它覆盖
+      pageNumberOverride: page.pageNumber || undefined
+    })
+    if (!record.ok) {
+      setMessage('这一页没能识别：' + record.reason + '。原来的结果与字形都没动，可以重扫一页再试', 'error')
+      return
+    }
+    // 收不收这一页的判据抽在 scanMeta.evaluateRescanAccept 里（纯函数、有单测）：
+    // 整页失败与校验码不符都属"明确失败、不写入"（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）
+    const verdict = evaluateRescanAccept({ record, batchCode: batch.value ? batch.value.batchCode : null })
+    if (!verdict.accept) {
+      setMessage(verdict.message, 'error')
+      return
+    }
+    const saved = await savePageGlyphs({
+      batchId: store.scan.batchId,
+      fileIndex: page.fileIndex,
+      pageNumber: record.pageNumber,
+      glyphs: (cache.masks || []).map((m) => ({
+        char: m.char,
+        cellIndex: m.index,
+        mask: m.mask,
+        width: m.width,
+        height: m.height,
+        boxInSlice: m.boxInSlice
+      }))
+    })
+    if (!saved.ok) {
+      setMessage('这一页识别成功，但字形落盘失败（结果只在内存里，刷新会丢）：' + saved.error, 'error')
+    }
+    // 被圈字变了 → 之前的更正配对失效（配对依赖被圈字清单）：清掉并明确提示去第 4 步重新核对
+    const markedChanged = (page.markedCells || []).join(',') !== (record.markedCells || []).join(',')
+    if (markedChanged) store.resetCorrection()
+    // 重算整批汇总（页号重复 / 批次码不符 / 缺页 / 收批闸门都读它）；顺序保持原位置，不把这一页挪到最后
+    const nextPages = store.scan.pages.map((p) => (p.fileIndex === page.fileIndex ? record : p))
+    if (!nextPages.some((p) => p.fileIndex === page.fileIndex)) nextPages.push(record)
+    const summary = summarizeBatch(nextPages, {
+      expectedBatchCode,
+      sheetPages: batch.value ? batch.value.pageCount : undefined
+    })
+    putPageCache(page.fileIndex, cache)
+    images.value = { ...images.value, [page.fileIndex]: { thumb: cache.thumb, sheet: cache.sheet } }
+    if (openIndex.value === page.fileIndex) openIndex.value = null
+    zoomIndex.value = null
+    const res = store.replaceScanPage({ fileIndex: page.fileIndex, record, summary })
+    savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
+    setMessage(
+      '已重传第 ' + (record.pageNumber || page.pageNumber || '?') + ' 页（' + file.name + '）：写出 ' +
+        record.counts.written + ' 格 / 被圈 ' + record.counts.marked + ' 个' +
+        (res.replaced ? '' : '（结果里原本没有这一页，已补上）') +
+        (markedChanged ? '。这一页的被圈字有变化，之前的更正配对已作废，请到第 4 步重新核对' : '') +
+        '。这一页的字形已更新，字体要重新生成才生效',
+      markedChanged ? 'info' : 'done'
+    )
+  } catch (e) {
+    setMessage('重传失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    rescanning.value = null
+  }
 }
 
 // ── 手选页序（决策 二-7）：改数字或拖动都能改 ────────────────────────────
@@ -442,6 +529,22 @@ const zoomIsMarkedLabel = computed(() => {
         <button class="text" type="button" :disabled="!page.ok" @click="togglePage(page)">
           {{ openIndex === page.fileIndex ? '收起格子' : '看格子' }}
         </button>
+
+        <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来 -->
+        <label
+          class="file-button"
+          :class="{ disabled: running || rescanning !== null }"
+          data-role="rescan-page"
+          title="重扫这一页并替换它的识别结果与字形（其它页不动）"
+        >
+          {{ rescanning === page.fileIndex ? '重传中…' : '重传这一页' }}
+          <input
+            type="file"
+            accept="image/*"
+            :disabled="running || rescanning !== null"
+            @change="rescanPage(page, $event)"
+          />
+        </label>
 
         <!-- 格级视图：136 格拼图 + 判定覆盖层；点单格放大 -->
         <div v-if="openIndex === page.fileIndex" class="scan-cell-grid">

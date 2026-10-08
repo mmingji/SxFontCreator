@@ -414,6 +414,42 @@ export const useProjectStore = defineStore('project', {
       this.scan.batchConfirmed = false
       this.scan.lastRunAt = null
       // 识别结果一清，之前的配对与确认就都失效了（配对依赖被圈字清单）
+      this.resetCorrection()
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    /**
+     * 单页重传：用新识别的结果**原地替换**某一页的页记录（清单 一-8）
+     * 按 `fileIndex` 定位 —— 字形分片键（`sxfont.glyphs.v1.<批次>.<fileIndex>`）与内存缓存都按它命名，
+     * 所以复用原页的 `fileIndex` 就等于"原地覆盖"，页序机制一行都不用改（决策 八-14）。
+     * 若结果里没有这一页（fileIndex 对不上，理论上不该发生），则追加一条 —— 重传完结果里反而没有它更糟。
+     * 这一页的字形变了，之前生成的产物就不再对应：清掉"已构建"标记并让体检快照过期，
+     * 与"剔除一个字"同一个道理（不重新生成就与界面说的不一致）。
+     * @returns {{ok: boolean, replaced: boolean}}
+     */
+    replaceScanPage({ fileIndex, record, summary }) {
+      const index = this.scan.pages.findIndex((p) => p.fileIndex === fileIndex)
+      const next = [...this.scan.pages]
+      if (index >= 0) next[index] = record
+      else next.push(record)
+      this.scan.pages = next
+      if (summary) this.scan.summary = summary
+      this.scan.lastRunAt = new Date().toISOString()
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
+      this.markDirty()
+      schedulePersist(this)
+      return { ok: true, replaced: index >= 0 }
+    },
+
+    // 清掉更正配对与那一次确认（**不动识别结果**）：配对依赖"被圈字清单"，
+    // 清单一变就必须重新核对 —— 决策 一-7 的界面确认是防整体错位的最后一道闸。
+    // clearScan（整批清空）与"单页重传后发现被圈字变了"共用这一处。
+    resetCorrection() {
       this.correction = {
         pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
         circled: [], overrides: {}, confirmed: false, updatedAt: null

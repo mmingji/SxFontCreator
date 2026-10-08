@@ -25,6 +25,36 @@ export function usableForGlyphs(page) {
   return !!(page && page.ok && page.pageNumber)
 }
 
+/**
+ * 单页重传能不能收下这一页（清单 一-8，决策 八-14 ③）
+ * 两条拒绝理由都是"明确失败、不写入"—— 静默拿错数据比拒绝处理糟得多（沿用二-6 的口径）：
+ *   · 整页没能识别（没有四角、校正超限……）：把失败原因原样带出来，让用户知道重扫要注意什么；
+ *   · 页脚读出了、但校验码与所选批次不符：说明重扫的纸不属于这一批，收下会污染整批。
+ * 更正册页（kind === 'correction'，页脚校验码 0）不参与批次比对，直接接受（与 八-10 的分拣口径一致）。
+ * @param {object} input
+ * @param {object|null} input.record 新识别出来的页记录（recognizePage 的产物）
+ * @param {number|null} [input.batchCode] 所选批次的 12 位校验码（只为把提示写清楚）
+ * @returns {{accept: boolean, reason: 'ok'|'page-failed'|'batch-mismatch', message: string}}
+ */
+export function evaluateRescanAccept({ record, batchCode = null } = {}) {
+  if (!record || !record.ok) {
+    return {
+      accept: false,
+      reason: 'page-failed',
+      message: '这一页没能识别：' + ((record && record.reason) || '原因未知') + '。原来的结果与字形都没动，可以重扫一页再试'
+    }
+  }
+  if (record.kind !== 'correction' && record.batchMatch === false) {
+    return {
+      accept: false,
+      reason: 'batch-mismatch',
+      message: '这一页的页脚校验码是 ' + record.batchCode + '，与所选批次（' + (batchCode === null ? '-' : batchCode) +
+        '）不符：已放弃替换。请确认重扫的是这一批的纸，或换到正确的批次再传'
+    }
+  }
+  return { accept: true, reason: 'ok', message: '' }
+}
+
 /** 汇总"这批能拿出多少字形"：给流程状态（lib/flow.js）与后续字体构建用 */
 export function collectGlyphStats(pages) {
   let written = 0
