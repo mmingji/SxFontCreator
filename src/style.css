@@ -355,7 +355,7 @@ button.text:hover {
   margin: 0;
 }
 
-/* 本机字体选择：把 file input 藏起来，用 label 当按钮（原生控件在各浏览器样式不一） */
+/* 本机字体选择 / 选择扫描件 / 导入项目包：把 file input 藏起来，用 label 当按钮（原生控件在各浏览器样式不一） */
 .file-button {
   display: inline-flex;
   align-items: center;
@@ -374,6 +374,35 @@ button.text:hover {
 }
 
 .file-button input {
+  display: none;
+}
+
+/* **文本形态**的文件选择按钮（label 包一个隐藏的 file input）：视觉与 `button.text` 完全一致
+   —— 无边框、无底色、12px 次要色、默认带下划线（下划线取文字自身颜色），悬停只变色。
+   2026-10-08 用户要求：「选择本机字体」是个次要动作，不该做成实体按钮（第 1 步里其它入口都是文本按钮）。 */
+label.text-file {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-2);
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+label.text-file:hover {
+  color: var(--primary);
+}
+
+label.text-file.disabled {
+  color: var(--text-2);
+  opacity: 0.5;
+  cursor: default;
+  text-decoration-color: currentColor;
+}
+
+label.text-file input {
   display: none;
 }
 

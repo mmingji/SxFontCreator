@@ -394,10 +394,10 @@ async function generateCorrectionBook() {
             </div>
             <!-- 官方说明只给节选（第二至第八条，用户 2026-10-08 要求）：第一条讲制定目的、第九条讲附表、
                  第十条讲后续调整，都不涉及"收哪些字、怎么分级" -->
-            <p class="help-title">{{ CHARSET_STANDARD_TITLE }}官方说明</p>
-            <!-- 用 ul + 显式条号：ol 的自动编号会从 1 开始，与原文的"二~八"对不上号 -->
+            <p class="help-title">{{ CHARSET_STANDARD_TITLE }}官方说明节选</p>
+            <!-- 列表只留圆点、不显示条号（用户 2026-10-08 要求）；条号仍留在数据里（note.no）备查 -->
             <ul class="help-notes">
-              <li v-for="note in CHARSET_STANDARD_NOTES" :key="note.no"><strong>{{ note.no }}</strong>、{{ note.text }}</li>
+              <li v-for="note in CHARSET_STANDARD_NOTES" :key="note.no">{{ note.text }}</li>
             </ul>
             <button class="text" type="button" @click="standardHelpOpen = false">关闭</button>
           </div>
@@ -421,7 +421,7 @@ async function generateCorrectionBook() {
         <span class="field-label">参考字体</span>
         <label class="radio"><input v-model="fontSource" type="radio" value="builtin" :disabled="busy" />{{ BUILTIN_FONT_LABEL }}</label>
         <label class="radio"><input v-model="fontSource" type="radio" value="local" :disabled="busy || !localFont" />本机字体{{ localFontName ? '（' + localFontName + '）' : '' }}</label>
-        <label class="file-button">
+        <label class="text-file" :class="{ disabled: busy }">
           选择本机字体
           <input type="file" accept=".ttf,.otf,.ttc,.woff,font/ttf,font/otf" :disabled="busy" @change="pickLocalFont" />
         </label>
@@ -502,8 +502,7 @@ async function generateCorrectionBook() {
       扫描：平板扫描仪、<strong>彩色 300dpi、照片模式</strong>。<br />
       <!-- 「写哪些字」下面那段"没写的字会回退、不必写完也能用"按用户要求插在这个位置：
            扫描那一句之后、"完整说明见…"之前；随选择变化的"这次排哪些字、多少页"仍留在上面那一组里 -->
-      <span data-role="fallback-hint">没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> —— 所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。</span><br />
-      完整说明见本步右上角「查看完整说明」（可保存到本地）。
+      <span data-role="fallback-hint">没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> —— 所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。</span>
     </p>
   </div>
 </template>
