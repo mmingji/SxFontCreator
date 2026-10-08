@@ -135,7 +135,7 @@ const scopeHint = computed(() => {
       ? '自定义选字：已选 ' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
       : '自定义选字：还没有选字 —— 一个字都没选时按全量字表 ' + meta.total + ' 字出，下面是选字面板'
   }
-  return 'GB2312 全部 ' + gb2312Count + ' 字 + 超纲字 ' + extraCount + ' + 符号 ' + symbolCount +
+  return 'GB2312 全部 ' + gb2312Count + ' 字 + 超纲字 ' + extraCount + ' + 数字字母与标点 ' + symbolCount +
     ' = ' + meta.total + ' 字／' + totalPages + ' 页'
 })
 
@@ -143,7 +143,10 @@ const scopeHint = computed(() => {
 // 整套 51 页里前 28 页就够日常使用；频序本身也把同偏旁的字打散了（拼音字序会让同偏旁的字挨在一起，很疲劳）。
 // 「字表顺序」保留给想跟做字体网 V4.0 模板对齐的人；两种顺序都能被识别 —— 批次记的是实际字序，
 // 页脚校验码也是按字序算的（决策 八-6、八-10），换顺序不会影响"扫描件与批次匹配"的判定。
-const orderMode = ref('rank')
+const orderMode = computed({
+  get: () => store.ui.orderMode,
+  set: (value) => store.setOrderMode(value)
+})
 const orderHint = computed(() => {
   if (orderMode.value === 'rank') {
     return '按使用频率：最常用的字在最前（前 2000 字覆盖语料 ' + CHAR_RANK_META.cumAt2000 + '%，约 ' +
@@ -333,7 +336,7 @@ async function generateCorrectionBook() {
     </div>
     <SelectionPanel v-if="pickerOpen" nested />
 
-    <div class="panel-row">
+    <div class="panel-row" data-role="order-mode-row">
       <div class="panel-field">
         <span class="field-label">排列方式</span>
         <label class="radio"><input v-model="orderMode" type="radio" value="rank" :disabled="busy" />按使用频率</label>

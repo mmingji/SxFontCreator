@@ -10,6 +10,7 @@
 import { computed, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { SELECTION_LEVELS, getLevelChars, searchChars } from '../lib/frequency.js'
+import { sortByRank } from '../lib/charRank.js'
 
 // nested：作为「选字与出模板」步骤的下级出现（用户 2026-10-04 拍板的两级结构）——
 // 下级形态用更轻的边框与 h3 标题，避免与步骤卡片抢层级
@@ -24,6 +25,13 @@ const activeLevelKey = ref(SELECTION_LEVELS[0].key)
 const message = ref('')
 const messageType = ref('info') // info | warn | done
 
+// 排序（2026-10-08 用户要求）：与"排列方式"（模板那一块）**共用一份状态** —— 在这里切换之后，
+// 出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"。切换它不动已建批次（批次自己记了 order）
+const orderMode = computed({
+  get: () => store.ui.orderMode,
+  set: (value) => store.setOrderMode(value)
+})
+
 const selectedSet = computed(() => new Set(Array.from(store.selection.chars)))
 
 // 每个分类的"已选 / 总数"：分类树上要直接看出来还差多少没写
@@ -35,18 +43,23 @@ const treeNodes = computed(() =>
   })
 )
 
-// 当前展示的字：检索优先，否则看选中的分类
+// 当前展示的字：检索优先，否则看选中的分类。
+// 排序：切到"按使用频率"时本类内按频序排；**未被字频表收录的字排在最后并保持字表顺序** ——
+//   全表有 209 个这样的字（部首、超纲字与 107 个数字字母标点），所以"数字、字母与标点"这一类
+//   在两种排序下看起来几乎一样，这是预期行为，不是没生效。
+// 检索结果不参与排序：决策 八-5 要求按粘贴顺序返回，方便"粘贴一段话照着写"
 const listing = computed(() => {
   const q = query.value.trim()
   if (q) return searchChars(q)
   if (!activeLevelKey.value) return []
-  return getLevelChars(activeLevelKey.value)
+  const chars = getLevelChars(activeLevelKey.value)
+  return orderMode.value === 'rank' ? sortByRank(chars) : chars
 })
 const totalPages = computed(() => Math.max(1, Math.ceil(listing.value.length / PAGE_SIZE)))
 const pageChars = computed(() => listing.value.slice(page.value * PAGE_SIZE, (page.value + 1) * PAGE_SIZE))
 
-// 切换分类或改检索词时回到第一页（否则会停在越界的页码上）
-watch([activeLevelKey, query], () => {
+// 切换分类、改检索词、换排序时都回到第一页（否则会停在越界的页码上）
+watch([activeLevelKey, query, orderMode], () => {
   page.value = 0
 })
 
@@ -81,6 +94,15 @@ function onLevelAll(select) {
   // 二次确认：一次点击可能加入或移除几千个字（八-4）
   if (!window.confirm('确认要' + action + '「' + level.label + '」的 ' + level.count + ' 个字吗？')) return
   reportChange(store.setLevelSelected(Array.from(level.chars), select), action + '「' + level.label + '」')
+}
+
+// 页级全选 / 取消（2026-10-08 用户要求）：只动当前这一页的字（最多 340 个），**不弹确认** ——
+// 与"全选本类"（一次 3755 字、必须二次确认）不同，页级误点之后点「取消本页」就回来了
+function onSelectPage(select) {
+  const chars = pageChars.value
+  if (!chars.length) return
+  const action = select ? '全选本页' : '取消本页'
+  reportChange(store.setLevelSelected(chars, select), action + '（本页 ' + chars.length + ' 字）')
 }
 
 function onAddSearchResults() {
@@ -166,11 +188,20 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
             <template v-if="query.trim()">检索结果 {{ listing.length }} 字</template>
             <template v-else-if="activeLevel">「{{ activeLevel.label }}」共 {{ activeLevel.count }} 字</template>
             <template v-else>请选择左侧分类，或在上方检索</template>
-            （第 {{ page }} / {{ totalPages }} 页）
+            （第 {{ page + 1 }} / {{ totalPages }} 页）
           </span>
-          <span class="pager">
-            <button :disabled="page <= 0" @click="page--">上一页</button>
-            <button :disabled="page >= totalPages - 1" @click="page++">下一页</button>
+          <span class="grid-tools">
+            <!-- 排序与模板那一块的「排列方式」是同一份状态：在这里切换，出模板的字序也跟着变 -->
+            <span class="sort-picker">
+              <label class="radio"><input v-model="orderMode" type="radio" value="rank" />按使用频率</label>
+              <label class="radio"><input v-model="orderMode" type="radio" value="charset" />字表顺序（拼音）</label>
+            </span>
+            <span class="pager">
+              <button :disabled="!pageChars.length" @click="onSelectPage(true)">全选本页</button>
+              <button :disabled="!pageChars.length" @click="onSelectPage(false)">取消本页</button>
+              <button :disabled="page <= 0" @click="page--">上一页</button>
+              <button :disabled="page >= totalPages - 1" @click="page++">下一页</button>
+            </span>
           </span>
         </div>
         <div class="char-grid">
@@ -287,6 +318,21 @@ const pageCount = computed(() => Math.max(1, Math.ceil(store.charsForTemplate.le
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.grid-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.sort-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
 }
 
 .pager {

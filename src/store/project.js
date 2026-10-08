@@ -123,7 +123,12 @@ export const useProjectStore = defineStore('project', {
     //   也能打开同一个弹窗，而不必把事件从页面根部一层层传下来
     //   batchManagerOpen —— 第 3 步「批次管理」弹窗是否打开（清单 一-6）。同样放这里：入口在第 3 步，
     //   但"删掉批次后要刷新第 3 步的批次选择"这类联动需要跨组件读同一个状态
-    ui: { backupOpen: false, batchManagerOpen: false },
+    //   orderMode —— 模板排列方式：'rank' 按使用频率 / 'charset' 字表顺序（决策 八-11）。放进 store 是为了让
+    //   **选字面板与模板预览两处的单选用同一份状态**（2026-10-08 用户要求联动：在选字面板切换排序之后，
+    //   出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"）。它与 selection 不同 —— 切换它
+    //   **不改已建批次的字序**（批次自己记了 order），所以不作废批次；也不进落盘数据（刷新回默认
+    //   "按使用频率"，与它原先作为组件内状态的旧行为一致）
+    ui: { backupOpen: false, batchManagerOpen: false, orderMode: 'rank' },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -592,6 +597,11 @@ export const useProjectStore = defineStore('project', {
     },
     closeBackup() {
       this.ui.backupOpen = false
+    },
+
+    // 模板排列方式（决策 八-11）：界面选择，不进落盘数据 —— 已建批次各自的 order 字段已经留痕
+    setOrderMode(mode) {
+      this.ui.orderMode = mode === 'charset' ? 'charset' : 'rank'
     },
 
     // 批次管理弹窗（第 3 步批次选择旁的入口）────────────────────────────
