@@ -18,9 +18,9 @@
 
 | 资源 | 许可 | 说明 |
 | --- | --- | --- |
-| `public/fonts/lxgw-wenkai-subset.ttf` | **OFL-1.1** | 霞鹜文楷 LXGW WenKai v1.522 Regular 的 6919 字子集，仅用于打印在模板上的参考字；许可全文见 `public/fonts/OFL.txt` |
+| `public/fonts/lxgw-wenkai-subset.ttf` | **OFL-1.1** | 霞鹜文楷 LXGW WenKai v1.522 Regular 的 **8274 码位**子集（4.01MB；2026-10-08 按官方字表重建），仅用于打印在模板上的参考字；许可全文见 `public/fonts/OFL.txt` |
 | `public/fonts/OFL.txt` | OFL-1.1 | 上述字体的许可全文，随字体一并分发（OFL 的硬性要求） |
-| `public/fonts/yozai-subset.ttf` | **OFL-1.1** | 悠哉字体 Yozai v0.868 Regular 的 6919 字子集（3.84MB），**只用于第 1 步「书写示意」在书写格里示范写法**（原名"填写示意"，2026-10-08 改名；不进正式模板 PDF、不参与识别）；许可全文见 `public/fonts/OFL-yozai.txt`。选型依据（覆盖 6919 字全中）见《提交历史》第 59 条 |
+| `public/fonts/yozai-subset.ttf` | **OFL-1.1** | 悠哉字体 Yozai v0.868 Regular 的 **8274 码位**子集（4.73MB；2026-10-08 按官方字表重建，逐码位回读校验零缺字），**只用于第 1 步「书写示意」在书写格里示范写法**（原名"填写示意"，2026-10-08 改名；不进正式模板 PDF、不参与识别）；许可全文见 `public/fonts/OFL-yozai.txt`。选型依据（覆盖字表全中）见《提交历史》第 59 条 |
 | `public/fonts/OFL-yozai.txt` | OFL-1.1 | 上述字体的许可全文，随字体一并分发 |
 | `public/woff2.wasm` | **MIT**（Google woff2 / woff2-asm） | woff2 编码器（727KB）：`fonteditor-core` 的 `exports` 字段不允许直接 import 包内的 wasm，故复制到这里按 URL 加载（清单 四-20）。**自用无分发义务**，对外分发时随附其许可声明 |
 
@@ -30,9 +30,9 @@ OFL-1.1 的三条实际约束：① 再分发必须随附许可文本；② 不�
 
 | 资源 | 许可 | 说明 |
 | --- | --- | --- |
-| `src/data/charRank.js` | **Jun Da 现代汉语单字频率表（仅研究与教学用途）** | 由 `scripts/build-char-rank.mjs` 生成的**频序字表**（字表 6919 字按使用频率排列），用于界面上的"排列方式：按使用频率"（《决策记录》八-11）。数据来源：Jun Da《Modern Chinese Character Frequency List》，综合语料 1.935 亿字符，站上声明**版权归作者、仅研究与教学用途**；**对外分发软件本体或商业使用需另行取得作者书面许可**，自用不受影响。原始数据表缓存在 `.font-sources/`（不入库）。**退路**：对外分发时改用标 MIT 的 `hanziDB.csv`（同为该表派生，需注明上游来源），或向作者申请许可 |
-| `src/data/charset.js` | 见说明 | 字表（6919 字）取自做字体网 V4.0 的 GBK 字序文件，仅作字序参考；该源文件不入库，入库的只是转换产物。**注**：2026-10-08 用户明确"字表不得取自第三方资料"，下一步将改为下面的官方字表 |
-| `scripts/sources/通用规范汉字表-2013-8105.txt` | 国家标准字表内容（事实性数据） | **《通用规范汉字表》全表 8105 字**（国务院 2013 年公布，[国发〔2013〕23号](https://www.gov.cn/gongbao/content/2013/content_2481095.htm)），每行「序号 + 字 + 拼音」，字序为官方笔画序。**已入库（118KB）**，将作为 `scripts/build-charset.mjs` 的输入取代上面那份；来源与三源互证见该目录的 `README.md` 与 `docs/字表标准与收字口径.md` |
+| `src/data/charRank.js` | **Jun Da 现代汉语单字频率表（仅研究与教学用途）** | 由 `scripts/build-char-rank.mjs` 生成的**频序字表**（字表 8274 字按使用频率排列：6976 字被收录、1298 字按官方笔画序排在末尾），用于界面上的"排列方式：按使用频率"（《决策记录》八-11）。数据来源：Jun Da《Modern Chinese Character Frequency List》，综合语料 1.935 亿字符，站上声明**版权归作者、仅研究与教学用途**；**对外分发软件本体或商业使用需另行取得作者书面许可**，自用不受影响。原始数据表缓存在 `.font-sources/`（不入库）。**退路**：对外分发时改用标 MIT 的 `hanziDB.csv`（同为该表派生，需注明上游来源），或向作者申请许可 |
+| `src/data/charset.js` | 见说明 | 字表（**8274 字 = 8105 汉字 + 169 基础字符**）由 `scripts/build-charset.mjs` 生成：汉字取自下面的官方字表，基础字符按 **Unicode 码位**定义（清单逐字写在脚本里，不依赖任何第三方字表）。**2026-10-08 起不再使用做字体网 V4.0 的 GBK 字序文件**（《决策记录》三-1） |
+| `scripts/sources/通用规范汉字表-2013-8105.txt` | 国家标准字表内容（事实性数据） | **《通用规范汉字表》全表 8105 字**（国务院 2013 年公布，[国发〔2013〕23号](https://www.gov.cn/gongbao/content/2013/content_2481095.htm)），每行「序号 + 字 + 拼音」，字序为官方笔画序。**已入库（118KB）**，是 `scripts/build-charset.mjs` 的输入；另经 Unicode Unihan `kTGH` 与维基文库转录逐序号互证（三源零差异）。来源与核对见该目录的 `README.md` 与 `docs/字表标准与收字口径.md` |
 
 ## 开发依赖（不进产物）
 
