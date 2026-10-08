@@ -1,3 +1,6 @@
+// 老浏览器兜底必须最先加载：依赖里有现代 API 的裸调用（如 Object.hasOwn），
+// 语法由 esbuild 降级、API 只能靠运行时补齐（见 lib/polyfills.js）
+import './lib/polyfills.js'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'

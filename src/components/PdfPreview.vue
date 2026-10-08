@@ -5,6 +5,12 @@
 //   LAYOUT 一改就会悄悄跑偏；pdf.js 渲染的是同一份字节，"预览与打印不一致"这类问题不存在。
 // 依赖：pdfjs-dist 是运行时依赖（2026-10-04 由 devDependencies 移入），这里**动态 import** ——
 //   首屏与其它步骤都不会加载它，构建产物里它是独立 chunk。
+// **为什么用 legacy 构建**（2026-10-08，实施计划 3.4）：pdf.js 的现代构建直接调用
+//   `Promise.withResolvers`（Chrome 119）与 `structuredClone`（Chrome 98）且没有回退 ——
+//   在旧浏览器（含 Win7 能装的最后一版 Chrome/Edge 109）上会直接抛 TypeError。
+//   `pdfjs-dist/legacy/build/` 是官方为老环境准备的转译版（自带这些 API 的降级实现），
+//   体积只多约 0.1MB（0.49 + 1.26MB vs 0.44 + 1.21MB）。换成 legacy 后，"Chrome / Edge 90 以上"
+//   这条口径才真正成立；`test/browser-support.mjs` 会扫产物，防止以后有人改回现代构建。
 // 生命周期上踩过两个坑（都写在这里，别再踩）：
 //   ① **销毁要用"加载任务"，不是文档对象** —— pdf.js v6 的 `PDFDocumentProxy` 上没有 `destroy()`，
 //      destroy 在 `getDocument()` 返回的 loadingTask 上；写成 `doc.destroy()` 会抛 TypeError 被 catch 吞掉，
@@ -39,7 +45,7 @@ let pdfjsPromise = null
 function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
-      const pdfjs = await import('pdfjs-dist')
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
       // worker 的来源分两种形态（决策 六-4 的交付形态是 file:// 版）：
       //   ① 内联形态（交付产物）：worker 的字节被构建期内联，这里转成 **Blob URL** ——
       //      file:// 下 `new Worker('./assets/pdf.worker.min.mjs')` 会被浏览器拦下
@@ -55,7 +61,7 @@ function loadPdfjs() {
         }
       }
       if (!workerSrc) {
-        const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+        const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')
         workerSrc = worker.default
       }
       pdfjs.GlobalWorkerOptions.workerSrc = workerSrc

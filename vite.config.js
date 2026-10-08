@@ -25,7 +25,9 @@ const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 export const INLINE_ASSETS = [
   { name: 'font-lxgw', file: 'public/fonts/lxgw-wenkai-subset.ttf', kind: 'base64' },
   { name: 'font-yozai', file: 'public/fonts/yozai-subset.ttf', kind: 'base64' },
-  { name: 'pdf-worker', file: 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs', kind: 'base64' },
+  // pdf.js 走 **legacy 构建**（实施计划 3.4）：现代构建直接调用 Promise.withResolvers（Chrome 119）
+  // 与 structuredClone（Chrome 98）且无回退，旧浏览器（含 Win7 的 Chrome 109）会直接抛错
+  { name: 'pdf-worker', file: 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', kind: 'base64' },
   { name: 'woff2-wasm', file: 'public/woff2.wasm', kind: 'base64' },
   { name: 'guide-html', file: 'public/使用说明.html', kind: 'text' }
 ]

@@ -9,6 +9,7 @@ import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { getCharsetMeta } from './lib/charset.js'
 import { buildFlowState, flowSummary, stepIndex, stepNavigation } from './lib/flow.js'
+import { checkBrowserSupport } from './lib/browserSupport.js'
 import { glyphStoreStats } from './lib/glyphStore.js'
 import StepContent from './components/StepContent.vue'
 import GuideLink from './components/GuideLink.vue'
@@ -109,6 +110,9 @@ function goPrev() {
 // 运行环境：这三项是后续步骤真实依赖的浏览器能力，缺哪一项哪一步就干不了（单行状态栏按它们渲染）
 // （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取；IndexedDB 是数据落盘的唯一真相）
 // 判据要与实现一致：界面用的是 <input type="file"> + File.arrayBuffer()，不是 File System Access API
+// 更全的能力检测见 lib/browserSupport.js：那份清单只在**缺失时**出一条中文提示条（决策 六-10），
+// 不挤进这条单行状态栏 —— 状态栏是"平时就要看到的三项"，提示条是"出问题才出现的"
+const browserCheck = checkBrowserSupport()
 const fontPickerSupported =
   typeof window !== 'undefined' && typeof File !== 'undefined' && typeof File.prototype.arrayBuffer === 'function'
 const canvas2dSupported = (() => {
@@ -172,6 +176,11 @@ glyphStoreStats().then((s) => { savedGlyphs.value = s }).catch(() => {})
           : '上次关闭前有一次改动没写完，已从本机快照恢复到最新状态' }}
       </span>
       <button v-if="!saveFailed" @click="recoverDismissed = true">知道了</button>
+    </div>
+
+    <!-- 浏览器能力不够时的提示条（决策 六-10）：说清"缺哪一项、哪一步会干不了、该换什么浏览器" -->
+    <div v-if="!browserCheck.ok" class="notice danger" data-role="browser-notice">
+      <span>{{ browserCheck.message }}</span>
     </div>
 
     <main class="content">
