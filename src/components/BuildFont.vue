@@ -10,6 +10,7 @@ import { computed, ref } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { buildFinalGlyphPlan } from '../lib/scanFlow.js'
 import { buildFontFromPlan, getLastBuild } from '../lib/buildFont.js'
+import { downloadText } from '../lib/download.js'
 
 const store = useProjectStore()
 const busy = ref(false)
@@ -68,7 +69,9 @@ async function build() {
       items: plan.value.items,
       meta: { ...store.meta },
       batchId: store.scan.batchId,
-      excluded: store.excludedChars,
+      // 排除两类字（八-8）：**已剔除**（这个字不要了）与**待重写**（先不进字体、以后补上）——
+      // 构建时一视同仁地排除，区别只在清单与提示上（收录数说明会分别写出来）
+      excluded: [...store.excludedChars, ...store.rewriteChars],
       woff2WasmUrl: './woff2.wasm',
       onStage: (text) => stage.value = text,
       onProgress: (done, total) => { progress.value = { done, total } }
@@ -111,13 +114,32 @@ async function build() {
   }
 }
 
-// ── 字形体检清单（决策 四-7 的替代手段：只提示、不改字形；八-8 的"已剔除"在这里处置）──
+// ── 字形体检清单（决策 四-7 的替代手段：只提示、不改字形；八-8 的"已剔除 / 待重写"在这里处置）──
 const checkup = computed(() => store.font.checkup)
 const LIST_LIMIT = 40 // 一屏最多列这么多条：全量下可能有几百个字要重写，全铺出来反而看不出重点
 const showNote = ref(true) // "只是留意"那一栏是否展开
-const rewriteList = computed(() => ((checkup.value && checkup.value.glyphs) || []).filter((g) => g.needsRewrite && !g.excluded))
-const noteList = computed(() => ((checkup.value && checkup.value.glyphs) || []).filter((g) => !g.needsRewrite && !g.excluded && (g.messages || []).length))
+// 已在重写清单里的字：查的是 **store 的状态**、不是体检快照里的字段 —— 标了 / 移出之后
+// computed 立刻重算，不必重跑体检（体检要几秒）
+const rewriteSet = computed(() => new Set(store.rewriteChars))
+// 体检判"建议重写"、但还没被标进清单、也没被剔除的字（可一键加入重写清单）
+const rewriteList = computed(() => ((checkup.value && checkup.value.glyphs) || [])
+  .filter((g) => g.needsRewrite && !g.excluded && !rewriteSet.value.has(g.char)))
+// 两栏都要排掉"已经进了重写清单"的字（否则同一个字会在原栏与重写清单里各出现一次）——
+// 这条是冒烟抓出来的真实缺陷：当初只给"建议重写"加了过滤、漏了"只是留意"
+const noteList = computed(() => ((checkup.value && checkup.value.glyphs) || [])
+  .filter((g) => !g.needsRewrite && !g.excluded && !rewriteSet.value.has(g.char) && (g.messages || []).length))
 const excludedList = computed(() => ((checkup.value && checkup.value.glyphs) || []).filter((g) => g.excluded))
+// 重写清单的内容：从体检快照里补出"第几页第几格、为什么"，快照里没有的字（比如换过一批扫描件）就只显示字
+const onRewriteList = computed(() => store.rewriteChars.map((char) => {
+  const g = ((checkup.value && checkup.value.glyphs) || []).find((x) => x.char === char)
+  return {
+    char,
+    pageNumber: g ? g.pageNumber : null,
+    cellIndex: g ? g.cellIndex : null,
+    messages: (g && g.messages) || [],
+    reason: (store.rewrite[char] && store.rewrite[char].reason) || '标为待重写'
+  }
+}))
 const listSlice = (list) => list.slice(0, LIST_LIMIT)
 
 function excludeGlyph(char) {
@@ -133,6 +155,58 @@ function restoreAll() {
   store.clearExcluded()
   setMessage(n ? '已恢复全部 ' + n + ' 个被剔除的字；下次点「生成字体」生效' : '没有被剔除的字', 'info')
 }
+
+// ── 待重写清单（八-8 的第四态，清单一-12）：与"剔除"的区别必须在文案里说清 ──────────
+// 剔除 = 这个字不要了；待重写 = 这次先不进字体、以后补上（清单会一直记着，直到你移出）
+function markRewrite(char, reason) {
+  store.setGlyphRewrite(char, true, reason)
+  setMessage('已把「' + char + '」放进重写清单：它这次不进字体；重写那几页后用第 3 步的「重传这一页」覆盖，再回来重新生成', 'info')
+}
+function unmarkRewrite(char) {
+  store.setGlyphRewrite(char, false)
+  setMessage('已把「' + char + '」移出重写清单：下次点「生成字体」时继续采用现有字形', 'info')
+}
+function clearRewriteAll() {
+  const n = store.rewriteCount
+  store.clearRewrite()
+  setMessage(n ? '已移出全部 ' + n + ' 个待重写的字（都继续采用现有字形）' : '重写清单本来就是空的', 'info')
+}
+/**
+ * 导出重写清单（按页归组）：拿着它去重写那几页 —— 重写后走第 3 步的「重传这一页」（决策 八-14），
+ * 不需要额外的模板或册子（这也是决策 一-6 ①「按清单动态生成更正册」不做之后留下的路径）。
+ */
+function exportRewriteList() {
+  const rows = onRewriteList.value
+  if (!rows.length) return
+  const byPage = new Map()
+  for (const r of rows) {
+    const key = r.pageNumber === null ? 0 : r.pageNumber
+    if (!byPage.has(key)) byPage.set(key, [])
+    byPage.get(key).push(r)
+  }
+  const lines = []
+  lines.push('SxFontCreator 重写清单')
+  lines.push('生成时间：' + new Date().toLocaleString('zh-CN'))
+  lines.push('待重写 ' + rows.length + ' 个字 —— 它们这次没有进字体。')
+  lines.push('')
+  lines.push('怎么用：按下表的页号回去重写那几页（写法见《使用说明》「二、书写」）；')
+  lines.push('写完后到第 3 步找到那一页，点「重传这一页」覆盖识别结果，再回第 5 步点「生成字体」。')
+  lines.push('')
+  for (const [page, list] of [...byPage.entries()].sort((a, b) => a[0] - b[0])) {
+    lines.push((page ? '第 ' + page + ' 页' : '页号未知') + '（' + list.length + ' 个字）')
+    for (const r of list) {
+      // 格号取 1 起（与更正册上印的格号、人的数法一致）
+      const where = r.cellIndex === null ? '' : ' 第 ' + (r.cellIndex + 1) + ' 格'
+      const why = (r.messages && r.messages.length) ? '：' + r.messages.join('；') : ''
+      lines.push('  ' + r.char + where + why)
+    }
+    lines.push('')
+  }
+  lines.push('（每格序号从 1 起：一页 136 格，从左到右、从上到下。）')
+  downloadText(lines.join('\n'), '重写清单-' + new Date().toISOString().slice(0, 10) + '.txt', 'text/plain;charset=utf-8')
+  setMessage('已导出重写清单：' + rows.length + ' 个字，按页归组', 'done')
+}
+
 // 剔除了字、或改了名称表之后，之前那份体检快照就与当前状态不一致了（store 会置 checkupStale）
 const staleAfterExclude = computed(() => !!checkup.value && store.font.checkupStale)
 
@@ -218,12 +292,16 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
       </p>
 
       <div v-if="rewriteList.length" class="checkup-group">
-        <p class="panel-hint"><strong>建议重写（{{ rewriteList.length }}）</strong>：成字后这些字会明显偏小或不成形，最好重写那一格（或用更正册覆盖）</p>
+        <p class="panel-hint">
+          <strong>建议重写（{{ rewriteList.length }}）</strong>：成字后这些字会明显偏小或不成形。
+          <strong>加入重写清单</strong> = 这次先不进字体、以后重写补上；<strong>剔除</strong> = 这个字不要了。
+        </p>
         <ul class="checkup-list" data-role="rewrite-list">
           <li v-for="g in listSlice(rewriteList)" :key="'r' + g.char">
             <span class="checkup-char">{{ g.char }}</span>
             <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
             <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
+            <button type="button" class="text" :disabled="busy" data-role="mark-rewrite" @click="markRewrite(g.char, (g.messages || []).join('；'))">加入重写清单</button>
             <button type="button" class="text" :disabled="busy" @click="excludeGlyph(g.char)">剔除这个字</button>
           </li>
         </ul>
@@ -235,6 +313,29 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
         没有需要重写的字形 —— 这一批可以直接生成字体。
       </p>
 
+      <!-- 重写清单（八-8 第四态，清单一-12）：与上面"建议重写"分开列 ——
+           上面那份是**体检建议**（还没决定），这份是**已经决定要重写**的，它们本次不进字体，
+           清单一直挂着直到被移出（"移出清单（继续采用）"= 就用现在这个字形，不再等重写） -->
+      <div v-if="onRewriteList.length" class="checkup-group" data-role="rewrite-plan">
+        <p class="panel-hint">
+          <strong>重写清单（{{ onRewriteList.length }}）</strong>：这些字这次不进字体。
+          重写完那几页后，用第 3 步的「重传这一页」覆盖，再回这里点「生成字体」。
+          <button type="button" class="text" :disabled="busy" data-role="rewrite-export" @click="exportRewriteList">导出重写清单</button>
+          <button type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出</button>
+        </p>
+        <ul class="checkup-list" data-role="rewrite-plan-list">
+          <li v-for="r in listSlice(onRewriteList)" :key="'w' + r.char">
+            <span class="checkup-char">{{ r.char }}</span>
+            <span class="checkup-where">{{ r.pageNumber === null ? '页号未知' : '第 ' + r.pageNumber + ' 页 · 第 ' + r.cellIndex + ' 格' }}</span>
+            <span class="checkup-msgs">{{ r.messages.length ? r.messages.join('；') : r.reason }}</span>
+            <button type="button" class="text" :disabled="busy" data-role="unmark-rewrite" @click="unmarkRewrite(r.char)">移出清单（继续采用）</button>
+          </li>
+        </ul>
+        <p v-if="onRewriteList.length > LIST_LIMIT" class="panel-hint">
+          还有 {{ onRewriteList.length - LIST_LIMIT }} 个字没列出来（一屏只列前 {{ LIST_LIMIT }} 个）
+        </p>
+      </div>
+
       <div v-if="noteList.length" class="checkup-group">
         <p class="panel-hint">
           <strong>只是留意（{{ noteList.length }}）</strong>：不影响成字，看一眼就行
@@ -245,6 +346,8 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
             <span class="checkup-char">{{ g.char }}</span>
             <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
             <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
+            <!-- 两个动作与「建议重写」那栏保持一致：想重写的字不一定都落在"建议重写"里 -->
+            <button type="button" class="text" :disabled="busy" data-role="mark-rewrite" @click="markRewrite(g.char, (g.messages || []).join('；'))">加入重写清单</button>
             <button type="button" class="text" :disabled="busy" @click="excludeGlyph(g.char)">剔除这个字</button>
           </li>
         </ul>

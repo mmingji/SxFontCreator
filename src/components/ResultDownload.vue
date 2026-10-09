@@ -65,7 +65,8 @@ async function ensureBuild() {
       items: plan.value.items,
       meta: { ...store.meta },
       batchId: store.scan.batchId,
-      excluded: store.excludedChars,
+      // 与第 5 步同一条口径（八-8）：已剔除 + 待重写都排除
+      excluded: [...store.excludedChars, ...store.rewriteChars],
       woff2WasmUrl: './woff2.wasm',
       onStage: (t) => { stage.value = t },
       onProgress: (done, total) => { progress.value = { done, total } }
@@ -106,11 +107,15 @@ function coverageInfo(extra = {}) {
   const excludedNote = store.excludedCount
     ? '其中有 ' + store.excludedCount + ' 个字是你在第 5 步字形体检里剔除的（' + store.excludedChars.join('、') + '），它们不进字体；要收回请回第 5 步点「恢复」。'
     : ''
+  // 待重写的字（八-8 第四态）：与剔除**分开写** —— 一个是"不要了"，一个是"先不进、以后补"
+  const rewriteNote = store.rewriteCount
+    ? '另有 ' + store.rewriteCount + ' 个字标了待重写（' + store.rewriteChars.join('、') + '），本次也没进字体；等你重写那几页后，用第 3 步的「重传这一页」覆盖即可。'
+    : ''
   return {
     total: font.value.coverage ? font.value.coverage.total : 0,
     fromCorrection: font.value.coverage ? font.value.coverage.fromCorrection : 0,
     chars: font.value.coverage ? font.value.coverage.chars : [],
-    suspectNote: suspectNote + (excludedNote ? (suspectNote ? ' ' : '') + excludedNote : ''),
+    suspectNote: [suspectNote, excludedNote, rewriteNote].filter(Boolean).join(' '),
     missingNote: extra.missingNote || '',
     ...extra
   }

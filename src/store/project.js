@@ -97,6 +97,12 @@ export const useProjectStore = defineStore('project', {
     //   为什么按"字"而不是按"格"：一个字只该有一个字形，用户想剔的是这个字，重扫之后仍然作数
     //   （要收回就点"恢复"）。它与字形数据分开放，改一次只写几十字节。
     excluded: {},
+    // 待重写（决策 八-8 扩充出来的第四种书写状态，2026-10-09 随清单一-12 落地）：
+    //   rewrite —— `{ [字]: { at, reason } }` 被**标为待重写**的字：本次不进字体，但记在清单上等重写。
+    //   与"剔除"的区别（界面上要说清）：**剔除 = 这个字不要了；待重写 = 先不进字体、以后补上**。
+    //   落地路径：重写那几页 → 第 3 步的「重传这一页」原地覆盖（决策 八-14），不需要新机制。
+    //   同样按"字"记录（不按格，重扫之后仍作数）；与剔除**互斥** —— 同一个字只能占一种。
+    rewrite: {},
     // 字体产物（步骤 1.9 / 1.10）：只存**元信息**，不存字节（TTF 能由字形重算，全量约 30 秒；
     // 再存一份只会让体积翻倍。字节暂存在 lib/buildFont.js 的内存里，刷新后按需重建）
     font: {
@@ -176,7 +182,10 @@ export const useProjectStore = defineStore('project', {
     },
     // 被剔除的字（数组形式，界面与构建都要用）
     excludedChars: (state) => Object.keys(state.excluded || {}),
-    excludedCount: (state) => Object.keys(state.excluded || {}).length
+    excludedCount: (state) => Object.keys(state.excluded || {}).length,
+    // 待重写的字（同上一组：界面要列清单、构建要排除）
+    rewriteChars: (state) => Object.keys(state.rewrite || {}),
+    rewriteCount: (state) => Object.keys(state.rewrite || {}).length
   },
 
   actions: {
@@ -196,6 +205,8 @@ export const useProjectStore = defineStore('project', {
         if (Array.isArray(data.batches)) this.batches = data.batches
         // 人工剔除记录（八-8）：读旧项目对象时没有这个字段，缺省为空对象即可
         if (data.excluded && typeof data.excluded === 'object' && !Array.isArray(data.excluded)) this.excluded = data.excluded
+        // 待重写清单（八-8 扩充）：同样兼容没有这个字段的旧项目
+        if (data.rewrite && typeof data.rewrite === 'object' && !Array.isArray(data.rewrite)) this.rewrite = data.rewrite
         if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
         if (data.correction && typeof data.correction === 'object') Object.assign(this.correction, data.correction)
         if (data.font && typeof data.font === 'object') Object.assign(this.font, data.font)
@@ -224,6 +235,7 @@ export const useProjectStore = defineStore('project', {
         scan: this.scan,
         correction: this.correction,
         excluded: this.excluded,
+        rewrite: this.rewrite,
         font: this.font
       }
     },
@@ -562,6 +574,12 @@ export const useProjectStore = defineStore('project', {
       if (excluded) next[char] = { at: new Date().toISOString(), reason: reason || '人工剔除' }
       else delete next[char]
       this.excluded = next
+      // 与"待重写"互斥（八-8）：同一个字只能占一种 —— 既然剔除了，就不该再挂在重写清单上
+      if (excluded && this.rewrite && this.rewrite[char]) {
+        const rest = { ...this.rewrite }
+        delete rest[char]
+        this.rewrite = rest
+      }
       // 体检快照是"生成字体"那一次的产物，剔除只是翻一个状态位：**就地更新它**，
       // 让清单立刻正确（重新跑一遍体检要几秒，没必要）。
       // `toRaw` 是必需的：传进 computed 的数组会被 Vue 包成 Proxy，直接存回 state 会让
@@ -582,6 +600,57 @@ export const useProjectStore = defineStore('project', {
       const was = Object.keys(this.excluded || {})
       this.excluded = {}
       for (const char of was) this.font.checkup = toggleSnapshotExcluded(toRaw(this.font.checkup), char, false)
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
+      this.markDirty()
+      schedulePersist(this)
+    },
+
+    // ── 待重写清单（决策 八-8 扩充的第四态，清单一-12）────────────────────
+    /**
+     * 把一个字标为待重写 / 移出重写清单（第 5 步体检面板里的两个按钮）。
+     * **与"剔除"的区别**：剔除是"这个字不要了"；待重写是"这次先不进字体、以后补上"。
+     * 两者在构建时的效果一样（都排除），区别在于**有没有一条待办挂在清单上**。
+     * 标为待重写时**自动撤销剔除**（同一个字只能占一种状态，见 八-8）。
+     * 与剔除同理：改的是状态位，所以要清掉"已构建"标记 —— 产物里还留着那个字形，
+     * 不重新生成就与界面说的不一致。
+     * @param {string} char
+     * @param {boolean} rewrite true = 加入清单 / false = 移出清单（继续采用现有字形）
+     * @param {string} [reason] 加入时的原因（一般来自体检：写得太小 / 要重写）
+     * @returns {boolean}
+     */
+    setGlyphRewrite(char, rewrite, reason) {
+      if (!char) return false
+      const next = { ...(this.rewrite || {}) }
+      if (rewrite) {
+        next[char] = { at: new Date().toISOString(), reason: reason || '标为待重写' }
+        // 互斥：从剔除名单里摘掉（它现在属于"待重写"，不是"不要了"）
+        if (this.excluded && this.excluded[char]) {
+          const rest = { ...this.excluded }
+          delete rest[char]
+          this.excluded = rest
+          this.font.checkup = toggleSnapshotExcluded(toRaw(this.font.checkup), char, false)
+        }
+      } else {
+        delete next[char]
+      }
+      this.rewrite = next
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
+      this.markDirty()
+      schedulePersist(this)
+      return true
+    },
+
+    // 清空整份待重写清单（第 5 步的「全部移出」—— 表示这批字就这样用，不重写了）
+    clearRewrite() {
+      this.rewrite = {}
       if (this.font.built) {
         this.font.built = false
         this.font.builtAt = null
@@ -681,6 +750,10 @@ export const useProjectStore = defineStore('project', {
       this.batches = Array.isArray(data.batches) ? data.batches : []
       this.excluded = data.excluded && typeof data.excluded === 'object' && !Array.isArray(data.excluded)
         ? data.excluded
+        : {}
+      // 待重写清单（八-8 扩充）：包是旧版本导出的就没有这个字段，缺省为空
+      this.rewrite = data.rewrite && typeof data.rewrite === 'object' && !Array.isArray(data.rewrite)
+        ? data.rewrite
         : {}
       this.scan = {
         batchId: null, batchConfirmed: false, allowVoidBatch: false, pages: [],
