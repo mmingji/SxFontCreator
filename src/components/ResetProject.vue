@@ -177,20 +177,24 @@ async function doReset() {
 
         <div class="backup-block">
           <h4>会删掉什么</h4>
+          <!-- 每行用一个 span 包住整句：`.checklist li` 是两端对齐的 flex（左右分列用在"名称 ↔ 数量"那种表上），
+               不包的话裸文本与 <strong> 会各成一个 flex 项、被推到两端，数字与文字脱节 -->
           <ul class="checklist" data-role="reset-scope">
-            <li v-if="stats">已落盘的字形：<strong>{{ stats.glyphs }}</strong> 个字 / {{ stats.pages }} 个分片（{{ mb(stats.bytes) }}MB）</li>
-            <li v-else>已落盘的字形：暂无（先在第 3 步识别扫描件）</li>
+            <li v-if="stats"><span>已落盘的字形：<strong>{{ stats.glyphs }}</strong> 个字 / {{ stats.pages }} 个分片（{{ mb(stats.bytes) }}MB）</span></li>
+            <li v-else><span>已落盘的字形：暂无（先在第 3 步识别扫描件）</span></li>
             <li>
-              内存里这次会话的产物：{{ memStats && memStats.pages ? memStats.pages + ' 页缩略图 / ' + memStats.masks + ' 张笔迹掩膜' : '暂无' }}，
-              以及第 6 步注册进页面的预览字体
+              <span>
+                内存里这次会话的产物：{{ memStats && memStats.pages ? memStats.pages + ' 页缩略图 / ' + memStats.masks + ' 张笔迹掩膜' : '暂无' }}，
+                以及第 6 步注册进页面的预览字体
+              </span>
             </li>
-            <li>项目数据：批次 <strong>{{ store.batches.length }}</strong> 个、识别记录 {{ store.scan.pages.length }} 页、已选 {{ store.selectedCount }} 字、剔除记录 {{ store.excludedCount }} 条</li>
-            <li>字体产物：{{ store.font.built ? '已生成（' + (store.font.fileName || '') + '，清空后要重新生成）' : '暂无' }}</li>
+            <li><span>项目数据：批次 <strong>{{ store.batches.length }}</strong> 个、识别记录 {{ store.scan.pages.length }} 页、已选 {{ store.selectedCount }} 字、剔除记录 {{ store.excludedCount }} 条</span></li>
+            <li><span>字体产物：{{ store.font.built ? '已生成（' + (store.font.fileName || '') + '，清空后要重新生成）' : '暂无' }}</span></li>
           </ul>
           <p class="panel-hint">
             数据只在本机浏览器里 —— <strong>复制程序目录、把程序发给别人都不会带走它</strong>；
             而 <code>file://</code> 下<strong>所有解压出来的副本共用同一份存储</strong>，
-            所以这次清空对它们同样生效（决策 六-4）。<strong>扫描件原图本来就不落盘</strong>，不在清空范围内。
+            所以这次清空对它们同样生效。<strong>扫描件原图本来就不落盘</strong>，不在清空范围内。
           </p>
         </div>
 
