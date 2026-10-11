@@ -19,6 +19,11 @@ import {
   CHARSET_SCOPE_LINE
 } from '../lib/charsetStandard.js'
 import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadHandwritingFont } from '../lib/referenceFont.js'
+import { buildOrderFile, dateStamp } from '../lib/orderFile.js'
+import { CORRECTION_BOOK_PAGES, packTemplateZip, templatePackNames } from '../lib/templatePack.js'
+import { loadGuideHtml } from '../lib/guideHtml.js'
+import { downloadBytes } from '../lib/download.js'
+import { orderModeLabel, scopePreset } from '../lib/templateScope.js'
 import { useProjectStore } from '../store/project.js'
 import SelectionPanel from './SelectionPanel.vue'
 import PdfPreview from './PdfPreview.vue'
@@ -210,18 +215,11 @@ async function resolveFont() {
   return { bytes: await loadBuiltinFont(), label: BUILTIN_FONT_LABEL }
 }
 
-function download(bytes, filename) {
-  // 用原生 Blob + a[download]，不引额外依赖
-  const blob = new Blob([bytes], { type: 'application/pdf' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  // 交给浏览器读完再回收
-  setTimeout(() => URL.revokeObjectURL(url), 10000)
+// 档位的中文名（写进字序文件、也在界面上显示）；custom 不在预置档位表里，单独给一句
+function scopeLabelOf(key) {
+  if (key === 'custom') return '自定义选字'
+  const preset = scopePreset(key)
+  return preset ? preset.label : key
 }
 
 // 生成"当前设置下的模板 PDF"（试打是 1 页字表 + 自检页；正式范围是全部页 + 自检页）。
@@ -265,36 +263,79 @@ onBeforeUnmount(() => { clearTimeout(previewTimer) })
 watch([scope, orderMode, () => store.selectedCount], () => { schedulePreview() })
 onMounted(() => { schedulePreview() })
 
-async function generateTemplate() {
+// 生成这一轮的**模板压缩包**（决策 一-17）：模板 PDF + 空白更正册 + 完整说明 + 字序文件，
+// 套一层带日期的文件夹打进 zip；单页试打与正式范围走同一条路（用户口径：试打也出压缩包）。
+// 顺序上先出模板（最慢、最要紧），再出更正册、取说明、写字序文件，最后一次性打包。
+async function generatePack() {
   if (busy.value) return
   busy.value = true
   lastResult.value = null
   try {
-    setMessage('正在读取字体…', 'info')
-    setMessage('正在生成模板 PDF…', 'info')
+    const stamp = dateStamp()
+    const names = templatePackNames(stamp, { correctionPages: CORRECTION_BOOK_PAGES })
+    setMessage('正在读取字体、生成模板 PDF…', 'info')
     const { out, font, chars } = await buildCurrentPdf()
-    const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
-    // **2026-10-11 起：第 1 步不再记批次**（决策 五-9 的收尾）—— 模板只是"一张纸"，不再产生项目数据。
-    // 这一页写了哪些字、该按什么字序对应，第 3 步会从纸面印的参考字自己认出来；批次也在那一步按需
-    // 自动建（store.ensureScanBatch）。这里只留一笔"生成过模板"的元信息：它既是进度判据（flow.js 的
-    // "生成过模板"），也是界面上"最近产物"那一行的来源。
+    setMessage('正在生成空白更正册（' + CORRECTION_BOOK_PAGES + ' 页）…', 'info')
+    progress.value = { done: 0, total: CORRECTION_BOOK_PAGES }
+    const book = await buildCorrectionBookPdf({
+      pageCount: CORRECTION_BOOK_PAGES,
+      fontBytes: font.bytes,
+      onProgress: (done, total) => { progress.value = { done, total } }
+    })
+    // 《使用说明》取不到**不算致命**：模板与字序才是这一步的核心产物 —— 少一件就在消息里说清，
+    // 不能让"说明没取到"把整包纸挡下来（说明另有入口：每一步标题行的「查看完整说明」）
+    setMessage('正在打包…', 'info')
+    const guideHtml = await loadGuideHtml().catch(() => null)
+    const order = buildOrderFile({
+      chars,
+      scope: scope.value,
+      scopeLabel: scopeLabelOf(scope.value),
+      order: orderMode.value,
+      orderLabel: orderModeLabel(orderMode.value),
+      perPage: LAYOUT.perPage,
+      batchCode: out.batchCode
+    })
+    const packed = await packTemplateZip({
+      templateBytes: out.bytes,
+      correctionBytes: book.bytes,
+      guideHtml: guideHtml || '',
+      orderFile: order,
+      stamp,
+      correctionPages: CORRECTION_BOOK_PAGES
+    })
+    // **第 1 步不记批次**（决策 五-9 ⑩）：模板只是"一张纸"，不再产生项目数据；这里只留一笔
+    // "生成过模板"的元信息 —— 它既是进度判据（flow.js 的 templatePages），也是"最近产物"的来源。
+    // 这一页写了哪些字、该按什么字序对应，第 2 步读包里的字序文件就知道（没有文件时才认参考字）。
     store.setTemplateGenerated({
       sheetPages: out.sheetPages,
       charCount: chars.length,
       order: orderMode.value,
       scope: scope.value,
-      fileName: name
+      fileName: packed.names.zip
     })
-    download(out.bytes, name)
-    // 下载用的就是刚生成的那份，顺手把它给预览，省一次重算
+    downloadBytes(packed.bytes, packed.names.zip, 'application/zip')
+    // 下载用的就是刚生成的那份模板，顺手把它给预览，省一次重算
     previewBytes.value = out.bytes
-    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label }
-    const mb = (out.bytes.length / 1024 / 1024).toFixed(2)
-    const selfNote = out.selfCheck ? '；最后 1 页是打印自检页，先用尺子量 1cm 方框再开始手写' : ''
+    lastResult.value = {
+      zip: packed.names.zip,
+      folder: packed.names.folder,
+      bytes: packed.bytes.length,
+      sheetPages: out.sheetPages,
+      selfCheck: out.selfCheck,
+      correctionPages: book.pageCount,
+      charCount: order.charCount,
+      batchCode: out.batchCode,
+      font: font.label,
+      withGuide: !!guideHtml
+    }
+    const mb = (packed.bytes.length / 1024 / 1024).toFixed(2)
     setMessage(
-      '模板已生成并开始下载：' + out.sheetPages + ' 字表页' + (out.selfCheck ? ' + 1 页自检' : '') +
-        '（' + mb + ' MB），参考字用' + font.label + selfNote,
-      'done'
+      '模板压缩包已生成并开始下载：' + packed.names.zip + '（' + mb + ' MB）。解压得到文件夹「' +
+        packed.names.folder + '」，里面有模板 ' + out.sheetPages + ' 字表页' +
+        (out.selfCheck ? ' + 1 页自检' : '') + '、更正册 ' + book.pageCount + ' 页、字序文件' +
+        (guideHtml ? '与完整说明' : '（完整说明这次没取到，包内少了它，不影响打印）') +
+        '。参考字用' + font.label + '；打印前先用尺子量自检页上的 1cm 方框。',
+      guideHtml ? 'done' : 'info'
     )
   } catch (e) {
     setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
@@ -304,33 +345,9 @@ async function generateTemplate() {
   }
 }
 
-async function generateCorrectionBook() {
-  if (busy.value) return
-  busy.value = true
-  progress.value = { done: 0, total: 0 }
-  try {
-    setMessage('正在读取字体…', 'info')
-    const font = await resolveFont()
-    const bookPages = 5
-    progress.value = { done: 0, total: bookPages }
-    setMessage('正在生成更正册…', 'info')
-    const out = await buildCorrectionBookPdf({
-      pageCount: bookPages,
-      fontBytes: font.bytes,
-      onProgress: (done, total) => {
-        progress.value = { done, total }
-      }
-    })
-    const name = 'SxFontCreator-更正册-空白' + bookPages + '页.pdf'
-    download(out.bytes, name)
-    setMessage('更正册已生成并开始下载：' + out.pageCount + ' 页（空白册，每格带连续格号）', 'done')
-  } catch (e) {
-    setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
-  } finally {
-    busy.value = false
-    progress.value = { done: 0, total: 0 }
-  }
-}
+// 原「生成更正册（空白 5 页）」独立按钮已去掉（决策 一-17 ⑤）：它现在是模板压缩包里的第二件，
+// 页数固定为 CORRECTION_BOOK_PAGES，随包一起出 —— 用户不必再单独下一次、也不必自己对上两份纸。
+
 </script>
 
 <template>
@@ -427,15 +444,19 @@ async function generateCorrectionBook() {
     <p v-if="sampleNote" class="panel-message error">{{ sampleNote }}</p>
 
     <div class="panel-actions">
-      <button class="primary" :disabled="busy" @click="generateTemplate">生成模板 PDF</button>
-      <button class="text" :disabled="busy" @click="generateCorrectionBook">生成更正册（空白 5 页）</button>
+      <button class="primary" data-role="generate-pack" :disabled="busy" @click="generatePack">生成并下载模板压缩包</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
+      <span v-if="!busy" class="panel-hint">包内四件：模板 PDF、空白更正册（5 页）、完整说明、字序文件</span>
     </div>
 
     <!-- data-role：给自动化测试一个稳定锚点（本步还有一条"书写示意失败"的消息，同样用 .panel-message） -->
     <p v-if="message" class="panel-message" :class="messageType" data-role="template-message">{{ message }}</p>
-    <p v-if="lastResult" class="panel-hint">
-      最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}）
+    <p v-if="lastResult" class="panel-hint" data-role="template-result">
+      最近产物：{{ lastResult.zip }} —— 解压得到「{{ lastResult.folder }}」文件夹：模板 {{ lastResult.sheetPages }} 字表页<span
+        v-if="lastResult.selfCheck"
+      > + 1 自检页</span>、更正册 {{ lastResult.correctionPages }} 页、字序文件（{{ lastResult.charCount }} 字 · 校验码 {{ lastResult.batchCode }}）<span
+        v-if="lastResult.withGuide"
+      >、完整说明</span>；共 {{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}
     </p>
 
     <!-- 纯说明类长文（打印设置 / 书写要求 / 扫描设置）已整合进《使用说明》单文件页（决策 一-15）：
