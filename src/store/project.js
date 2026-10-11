@@ -331,6 +331,26 @@ export const useProjectStore = defineStore('project', {
       return batch
     },
 
+    /**
+     * 记一笔"已经生成过模板"（决策 五-9 的收尾：第 1 步不再记批次，只留这条元信息）
+     * 为什么要它：进度判据里"第 1 步完成 / 能不能进第 2、3 步"原本靠 batchCount，而批次现在只由第 3 步
+     *   按需自动建 —— 不换判据的话，生成过模板也进不去下一步（flow.js 的 templatePages 读这里）。
+     * 只存元信息、**不存 PDF 字节**：产物按需重建（五-5 的口径）。
+     * @param {object} info { sheetPages, charCount, order, scope, fileName }
+     */
+    setTemplateGenerated(info = {}) {
+      this.template = {
+        generatedAt: new Date().toISOString(),
+        sheetPages: info.sheetPages || 0,
+        charCount: info.charCount || 0,
+        order: info.order || 'charset',
+        scope: info.scope || '',
+        fileName: info.fileName || ''
+      }
+      this.markDirty()
+      schedulePersist(this)
+    },
+
     // 作废一个批次（八-9）：作废后不再接受上传，除非用户显式勾选"我知道这是作废模板"
     voidBatch(id, reason) {
       const batch = this.batches.find((item) => item.id === id)

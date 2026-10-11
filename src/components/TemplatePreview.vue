@@ -18,7 +18,7 @@ import {
   CHARSET_STANDARD_SOURCES,
   CHARSET_SCOPE_LINE
 } from '../lib/charsetStandard.js'
-import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadHandwritingFont, loadFontFromFile } from '../lib/referenceFont.js'
+import { BUILTIN_FONT_LABEL, loadBuiltinFont, loadHandwritingFont } from '../lib/referenceFont.js'
 import { useProjectStore } from '../store/project.js'
 import SelectionPanel from './SelectionPanel.vue'
 import PdfPreview from './PdfPreview.vue'
@@ -35,18 +35,17 @@ const commonCount = l1Count + l2Count + baseCount
 const commonPages = Math.ceil(commonCount / LAYOUT.perPage)
 
 // 写哪些字出模板：**一组三选**（2026-10-07 用户要求把原来的「选字 + 生成范围」两组单选合并成一组）。
-//   single —— 单页试打：只出第 1 页（前 136 字）+ 自检页，先确认版式与打印设置；**不记批次**
+//   single —— 单页试打：只出第 1 页（前 136 字）+ 自检页，先确认版式与打印设置
 //   common —— 常用 6500 字：一级 + 二级 + 基础字符全出（按当前排列方式）
 //   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量"（8274 字）等价
 // 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
 // 正式范围（常用 6500 字 / 自定义选字）出模板时会记一个批次，单页试打不记。
 const scope = ref('single')
 const pickerOpen = computed(() => scope.value === 'custom')
-// 字体来源：内置子集 / 用户选的本机字体
-const fontSource = ref('builtin')
-const localFontName = ref('')
-// 本机字体的规整结果：{ bytes, format, label, note }（ttc 会被提取出单个字体、woff 会解包，见 lib/fontFormat.js）
-let localFont = null
+// 参考字字体：**只有内置楷体一条路**（2026-10-11 去掉"选本机字体"，决策 五-9）——
+// 参考字是第 3 步"认字定序"的比对基准，必须与内置子集一致；换了字体，纸上那套参考字就认不出来。
+// （lib/referenceFont.js 的 loadFontFromFile 与 lib/fontFormat.js 的规整能力保留：那是可复用的库能力，
+//   测试仍在覆盖；界面上不再暴露入口。）
 
 const busy = ref(false)
 const message = ref('')
@@ -94,14 +93,12 @@ async function refreshSample(fontBytes, chars) {
   }
 }
 
-// 两个问号浮窗共用同一套开合与定位：①「本机字体怎么选」（Windows 字体目录带「系统」属性、两条绕开
-// 办法、macOS 目录，常驻会把面板撑长）；②「字表标准与收字口径」（2026-10-08 新增，显示《通用规范汉字表》
-// 来源核对 + 官方说明节选（第二至第八条））。同一时刻只开一个。
-const fontHelpOpen = ref(false)
+// 「字表标准与收字口径」问号浮窗（2026-10-08 新增）：显示《通用规范汉字表》来源核对 + 官方说明节选。
+// **本机字体那个浮窗随"参考字体"选项一起去掉了**（2026-10-11）：参考字一律用内置楷体 —— 纸上印的那套
+// 参考字必须能被认出来，换了字体就认不出（决策 五-9）。
 const standardHelpOpen = ref(false)
 // 浮窗位置在打开时按按钮位置算，并夹进视口：实测固定的 left / right 都不行 ——
 // 1180px 视口下向左展开会把文字裁在视口外（左边缘到 -53px），900px 视口下向右展开又顶出右边界。
-const fontHelpStyle = ref({ left: '0px', top: 'calc(100% + 8px)' })
 const standardHelpStyle = ref({ left: '0px', top: 'calc(100% + 8px)' })
 
 // 相对 .help-holder 的偏移，三级优先：① 右对齐到按钮右边缘（浮窗贴问号左下）② 放不下就左对齐到按钮
@@ -119,31 +116,19 @@ function placePopover(buttonEl, width) {
   return { left: Math.round(left) + 'px', top: 'calc(100% + 8px)', width: Math.round(w) + 'px' }
 }
 
-function toggleFontHelp(e) {
-  fontHelpOpen.value = !fontHelpOpen.value
-  if (!fontHelpOpen.value) return
-  standardHelpOpen.value = false
-  fontHelpStyle.value = placePopover(e.currentTarget, 560)
-}
-
 function toggleStandardHelp(e) {
   standardHelpOpen.value = !standardHelpOpen.value
   if (!standardHelpOpen.value) return
-  fontHelpOpen.value = false
   standardHelpStyle.value = placePopover(e.currentTarget, 620)
 }
 
 function onDocumentClick(e) {
   // 点在任何 .help-holder 区域（问号或浮窗）内都不关闭 —— 否则"点问号展开"会被同一次冒泡立刻收掉
   if (e.target && e.target.closest && e.target.closest('.help-holder')) return
-  fontHelpOpen.value = false
   standardHelpOpen.value = false
 }
 function onDocumentKeydown(e) {
-  if (e.key === 'Escape') {
-    fontHelpOpen.value = false
-    standardHelpOpen.value = false
-  }
+  if (e.key === 'Escape') standardHelpOpen.value = false
 }
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
@@ -157,7 +142,7 @@ onBeforeUnmount(() => {
 // 三选一的提示：每一种都当场说清"这次会排哪些字、多少页"
 const scopeHint = computed(() => {
   if (scope.value === 'single') {
-    return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字）+ 打印自检页，先确认版式与打印设置；不记批次'
+    return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字）+ 打印自检页，先确认版式与打印设置'
   }
   if (scope.value === 'custom') {
     return store.selectedCount
@@ -220,31 +205,8 @@ watch(() => store.ui.resetNotice, (text) => {
   store.consumeResetNotice()
 }, { immediate: true })
 
-async function pickLocalFont(event) {
-  const file = event.target.files && event.target.files[0]
-  if (!file) return
-  try {
-    localFont = await loadFontFromFile(file)
-    localFontName.value = file.name
-    fontSource.value = 'local'
-    // 这里**不再补一条"已选用本机字体…"的提示**（2026-10-07 用户要求去掉）：上面的单选项已经回显了文件名，
-    // 同一件事说两遍反而把真正要看的信息（生成结果 / 错误原因）挤下去
-    setMessage('')
-  } catch (e) {
-    localFont = null
-    localFontName.value = ''
-    fontSource.value = 'builtin'
-    setMessage(e.message, 'error')
-  } finally {
-    // 清空 input，便于再次选择同一个文件
-    event.target.value = ''
-  }
-}
-
+// 参考字字体固定用内置楷体（理由见上面那段注释：它是认字定序的比对基准）
 async function resolveFont() {
-  if (fontSource.value === 'local' && localFont) {
-    return { bytes: localFont.bytes, label: '本机字体（' + localFontName.value + '）' }
-  }
   return { bytes: await loadBuiltinFont(), label: BUILTIN_FONT_LABEL }
 }
 
@@ -300,7 +262,7 @@ async function refreshPreview() {
 }
 onBeforeUnmount(() => { clearTimeout(previewTimer) })
 // 影响版面的输入一变就重出预览；打开这一步时先出一次（用户不用先点按钮才能看到东西）
-watch([scope, orderMode, () => store.selectedCount, () => fontSource.value, () => localFontName.value], () => { schedulePreview() })
+watch([scope, orderMode, () => store.selectedCount], () => { schedulePreview() })
 onMounted(() => { schedulePreview() })
 
 async function generateTemplate() {
@@ -311,23 +273,27 @@ async function generateTemplate() {
     setMessage('正在读取字体…', 'info')
     setMessage('正在生成模板 PDF…', 'info')
     const { out, font, chars } = await buildCurrentPdf()
-    // 单页试打只为确认版式，不记批次（否则批次列表会被试打记录塞满）；
-    // 正式出模板则记一个批次：字序 + 页数 + 校验码都要留痕，上传扫描件时按它比对（八-6、八-10）
-    let batchNote = ''
-    if (scope.value !== 'single') {
-      const batch = store.addBatch({ pageCount: out.sheetPages, chars: chars.join(''), order: orderMode.value })
-      batchNote = '；已记为批次，校验码 ' + batch.batchCode
-    }
     const name = 'SxFontCreator-模板-' + (scope.value === 'single' ? '试打1页' : out.sheetPages + '页') + '.pdf'
+    // **2026-10-11 起：第 1 步不再记批次**（决策 五-9 的收尾）—— 模板只是"一张纸"，不再产生项目数据。
+    // 这一页写了哪些字、该按什么字序对应，第 3 步会从纸面印的参考字自己认出来；批次也在那一步按需
+    // 自动建（store.ensureScanBatch）。这里只留一笔"生成过模板"的元信息：它既是进度判据（flow.js 的
+    // "生成过模板"），也是界面上"最近产物"那一行的来源。
+    store.setTemplateGenerated({
+      sheetPages: out.sheetPages,
+      charCount: chars.length,
+      order: orderMode.value,
+      scope: scope.value,
+      fileName: name
+    })
     download(out.bytes, name)
     // 下载用的就是刚生成的那份，顺手把它给预览，省一次重算
     previewBytes.value = out.bytes
-    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label, batchCode: out.batchCode }
+    lastResult.value = { name, pages: out.pageCount, sheetPages: out.sheetPages, bytes: out.bytes.length, font: font.label }
     const mb = (out.bytes.length / 1024 / 1024).toFixed(2)
     const selfNote = out.selfCheck ? '；最后 1 页是打印自检页，先用尺子量 1cm 方框再开始手写' : ''
     setMessage(
       '模板已生成并开始下载：' + out.sheetPages + ' 字表页' + (out.selfCheck ? ' + 1 页自检' : '') +
-        '（' + mb + ' MB），参考字用' + font.label + '，批次校验码 ' + out.batchCode + batchNote + selfNote,
+        '（' + mb + ' MB），参考字用' + font.label + selfNote,
       'done'
     )
   } catch (e) {
@@ -429,40 +395,7 @@ async function generateCorrectionBook() {
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">参考字体</span>
-        <label class="radio"><input v-model="fontSource" type="radio" value="builtin" :disabled="busy" />{{ BUILTIN_FONT_LABEL }}</label>
-        <label class="radio"><input v-model="fontSource" type="radio" value="local" :disabled="busy || !localFont" />本机字体{{ localFontName ? '（' + localFontName + '）' : '' }}</label>
-        <label class="text-file" :class="{ disabled: busy }">
-          选择本机字体
-          <input type="file" accept=".ttf,.otf,.ttc,.woff,font/ttf,font/otf" :disabled="busy" @change="pickLocalFont" />
-        </label>
-        <span class="help-holder">
-          <button
-            class="help-button"
-            type="button"
-            data-role="font-help"
-            :aria-expanded="fontHelpOpen ? 'true' : 'false'"
-            aria-label="本机字体怎么选"
-            @click="toggleFontHelp"
-          >
-            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-              <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.3" />
-              <path d="M6.1 6.2a1.9 1.9 0 0 1 3.7.6c0 1.1-1.8 1.2-1.8 2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-              <circle cx="8" cy="11.4" r="0.8" fill="currentColor" />
-            </svg>
-          </button>
-          <div v-if="fontHelpOpen" class="help-popover" data-role="font-help-popover" :style="fontHelpStyle" role="dialog" aria-label="本机字体怎么选">
-            <p>
-              选不到 <code>C:\Windows\Fonts</code>？该目录带「系统」属性，Windows 的文件选择框默认不显示它（目录本身可读，只是被当成受保护的系统项）。
-              两个办法：① 在选择框下方的「文件名」输入框里直接粘贴完整路径（例如 <code>C:\Windows\Fonts\simkai.ttf</code>）再回车；
-              ② 先在资源管理器里进入该目录，把字体文件复制到桌面，再从这里选。
-            </p>
-            <p>
-              Windows 字体目录为 <code>C:\Windows\Fonts</code>（楷体 <code>simkai.ttf</code>、华文楷体 <code>STKAITI.TTF</code>）；
-              macOS 为 <code>/System/Library/Fonts</code>、<code>/Library/Fonts</code> 与 <code>~/Library/Fonts</code>。
-            </p>
-            <button class="text" type="button" @click="fontHelpOpen = false">关闭</button>
-          </div>
-        </span>
+        <span class="panel-hint" data-role="ref-font-note">{{ BUILTIN_FONT_LABEL }}（固定用它，不可更换）—— 上传时程序靠认出纸面上印的参考字，才能判断这一页写了哪些字、该按什么字序对应；换了字体就认不出来了。</span>
       </div>
     </div>
 
@@ -502,7 +435,7 @@ async function generateCorrectionBook() {
     <!-- data-role：给自动化测试一个稳定锚点（本步还有一条"书写示意失败"的消息，同样用 .panel-message） -->
     <p v-if="message" class="panel-message" :class="messageType" data-role="template-message">{{ message }}</p>
     <p v-if="lastResult" class="panel-hint">
-      最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}，批次校验码 {{ lastResult.batchCode }}）
+      最近产物：{{ lastResult.name }}（{{ lastResult.sheetPages }} 字表页<span v-if="lastResult.pages > lastResult.sheetPages"> + 1 自检页</span>，{{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}）
     </p>
 
     <!-- 纯说明类长文（打印设置 / 书写要求 / 扫描设置）已整合进《使用说明》单文件页（决策 一-15）：

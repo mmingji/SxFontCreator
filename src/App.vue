@@ -61,6 +61,9 @@ const store = useProjectStore()
 // "下一步能不能走"都由 lib/flow.js 按它推导 —— 界面不维护第二份状态机
 const scanStats = computed(() => store.scanGlyphStats)
 const progress = computed(() => ({
+  // 生成过模板（第 1 步的完成判据，也是能不能进第 2 / 3 步的门槛）——
+  // 2026-10-11 起不再看批次：第 1 步不记批次了，改读 store.template 那笔元信息（决策 五-9 的收尾）
+  templatePages: store.template && store.template.sheetPages ? store.template.sheetPages : 0,
   batchCount: store.batches.length,
   activeBatchCount: store.activeBatches.length,
   uploadedPages: scanStats.value.pagesUsable,

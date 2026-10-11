@@ -55,8 +55,12 @@ export const IMPLEMENTED_STEPS = {
 // 空的进度快照：调用方只传它有的字段，其余按"还没做"处理
 export function emptyProgress() {
   return {
-    batchCount: 0, // 已记录的批次数（生成过正式模板）
-    activeBatchCount: 0, // 其中仍可上传的批次数（**2026-10-11 起不再当闸门**，只作统计留痕）
+    // 2026-10-11（决策 五-9 的收尾）：第 1 步不再记批次，**"生成过模板"改由 templatePages 承载** ——
+    // 它读 store.template.sheetPages（生成成功时写一笔元信息）。原来的 batchCount 做不到这件事：
+    // 批次现在只由第 3 步按需自动建，第 1 步刚生成完模板时它还是 0。
+    templatePages: 0,
+    batchCount: 0, // 已记录的批次数（现在只由第 3 步自动建，作统计留痕）
+    activeBatchCount: 0, // 其中仍可上传的批次数（**不再当闸门**，只作统计留痕）
     uploadedPages: 0, // 已识别的扫描页数
     glyphCount: 0, // 已提取到笔迹的字形数
     needsCorrection: false, // 主区有没有被红笔圈掉的字（有就必须先确认更正对应）
@@ -68,7 +72,7 @@ export function emptyProgress() {
 
 // 每一步的完成判据（写成表，便于核对"状态是从哪算出来的"）
 const DONE_WHEN = {
-  template: (p) => p.batchCount > 0,
+  template: (p) => p.templatePages > 0,
   write: (p) => p.uploadedPages > 0,
   upload: (p) => p.uploadedPages > 0,
   correct: (p) => p.correctionConfirmed === true,
@@ -79,11 +83,11 @@ const DONE_WHEN = {
 // 每一步"能不能进入"的判据 + 不能进入时的中文原因（界面直接把 reason 显示出来）
 const AVAILABLE_WHEN = {
   template: () => ({ ok: true, reason: '' }),
-  write: (p) => (p.batchCount > 0
+  write: (p) => (p.templatePages > 0
     ? { ok: true, reason: '' }
     : { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }),
   upload: (p) => {
-    if (p.batchCount === 0) return { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }
+    if (p.templatePages === 0) return { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }
     // 2026-10-11 起**不再要求"有仍有效的批次"**（原来会拦下"选字改过、旧批次都作废"的情形）：
     // 新模型（决策 五-9 ⑤）里批次退成**内部容器**，纸面上的参考字自己说得清"这一页写了哪些字、
     // 该按什么字序对应"，改选字并不会让已经打印出来的纸作废。第 3 步进来时会自己复用最近一个
