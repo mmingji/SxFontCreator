@@ -1,20 +1,51 @@
 <script setup>
-// 第 3 步：上传识别（阶段一「界面串联」B2）
-// 职责：① 选批次 + 显式确认（决策 八-7 / 二-7 / 八-10）
-//   ② 多选扫描件 → 串行识别，边跑边显示、可中止（决策 二-1：绝不能整批读进内存）
+// 第 3 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
+// 职责：① 取这一轮要用的批次（**用户不再选**：进这一步时自动复用最近一个仍有效的，或顺手建一个）
+//   ② 准备参考字候选库 → 多选扫描件 → 串行识别，边跑边显示、可中止（决策 二-1：绝不能整批读进内存）
 //   ③ 批次判定与**收批闸门**（单页失败跳过、批次级问题整批拦下）
-//   ④ 页级结果（缩略图 / 页号 / 校验码 / 方向纠正 / 写出格数 / 失败原因标红）
+//   ④ 页级结果（缩略图 / 页号来源 / 定位到的字序 / 写出格数 / 需要逐格确认的格数 / 失败原因标红）
 //   ⑤ 格级视图（136 格拼图 + 判定覆盖 + 单格放大看笔迹与统计）
-//   ⑥ 页脚读不出时手选页序（拖动 + 数字，决策 二-7）
+//   ⑥ 页脚读不出时手选页序（拖动 + 数字，决策 二-7）与**逐格复核**（CharReview.vue）
 // 数据来源：编排在 lib/scanFlow.js，产物缓存（缩略图 / 掩膜）在 lib/scanCache.js，
-//   轻量页记录落盘在 store.scan —— 口径见《决策记录》二-15。
-import { computed, onMounted, ref } from 'vue'
+//   参考字候选库在 lib/referenceCharReader.js（浏览器侧渲染，约 2~3 秒，建一次整个会话复用），
+//   轻量页记录落盘在 store.scan —— 口径见《决策记录》二-15 / 五-9。
+import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { applyPageOrder, evaluateRescanAccept, evaluateScanGate, recognizeBatch, recognizePage, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
+import { buildLibrary } from '../lib/referenceCharReader.js'
+import { loadBuiltinFont } from '../lib/referenceFont.js'
 import { LAYOUT } from '../lib/layout.js'
 import BatchManager from './BatchManager.vue'
+import CharReview from './CharReview.vue'
+
+// ── 参考字候选库（认字与定字序都要它）──────────────────────────────────────
+// 为什么要缓存：建一次要 8274 字逐个渲染 + 取特征，实测约 2.3 秒 —— 一轮识别（可能几十页）只该付一次。
+// 为什么放在模块级而不是组件里：组件会在离开第 3 步时卸载（App.vue 是 v-if 挂载），
+//   放在组件里等于"每次回来都重建一遍"，用户会以为程序卡住。
+// 为什么用 Promise 而不是"建好的库"：并发的两个入口（整批识别与单页重传）不能各建一份。
+let libraryPromise = null
+let library = null // buildLibrary 的产物（建好后一直留着；纯数据，约 10MB）
+
+/** 取候选库：第一次调用才真建（先注册内置楷体，再渲染字表）。失败时不缓存失败结果，允许重试 */
+function ensureLibrary(onProgress) {
+  if (!libraryPromise) {
+    libraryPromise = (async () => {
+      // 参考字一律用**内置楷体**渲染（纸上那套参考字就是它印的 —— 换个字体就认不出来）
+      const bytes = await loadBuiltinFont()
+      const face = new FontFace('sxfont-refchar', bytes)
+      await face.load()
+      document.fonts.add(face)
+      library = await buildLibrary({ fontFamily: 'sxfont-refchar', onProgress })
+      return library
+    })().catch((e) => {
+      libraryPromise = null // 失败不留缓存：下次点识别还能再试一次（字体读取失败多半是临时的）
+      throw e
+    })
+  }
+  return libraryPromise
+}
 
 const store = useProjectStore()
 
@@ -25,6 +56,8 @@ const progress = ref({ done: 0, total: 0 })
 const images = ref({}) // fileIndex → { thumb, sheet }（来自内存缓存，用于渲染；不落盘）
 const openIndex = ref(null) // 展开格级视图的页
 const zoomIndex = ref(null) // 单格放大
+const reviewIndex = ref(null) // 打开逐格复核的页（fileIndex）
+const reviewOpen = ref(false)
 const message = ref('')
 const messageType = ref('info') // info | error | done
 const dragFrom = ref(null)
@@ -43,19 +76,39 @@ const gate = computed(() => evaluateScanGate({
   batchIsVoid: store.scanBatchIsVoid,
   allowVoidBatch: store.scan.allowVoidBatch
 }))
-const batchOptions = computed(() => [...store.batches].reverse().map((b, i) => ({
-  id: b.id,
-  label: '第 ' + (store.batches.length - i) + ' 批 · ' + b.charCount + ' 字 / ' + b.pageCount + ' 页 · 校验码 ' + b.batchCode +
-    (b.order === 'rank' ? ' · 按使用频率' : ' · 笔画序') + (b.status === 'void' ? ' · 已作废' : '')
-})))
-const batchId = computed({
-  get: () => store.scan.batchId,
-  set: (v) => store.setScanBatch(v)
-})
 
-// 页脚读不出的页才允许手选页序：页脚解出来的页序是权威的（决策 二-7）
+// ── 页级结果里的"新模型"信息（定位到的字序 / 还要确认几格）──────────────────
+// 序列标签：与 lib/referenceCharReader.js 的两份全序一一对应（页记录里只留了 key）
+function sequenceLabel(seqKey) {
+  return seqKey === 'rank' ? '使用频率序' : '笔画序'
+}
+// 序列定位命中时，这一页是全序里从第几个字开始的一段 —— 页号由它反推（纸面自己说得清是第几页）
+function locatedStartPage(page) {
+  return Math.floor(page.located.start / LAYOUT.perPage) + 1
+}
+// 还要人工确认的格 = 认不准的格 ∪ 还没认出字的格（两者可能重叠，按格号去重）
+function reviewCount(page) {
+  const set = new Set(page.unsureCells || [])
+  const list = page.pageChars || []
+  for (let i = 0; i < LAYOUT.perPage; i++) if (!list[i]) set.add(i)
+  return set.size
+}
+const reviewPage = computed(() => pages.value.find((p) => p.fileIndex === reviewIndex.value) || null)
+function openReview(page) {
+  reviewIndex.value = page.fileIndex
+  reviewOpen.value = true
+  openIndex.value = null
+  zoomIndex.value = null
+}
+function closeReview() {
+  reviewOpen.value = false
+}
+
+// 页脚读不出的页才允许手选页序：页脚解出来的页序是权威的（决策 二-7）。
+// **序列定位成功的页除外**：那种页的页序是"纸面上的参考字"定死的（比页脚更硬），而且它的每格字
+// 已经由那一段全序给出 —— 再按批次的全局字序重排一次只会把对的改成错的（新模型下的字序来源变了）。
 function needsManualOrder(page) {
-  return !!(page.ok && !page.footerOk)
+  return !!(page.ok && !page.footerOk && page.pageNumberSource !== 'sequence')
 }
 function setMessage(text, type) {
   message.value = text
@@ -63,8 +116,9 @@ function setMessage(text, type) {
 }
 
 onMounted(() => {
-  // 默认选最近一个仍有效的批次；界面重挂载时把还活着的内存缓存接回来（缩略图与掩膜不落盘）
-  if (!store.scan.batchId && store.latestActiveBatch) store.setScanBatch(store.latestActiveBatch.id)
+  // 批次是内部容器：进来就取一个（复用最近一个仍有效的，或自动补一个）—— 用户不必也不能再选它
+  store.ensureScanBatch()
+  // 界面重挂载时把还活着的内存缓存接回来（缩略图与掩膜不落盘）
   const restored = {}
   for (const page of store.scan.pages) {
     const cache = getPageCache(page.fileIndex)
@@ -73,6 +127,12 @@ onMounted(() => {
   if (Object.keys(restored).length) images.value = restored
   // 字形是**落盘**的（分片键）：刷新后仍能拿去生成字体，所以这里把已落盘的量显示出来
   glyphStoreStats().then((s) => { savedStats.value = s }).catch(() => {})
+})
+
+// 批次被删掉（批次管理里删的正是当前这一批）时立刻补一个：让"在第 3 步就一定有批次"成为不变量 ——
+// 否则字形会落到 `default` 分片键上（既不属于任何批次、也没法在批次管理里清掉，冒烟里踩到过）
+watch(() => store.scan.batchId, (id) => {
+  if (!id) store.ensureScanBatch()
 })
 
 function onPickFiles(event) {
@@ -84,34 +144,45 @@ function onPickFiles(event) {
 
 async function start() {
   if (running.value) return
-  if (!store.scan.batchId) {
-    setMessage('请先选择这批扫描件属于哪个批次（第 1 步生成模板时记下的那个批次）', 'error')
-    return
-  }
   if (!files.value.length) {
     setMessage('还没有选择扫描件', 'error')
     return
   }
+  // 批次是内部容器：再取一次（复用最近一个仍有效的，或自动补一个）—— 界面上已经无处可选它
+  const currentBatch = store.ensureScanBatch()
   if (store.scanBatchIsVoid && !store.scan.allowVoidBatch) {
-    setMessage('所选批次已作废（改过选字就会作废）：请重新生成模板、重印重写，或勾选"我知道这是作废模板"再继续', 'error')
+    setMessage('这一批的模板已经作废（改过选字就会作废）：请重新生成模板、重印重写，或勾选"我知道这是作废模板"再继续', 'error')
     return
   }
   running.value = true
   cancelled = false
   openIndex.value = null
   zoomIndex.value = null
+  closeReview()
   images.value = {}
-  clearPageCache()
-  // 同一批重新识别：先把这批已落盘的字形清掉，避免旧页与新页混在一起（分片键是按批次 + 页序写的）
-  await clearGlyphs({ batchId: store.scan.batchId })
-  savedStats.value = null
-  store.beginScanRun({ batchId: store.scan.batchId, chars: resolveBatchChars(batch.value) })
   progress.value = { done: 0, total: files.value.length }
-  setMessage('正在识别…（单页约 1~2 秒，51 页约 85 秒；中途可以点「中止」，已识别的页会保留）', 'info')
   const t0 = performance.now()
   try {
+    // ① 参考字候选库：认字与定字序都靠它。建一次约 2~3 秒（8274 字逐个渲染 + 取特征），
+    //    建好后整个会话复用 —— 所以放在"清空上一轮结果"之前：准备失败时不该把已有结果清掉
+    setMessage('正在准备参考字识别…（首次约 2~3 秒，之后不用再等）', 'info')
+    const lib = await ensureLibrary((done, total) => {
+      setMessage('正在准备参考字识别…（' + done + ' / ' + total + '）', 'info')
+    })
+    if (cancelled) {
+      setMessage('已中止：参考字还没准备完，这一批没有开始识别', 'info')
+      return
+    }
+    clearPageCache()
+    // 同一批重新识别：先把这批已落盘的字形清掉，避免旧页与新页混在一起（分片键是按批次 + 页序写的）
+    await clearGlyphs({ batchId: store.scan.batchId })
+    savedStats.value = null
+    store.beginScanRun({ batchId: store.scan.batchId, chars: resolveBatchChars(currentBatch) })
+    setMessage('正在识别…（单页约 1~2 秒，51 页约 85 秒；中途可以点「中止」，已识别的页会保留）', 'info')
     const res = await recognizeBatch(files.value, {
-      batch: batch.value,
+      batch: currentBatch,
+      // 传了它才做"认参考字 + 定字序"；不传就退回旧的"按批次全局字序取字"口径
+      library: lib,
       onStage: (text) => { stage.value = text },
       shouldStop: () => cancelled,
       onPage: async (record, index, total, cache) => {
@@ -186,18 +257,21 @@ async function rescanPage(page, event) {
   const file = (event.target.files || [])[0]
   event.target.value = '' // 清空，便于再选同一个文件
   if (!file || running.value || rescanning.value !== null) return
-  // 没有所选批次时直接拒绝：字形分片键是「批次 + 页序」，批次为空会落成 `default` 键，
-  // 之后既不属于任何批次、也没法在批次管理里清掉（冒烟里踩到过：选回"请选择"再重传就写出了孤儿分片）
-  if (!store.scan.batchId) {
-    setMessage('请先选择这批扫描件属于哪个批次，再重传这一页', 'error')
-    return
-  }
+  // 批次是内部容器：重传前也取一次（复用最近一个仍有效的，或自动补一个）—— 字形分片键是「批次 + 页序」，
+  // 批次为空会落成 `default` 键，之后既不属于任何批次、也没法在批次管理里清掉（冒烟里踩到过）
+  const currentBatch = store.ensureScanBatch()
   rescanning.value = page.fileIndex
   setMessage('正在重传第 ' + (page.pageNumber || '?') + ' 页（' + file.name + '）…', 'info')
   try {
-    const expectedBatchCode = batch.value && typeof batch.value.batchCode === 'number' ? batch.value.batchCode : null
+    // 重传也走"从纸上认参考字"的同一条路（候选库已建好就直接用）：
+    // 否则这一页的字会退回按**批次的全局字序**取 —— 自定义选字的纸会被张冠李戴
+    const lib = library || await ensureLibrary((done, total) => {
+      setMessage('正在准备参考字识别…（' + done + ' / ' + total + '）', 'info')
+    })
+    const expectedBatchCode = currentBatch && typeof currentBatch.batchCode === 'number' ? currentBatch.batchCode : null
     const { record, cache } = await recognizePage(file, {
       chars: chars.value,
+      library: lib,
       expectedBatchCode,
       fileIndex: page.fileIndex, // 复用原页序号：分片键与缓存键都按它覆盖
       pageNumberOverride: page.pageNumber || undefined
@@ -208,7 +282,7 @@ async function rescanPage(page, event) {
     }
     // 收不收这一页的判据抽在 scanMeta.evaluateRescanAccept 里（纯函数、有单测）：
     // 整页失败与校验码不符都属"明确失败、不写入"（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）
-    const verdict = evaluateRescanAccept({ record, batchCode: batch.value ? batch.value.batchCode : null })
+    const verdict = evaluateRescanAccept({ record, batchCode: currentBatch ? currentBatch.batchCode : null })
     if (!verdict.accept) {
       setMessage(verdict.message, 'error')
       return
@@ -368,22 +442,17 @@ const zoomIsMarkedLabel = computed(() => {
 
 <template>
   <div class="step-body">
-    <!-- ① 批次与确认 -->
+    <!-- ① 识别方式 + 批次管理入口 -->
+    <!-- 批次在界面上不再让用户选（2026-10-11 新模型）：进这一步时程序自动复用最近一个仍有效的批次，
+         一个都没有就顺手建一个；上传后按**纸面上的参考字**认出这一页写了哪些字、该按什么字序对应。
+         「批次管理」入口保留：旧批次的字形分片还在库里，要能一次看全、把不要的清掉 -->
     <div class="panel-row">
       <div class="panel-field">
-        <span class="field-label">批次</span>
-        <div class="batch-row">
-          <select v-model="batchId" class="scan-select" :disabled="running">
-            <option :value="null">请选择这批扫描件属于哪个批次</option>
-            <option v-for="item in batchOptions" :key="item.id" :value="item.id">{{ item.label }}</option>
-          </select>
-          <!-- 批次管理（清单 一-6）：批次多了要能一次看全、把作废的清掉 —— 放在"选批次"旁边最顺手 -->
-          <BatchManager />
-        </div>
-        <span v-if="batch" class="panel-hint">
-          这一批要写 {{ batch.charCount }} 字 / {{ batch.pageCount }} 页；上传后按它的字序把"页内格号"还原成字
+        <span class="field-label">识别方式</span>
+        <span class="panel-hint" data-role="scan-mode">
+          按纸面上印的<strong>参考字</strong>认出这一页写了哪些字、该按什么字序对应 —— 不需要你先选批次
         </span>
-        <span v-else class="panel-hint">还没有批次：先回到第 1 步「选字与出模板」生成并打印模板</span>
+        <BatchManager />
       </div>
     </div>
 
@@ -418,7 +487,7 @@ const zoomIsMarkedLabel = computed(() => {
           选择扫描件
           <input type="file" multiple accept="image/*" :disabled="running" @change="onPickFiles" />
         </label>
-        <button class="primary" :disabled="running || !files.length || !store.scan.batchId" @click="start">开始识别</button>
+        <button class="primary" :disabled="running || !files.length" @click="start">开始识别</button>
         <button v-if="running" type="button" @click="stop">中止</button>
         <button class="text" type="button" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
         <span class="panel-hint">
@@ -497,6 +566,7 @@ const zoomIsMarkedLabel = computed(() => {
           <span class="scan-page-meta">
             页号：
             <template v-if="page.kind === 'correction' && page.pageNumber">更正册第 {{ page.pageNumber }} 页（页脚校验码 0）</template>
+            <template v-else-if="page.pageNumberSource === 'sequence'">第 {{ page.pageNumber }} 页（按纸面参考字序定位）</template>
             <template v-else-if="page.footerOk">第 {{ page.pageNumber }} 页（页脚读出）</template>
             <template v-else-if="page.pageNumber">第 {{ page.pageNumber }} 页（手选）</template>
             <template v-else>待手选</template>
@@ -507,12 +577,22 @@ const zoomIsMarkedLabel = computed(() => {
             <template v-if="page.orientation && page.orientation.corrected"> · 已自动转正 {{ page.orientation.turns * 90 }} 度</template>
             <template v-if="page.cornerMaxError !== null"> · 四角误差 {{ page.cornerMaxError }} 像素</template>
           </span>
+          <!-- 定字序的结果（2026-10-11 新模型）：这一页是某个全序的连续一段 → 整页 136 个字全部确定 -->
+          <span v-if="page.located" class="scan-page-order" data-role="scan-located">
+            字序：{{ sequenceLabel(page.located.seqKey) }} · 第 {{ locatedStartPage(page) }} 页起（校验码 {{ page.batchCode }}）
+          </span>
           <span v-if="page.ok" class="scan-page-stats">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span
               v-if="page.counts.uncertain"
             > · 归属待确认 {{ page.counts.uncertain }}</span>
           </span>
           <span v-else class="scan-page-stats error">{{ page.reason }}</span>
+          <!-- 认不出整页字序的页（自定义选字的纸）：认不准的格 + 还没认出来的格交人过一眼。
+               全部确认完之后入口仍留着（想再核对一遍 / 改某个字还能进去），只是文案改成"已全部确认" -->
+          <span v-if="page.needReview" class="scan-page-review">
+            {{ reviewCount(page) ? '需要确认 ' + reviewCount(page) + ' 格' : '已全部确认' }}
+            <button type="button" class="text" data-role="review-chars" @click="openReview(page)">逐格确认</button>
+          </span>
           <span v-if="needsManualOrder(page)" class="scan-order">
             手选页序
             <input
@@ -582,8 +662,13 @@ const zoomIsMarkedLabel = computed(() => {
     </div>
 
     <p v-if="!pages.length && !running" class="panel-hint">
-      选好批次与扫描件后点「开始识别」：程序会逐页做「预处理 → 切格（方向不对会自动转正）→ 红圈识别 → 字形提取」，
-      并把每页的页序、写出格数与可疑格报给你；红笔圈掉的字会单独列出来，留到下一步核对。
+      选好扫描件后点「开始识别」：程序会逐页做「预处理 → 切格（方向不对会自动转正）→ 认纸面上的参考字
+      （认出这一页写了哪些字、该按什么字序对应）→ 红圈识别 → 字形提取」，
+      并把每页的页号来源、写出格数与可疑格报给你；认不出整页字序的页会开一个「逐格确认」让你过一眼，
+      红笔圈掉的字留到下一步核对。
     </p>
+
+    <!-- 逐格复核（2026-10-11 新模型）：认不出整页字序的页在这里逐格确认 / 手输 -->
+    <CharReview v-if="reviewPage" :page="reviewPage" :open="reviewOpen" @close="closeReview" />
   </div>
 </template>

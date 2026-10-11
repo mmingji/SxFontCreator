@@ -53,12 +53,16 @@ export const useProjectStore = defineStore('project', {
     //   chars     —— 该批选字（按字表位置排序，保证字序可复现）；空串表示全部 8274 字
     //   pageCount —— 该批模板的字表页数
     //   batchCode —— 12 位校验码，与印在页脚的高 12 位一致（八-10）
-    //   status    —— active 可上传 / void 已作废（选字一改即作废，不再接受上传，除非用户显式勾选）
+    //   status    —— active 可用 / void 已作废（选字一改即作废）。2026-10-11 新模型（五-9 ⑤）之后
+    //                "作废"不再由用户处理：第 3 步的 ensureScanBatch() 只挑 active 的，一个都没有就补一个
     //   printed   —— 是否已生成过模板（"未写"这一态的判据之一，八-8）
-    //   uploads   —— 已绑定的扫描件（八-7：上传时手选批次；阶段一后半接入）
+    //   source    —— 谁建的：'template' 第 1 步出模板 / 'auto' 第 3 步自动补（**界面不显示**，只作留痕）
+    //   label     —— 给内部看的一行说明（同上，随项目包进出）
+    //   uploads   —— 已绑定的扫描件（八-7；阶段一后半接入）
     batches: [],
     // 扫描识别（阶段一「界面串联」B2）：只存**轻量记录**，掩膜与缩略图在 lib/scanCache.js 的内存缓存里
-    //   batchId         —— 这批扫描件所属批次（决策 八-7：上传时手选）
+    //   batchId         —— 这批扫描件所属批次（决策 五-9 ⑤ 之后**不再由用户选**：进第 3 步时由
+    //                      ensureScanBatch() 自动复用最近一个仍有效的，一个都没有就顺手建一个）
     //   batchConfirmed  —— 是否显式确认"这批扫描件属于该批次"（决策 二-7：页脚读不出时批次码失效，必须显式确认）
     //   allowVoidBatch  —— 明知是作废批次仍要继续（决策 八-10 的"禁传"要留一个显式放行口）
     //   pages           —— 每页的轻量记录（页码 / 校验码 / 计数 / 每格判定，不含掩膜与图）
@@ -296,9 +300,11 @@ export const useProjectStore = defineStore('project', {
      * @param {number} info.pageCount 该批模板的字表页数
      * @param {string} [info.chars] 指定字序（默认取当前选字；空选字 = 全量）
      * @param {string} [info.order] 排列方式：'rank' 按使用频率 / 'charset' 笔画序（八-6 的修订、八-11）
+     * @param {string} [info.source] 这一批是谁建的：'template' 第 1 步出模板 / 'auto' 第 3 步自动补
+     * @param {string} [info.label] 给内部看的一行说明（**界面不显示**）
      * @returns {object} 新建的批次
      */
-    addBatch({ pageCount, chars, order } = {}) {
+    addBatch({ pageCount, chars, order, source, label } = {}) {
       const list = chars === undefined ? this.charsForTemplate : chars
       // 字数与页数都按**码点**算（字表里有 196 个扩展 B 区汉字是代理对，用 .length 会多算）
       const charCount = countChars(list)
@@ -310,6 +316,10 @@ export const useProjectStore = defineStore('project', {
         order: order || 'charset',
         pageCount: pageCount || Math.max(1, Math.ceil(charCount / 136)),
         batchCode: computeBatchCode(list),
+        // 来源与说明只作**内部留痕**（界面不显示，随项目包导出/导入）：回头看"这一批是哪来的"时用得上 ——
+        // 出模板建的还是扫描时自动补的，决定它能不能代表"用户手上那份纸"
+        source: source || 'template',
+        label: label || '',
         createdAt: new Date().toISOString(),
         status: 'active',
         printed: true,
@@ -354,8 +364,9 @@ export const useProjectStore = defineStore('project', {
      *      界面上先「作废」再「删除」，是一条明确放弃的路径（作废语义沿用 八-9）。
      *   ② 这里删的是**批次记录**；该批已落盘的字形分片由调用方先清（分片在 IndexedDB 里，store 不碰存储层）——
      *      顺序反过来会出现"界面里批次没了、分片还在"的孤儿数据，见 BatchManager.vue 的删除流程。
-     * 若删掉的正是"上传识别"当前选中的批次，顺带清空那个选择：否则界面上会留着一个已经不存在的批次，
-     * 上传时才发现对不上（识别结果与落盘字形不受影响，它们里面的字在识别时就已固化）。
+     * 若删掉的正是第 3 步「上传识别」**当前在用**的批次，顺带清空那个选择 —— 那边的 watch 会立刻用
+     * ensureScanBatch 补一个（复用别的仍有效批次，或自动新建），所以不会留下"指向一个不存在的批次"。
+     * 识别结果与已落盘的字形不受影响：它们里面的字在识别时就已固化（分片另有键）。
      * @returns {{ok: boolean, reason?: 'not-found'|'active', clearedScanBatch?: boolean}}
      */
     removeBatch(id) {
@@ -371,8 +382,9 @@ export const useProjectStore = defineStore('project', {
     },
 
     // ── 扫描识别（阶段一「界面串联」B2）────────────────────────────────────
-    // 选批次（决策 八-7：上传时手选）：换批次要把"已确认"与"作废放行"一起复位 ——
-    // 这两个勾选是针对上一批扫描件的确认，换批次后必须重新确认，不能沿用
+    // 换批次要把"已确认"与"作废放行"一起复位 —— 这两个勾选是针对上一批扫描件的确认，换批次后必须重新确认，
+    // 不能沿用。**用户已经不再手工选批次**（2026-10-11 新模型）：唯一的调用者是 ensureScanBatch()，
+    // 它只会挑仍有效的批次；界面上的"选批次"下拉已删除（决策 五-9 ⑤）
     setScanBatch(batchId) {
       if (this.scan.batchId === batchId) return
       this.scan.batchId = batchId || null
@@ -389,11 +401,62 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
-    // 明知是作废批次仍要继续（决策 八-10 的显式放行口）
+    // 明知是作废批次仍要继续（决策 八-10 的显式放行口）。
+    // 2026-10-11 起界面上不再有"选批次"这一步，所以这个勾选框也只在"当前批次刚被作废"时才出现；
+    // 动作保留：口径仍是"作废批次默认拦下，用户显式放行才能继续"
     setScanAllowVoid(allow) {
       this.scan.allowVoidBatch = !!allow
       this.markDirty()
       schedulePersist(this)
+    },
+
+    /**
+     * 取"这一轮上传识别"要用的批次（2026-10-11 新模型，决策 五-9 ⑤：批次退成内部容器）
+     * 规则：有仍有效的批次就**复用最后一个**（最近生成的那份纸）；一个都没有就用当前选字新建一个。
+     * 为什么要有这一步：新模型下"这批扫描件属于哪个批次"不再由用户回答 —— 纸面上的参考字自己
+     *   说得清这一页写了哪些字（认参考字定字序），批次只剩两个用途：字形分片键的命名空间、
+     *   以及没有候选库可用时的字序兜底。第 1 步若因改选字把旧批次作废了，这里会自动补一个，用户无感。
+     * 幂等：已经指向某个仍有效的批次时再调一次不会新建（返回同一个）。
+     * @returns {object} 可用的批次对象（一定非空）
+     */
+    ensureScanBatch() {
+      const last = this.latestActiveBatch
+      if (last) {
+        this.setScanBatch(last.id)
+        return last
+      }
+      const batch = this.addBatch({
+        chars: this.charsForTemplate,
+        order: 'charset',
+        source: 'auto',
+        label: '扫描自动建立'
+      })
+      this.setScanBatch(batch.id)
+      return batch
+    },
+
+    /**
+     * 逐格复核：把某一格的字改成用户确认的值（第 3 步的逐格复核界面）。
+     * 三处必须一起改，少一处界面与产物就会打架：
+     *   · pageChars[i]   —— 这一页 136 格的字（界面显示、复核计数用）
+     *   · cells[i].char  —— 字形计划（scanMeta.buildFinalGlyphPlan）与统计（collectGlyphStats）读的是它，
+     *                       漏掉这一处会导致"界面改了、进字体的还是旧字"
+     *   · unsureCells    —— 确认过就从"待确认"里摘掉（复核界面上的浅黄底随之消失）
+     * 改的是识别结果本身，所以要落盘：复核是要花时间的，刷新后不能白干。
+     * @param {{fileIndex:number, cellIndex:number, char:string|null}} input
+     * @returns {boolean} 找到这一页并写入返回 true
+     */
+    setScanPageChar({ fileIndex, cellIndex, char }) {
+      const page = this.scan.pages.find((p) => p.fileIndex === fileIndex)
+      if (!page) return false
+      const value = char || null
+      if (Array.isArray(page.pageChars)) page.pageChars[cellIndex] = value
+      const cell = (page.cells || []).find((c) => c.index === cellIndex)
+      if (cell) cell.char = value
+      if (Array.isArray(page.unsureCells)) page.unsureCells = page.unsureCells.filter((i) => i !== cellIndex)
+      this.markDirty()
+      schedulePersist(this)
+      return true
     },
 
     // 开始一轮识别：清掉上一轮的结果与手选页序，记下这一批的字序（识别时按它把格号映射成字）

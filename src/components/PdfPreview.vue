@@ -18,7 +18,7 @@
 //   ② **旧文档要等新文档就绪后再销毁**，且每次换字节都用一个 token 作废在途的那一轮 ——
 //      否则会出现"上一轮把新一轮的渲染任务取消掉"的竞态，界面停在"正在渲染预览…"。
 import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
-import { ensureInlineBlobUrl, hasInlineAssets } from '../lib/inlineAssets.js'
+import { loadPdfjs } from '../lib/pdfjsLoader.js'
 
 const props = defineProps({
   // 模板 PDF 的字节（Uint8Array）；为空时显示占位提示
@@ -40,36 +40,8 @@ const pageCount = ref(0)
 const status = ref('idle') // idle | rendering | ready | error
 const errorText = ref('')
 
-// pdf.js 的模块与 worker 只加载一次（多次 import 同一模块不会重复下载）
-let pdfjsPromise = null
-function loadPdfjs() {
-  if (!pdfjsPromise) {
-    pdfjsPromise = (async () => {
-      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      // worker 的来源分两种形态（决策 六-4 的交付形态是 file:// 版）：
-      //   ① 内联形态（交付产物）：worker 的字节被构建期内联，这里转成 **Blob URL** ——
-      //      file:// 下 `new Worker('./assets/pdf.worker.min.mjs')` 会被浏览器拦下
-      //      （实测报 `cannot be accessed from origin 'null'`，清单 三-8），而 Blob URL 可用；
-      //      pdf.js 只要求 workerSrc 是**字符串 URL**，所以这条路成立。
-      //   ② 普通形态（dev 服务器）：走 vite 的 ?url，它把 worker 作为独立资源发出来，不拖慢首屏。
-      let workerSrc = null
-      if (hasInlineAssets()) {
-        try {
-          workerSrc = await ensureInlineBlobUrl('pdf-worker', 'text/javascript')
-        } catch (e) {
-          workerSrc = null // 取不到就退回 ?url；两条都不行时 pdf.js 自己会报错，界面有中文兜底
-        }
-      }
-      if (!workerSrc) {
-        const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')
-        workerSrc = worker.default
-      }
-      pdfjs.GlobalWorkerOptions.workerSrc = workerSrc
-      return pdfjs
-    })()
-  }
-  return pdfjsPromise
-}
+// pdf.js 的模块加载与 worker 落位抽在 lib/pdfjsLoader.js —— 与「凭纸恢复批次」（RestoreBatch.vue
+// 读模板 PDF 的文字层）共用一处，免得 file:// 下的 worker 落位这种不显然的坑写两遍、迟早分叉
 
 const docRef = shallowRef(null) // shallowRef：pdf.js 的文档对象很大，不要被 Vue 递归代理
 let loadingTask = null // getDocument 返回的加载任务（销毁走它，见文件头 ①）

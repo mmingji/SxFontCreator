@@ -56,7 +56,7 @@ export const IMPLEMENTED_STEPS = {
 export function emptyProgress() {
   return {
     batchCount: 0, // 已记录的批次数（生成过正式模板）
-    activeBatchCount: 0, // 其中仍可上传的批次数
+    activeBatchCount: 0, // 其中仍可上传的批次数（**2026-10-11 起不再当闸门**，只作统计留痕）
     uploadedPages: 0, // 已识别的扫描页数
     glyphCount: 0, // 已提取到笔迹的字形数
     needsCorrection: false, // 主区有没有被红笔圈掉的字（有就必须先确认更正对应）
@@ -84,7 +84,11 @@ const AVAILABLE_WHEN = {
     : { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }),
   upload: (p) => {
     if (p.batchCount === 0) return { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }
-    if (p.activeBatchCount === 0) return { ok: false, reason: '现有批次都已作废（选字改过就要重新生成模板）' }
+    // 2026-10-11 起**不再要求"有仍有效的批次"**（原来会拦下"选字改过、旧批次都作废"的情形）：
+    // 新模型（决策 五-9 ⑤）里批次退成**内部容器**，纸面上的参考字自己说得清"这一页写了哪些字、
+    // 该按什么字序对应"，改选字并不会让已经打印出来的纸作废。第 3 步进来时会自己复用最近一个
+    // 仍有效的批次、一个都没有就顺手补一个（store.ensureScanBatch）—— 若还在这里拦住，那条
+    // "自动补一个"的分支就永远走不到，用户也会看到一个已经不该再出现的"批次作废"概念。
     return { ok: true, reason: '' }
   },
   correct: (p) => (p.uploadedPages > 0

@@ -370,14 +370,14 @@ export function decodeFooterCode(designGray, options = {}) {
     return {
       ...base, ok: false, reason: 'anchor', pageNumber: null, batchCode: null,
       message: '页脚那排编码没读到（定位用的锚点方块不在预期位置）：可能是页脚被裁掉、被手指或阴影挡住、或扫描分辨率太低。' +
-        '请在上传界面手选页序；此时页脚的批次校验码也一并失效，必须显式确认这批扫描件属于哪个批次'
+        '请在上传界面手选页序；这一页的字序也可以由纸面印的参考字定位得到'
     }
   }
   if (uncertain.length) {
     return {
       ...base, ok: false, reason: 'uncertain', pageNumber: null, batchCode: null,
       message: '页脚编码有 ' + uncertain.length + ' 位读不准（第 ' + uncertain.map((i) => i + 1).join('、') +
-        ' 位）：可能是扫描分辨率低、纸面有污渍或页脚被裁。请在上传界面手选页序并显式确认批次'
+        ' 位）：可能是扫描分辨率低、纸面有污渍或页脚被裁。字序会优先由纸面参考字定位得到，不影响识别；定位不出来时再手选页序'
     }
   }
   const { pageNumber, batchCode } = decodePageBits(bits)
@@ -388,12 +388,14 @@ export function decodeFooterCode(designGray, options = {}) {
 }
 
 /**
- * 页脚校验码与所选批次比对（决策 八-10：不符即整批拦下）。
+ * 页脚校验码与"期望的批次码"比对（决策 八-10 的机制；**2026-10-11 起不再当闸门** —— 见决策 五-9：
+ * 字序由纸面参考字定位决定，批次是自动建的容器，两者的码本来就可能不同。现在它的用途是**自校验**：
+ * 把"识别出的字序算出的码"与纸面码对一下（scanFlow 的 footerSelfCheck），对不上只提示复核、不拦）
  * @returns {{match:boolean|null, message:string}} match 为 null 表示没给可比的对象
  */
 export function verifyBatchCode(decodedBatchCode, expectedBatchCode) {
   if (expectedBatchCode === null || expectedBatchCode === undefined) {
-    return { match: null, message: '没有可比对的批次校验码：请显式确认这批扫描件属于哪个批次' }
+    return { match: null, message: '页脚校验码未做批次比对（这一页的字序由纸面参考字定位得到）' }
   }
   const scanned = decodedBatchCode | 0
   const expected = expectedBatchCode | 0
@@ -750,7 +752,7 @@ export function summarizeBatch(pages, options = {}) {
     // 只有"非更正册的件"全都读不出页脚时才提醒手选页序：全是更正册的话本来就没有主区批次码可比
     problems.push({
       level: 'warn',
-      text: '所有扫描件的页脚都没能读出页序：请手选页序，并显式确认这批扫描件属于哪个批次'
+      text: '所有扫描件的页脚都没能读出页序：字序会优先由每页的参考字定位得到；定位不出来的页请手选页序'
     })
   }
 

@@ -16,6 +16,7 @@ import { extractPage } from './handwritingExtractor.js'
 import { LAYOUT } from './layout.js'
 import { getAllChars } from './charset.js'
 import { charAtCell, reorderPages, resolveBatchChars } from './scanMeta.js'
+import { readPage as readReferenceChars } from './referenceCharReader.js'
 
 // 纯逻辑（页内格号 → 字、页序重排、字形统计）在 scanMeta.js 里，这里再导出一次，
 // 让调用方只记一个入口（组件里 `import { … } from '../lib/scanFlow.js'` 就够）
@@ -41,6 +42,13 @@ export const SCAN_DEFAULTS = {
   autoOrient: true, // 整页方向不对时自动纠正（决策 二-11）
   detectRedMarks: true, // 红圈识别 + 从笔迹里剔除（决策 二-12）
   expectedBatchCode: null, // 所选批次的 12 位校验码（八-10；为 null 时不做批次比对）
+  // 参考字候选库（lib/referenceCharReader.js 的 buildLibrary 产物）：**传了它才做"认参考字 + 定字序"**；
+  // 不传就退回旧口径（按批次的全局字序取字），供纯逻辑测试与没有字体可用的环境使用。
+  library: null,
+  // 这一页上"有参考字的格"占比低于它 → 判定**不是本程序生成的模板**，整页失败
+  // （用户 2026-10-11 拍板：只认自家模板产出的纸，外来图片一个字形也不产生）。
+  // 实测自家模板在这条上是 0.99~1.00（参考字是印上去的，即使模糊也能取到）。
+  minInkRatio: 0.6,
   // 格子缩略图里每格的像素边长：96 够看清"这一格写了没、写得正不正"，又让整页拼图只有 1632×768
   cellThumbSize: 96,
   // 整页缩略图的宽度（高度按比例）：页级行里看一眼"这页长什么样"，300 够用
@@ -174,6 +182,19 @@ export async function recognizePage(file, options = {}) {
     orientation: page.orientation ? { corrected: !!page.orientation.corrected, turns: page.orientation.turns, tried: page.orientation.tried } : null,
     cornerMaxError: page.cornerErrors ? Math.round(page.cornerErrors.max * 10) / 10 : null,
     counts: { written: 0, empty: 0, suspect: 0, marked: 0, uncertain: 0, inkPixels: 0 },
+    // 参考字识别与定字序（2026-10-11 新模型）：
+    //   pageChars 是**这一页 136 格各自的字**（认不出为 null）—— 定位成功时由序列给出（整页确定），
+    //   定位不上时是逐格识别结果（认不准的格记进 unsureCells，交界面复核）
+    read: null,
+    located: null,
+    // 页脚自校验（决策 五-9 ⑥：页脚码降为自校验）：{ footerCode, readCode, agree } —— 对不上只提示复核，不拦
+    footerSelfCheck: null,
+    pageChars: null,
+    pageNumberSource: null, // sequence（序列定位反推）| footer（页脚读出）| user（手选）| unknown
+    unsureCells: [],
+    // 复核用的候选（每格最多 5 个）：认不准的格在界面上让用户从候选里挑，或直接手输
+    charCandidates: null,
+    needReview: false,
     cells: [],
     messages: [],
     timings: page.timings ? { ...page.timings } : null
@@ -210,6 +231,7 @@ export async function recognizePage(file, options = {}) {
 
   // ③ 红圈（1.7）：颜色分离 + 形态过滤 → 被圈格清单 + 红掩膜；再把红掩膜作为附加图层切到每格
   let extractionBoxes = page.boxes
+  let designRedMask = null
   if (opt.detectRedMarks && rgba) {
     // attachRedMarks 在这些前提不满足时返回 null（页面不可用 / 没有矩阵 / 没开 keepDesignGray / 没彩色像素）：
     // 那就退回"不剔红圈"的切格结果，绝不因为拿不到红掩膜就整页失败
@@ -219,6 +241,8 @@ export async function recognizePage(file, options = {}) {
     })
     if (attached) {
       extractionBoxes = attached.boxes
+      // 红掩膜留着给"认参考字"用：红圈在灰度图上是深色，不抹掉会把参考字的阈值带偏
+      designRedMask = attached.marks && attached.marks.designRed ? attached.marks.designRed.data : null
       record.redStats = attached.marks ? { ...attached.marks.stats } : null
       record.markedCells = (attached.marks && attached.marks.markedCells) || []
       record.uncertainCells = (attached.marks && attached.marks.uncertainCells) || []
@@ -229,6 +253,68 @@ export async function recognizePage(file, options = {}) {
   }
   rgba = null // 彩色像素到此用完（红掩膜已经切成分片），显式释放
 
+  // ③.5 认参考字 + 定字序（2026-10-11 新模型：生成范围由扫描件决定 —— 决策 五-9）
+  // 为什么排在这里：① 认字只要设计灰度图 + 红掩膜，两者此刻都在手上；② 下面的字形提取要按
+  //   "格号 → 字"给每格标字，字序必须先定下来。
+  // 处置口径（用户 2026-10-11 拍板）：
+  //   · 纸上没有本程序的参考字版式 → **整页失败**（只认自家模板，外来图片一个字形也不产生）
+  //   · 有参考字：优先**序列定位** —— 预置档位的纸连页脚都不用读，页号与整页 136 字一起确定；
+  //     定位不上（自定义选字的纸不是任何全序的连续段）→ 退到"逐格识别的字 + 页脚页号"，
+  //     认不准的格记进 unsureCells 交界面复核
+  if (opt.library && record.kind !== 'correction' && page.designGray) {
+    const read = readReferenceChars(page.designGray, opt.library, { redMask: designRedMask })
+    record.read = {
+      emptyCount: read.emptyCount,
+      sureCount: read.sureCount,
+      unsureCount: read.unsureCount,
+      inkRatio: Math.round(read.inkRatio * 1000) / 1000,
+      located: read.located ? { seqKey: read.located.seqKey, start: read.located.start, agree: read.located.agree } : null
+    }
+    if (read.inkRatio < opt.minInkRatio) {
+      record.reason = '这不是本程序生成的模板：这一页 ' + LAYOUT.perPage + ' 格里有 ' + read.emptyCount +
+        ' 格取不到模板的参考字。请确认用的是第 1 步「生成模板 PDF」下载的那份文件、按实际大小（100%）打印的纸。'
+      record.messages = [{ level: 'error', text: record.reason }]
+      return { record, cache: { thumb: null, sheet: null, masks: null } }
+    }
+    record.unsureCells = read.unsureCells
+    record.charCandidates = read.cells.map((c) => (c.candidates || []).map((x) => x.char))
+    if (read.located) {
+      // 序列定位命中：整页 136 个字全部确定（含那几个认不出的格），页号由起点反推
+      record.located = record.read.located
+      record.pageNumber = Math.floor(read.located.start / LAYOUT.perPage) + 1
+      record.pageNumberSource = 'sequence'
+      record.pageChars = read.located.chars.slice()
+      record.batchCode = read.batchCode
+      // 整页已由序列确定 → **没有"需要人工确认"的格**（认不出的那几格的字同样已确定）
+      record.unsureCells = []
+      // 自校验（用户拍板：页脚码留作自校验 / 可信度提示，不当闸门）：识别出的字序算出的码 vs 纸面码。
+      // 实测两者一致（206 = 206）；对不上说明这一页多半不是按本程序模板写的，提示复核。
+      if (page.footer && page.footer.ok && typeof page.footer.batchCode === 'number') {
+        record.footerSelfCheck = {
+          footerCode: page.footer.batchCode,
+          readCode: read.batchCode,
+          agree: page.footer.batchCode === read.batchCode
+        }
+        if (!record.footerSelfCheck.agree) {
+          messages.push({
+            level: 'warn',
+            text: '这一页识别出的字序与纸面页脚对不上（纸面校验码 ' + page.footer.batchCode + '、识别出 ' +
+              read.batchCode + '）：请核对这一页是不是本程序模板印的纸，或在界面上逐格确认后再用'
+          })
+        }
+      }
+    } else {
+      record.pageChars = read.cells.map((c) => (c.empty ? null : c.char))
+      record.pageNumberSource = record.pageNumber !== null ? 'footer' : (record.orderFromUser ? 'user' : 'unknown')
+      record.needReview = read.unsureCount > 0 || read.emptyCount > 0
+      messages.push({
+        level: record.needReview ? 'warn' : 'info',
+        text: '这一页认不出是哪一段字序（多半是自定义选字的模板）：已按逐格识别取字' +
+          (record.needReview ? '，其中 ' + (read.unsureCount + read.emptyCount) + ' 格需要你在界面上确认' : '，且全部格都认准了')
+      })
+    }
+  }
+
   // ④ 字形提取（1.6）：灰度分层 + 面积过滤，红圈像素按附加图层跳过
   const extracted = extractPage(extractionBoxes)
   const markedSet = new Set(record.markedCells || [])
@@ -236,7 +322,11 @@ export async function recognizePage(file, options = {}) {
   const items = []
   for (const cell of extracted.cells) {
     // 更正册的格不按批次的字序映射：它是"第 k 个更正格"，字由更正核对（1.8）配对时决定（决策 二-13）
-    const char = record.kind === 'correction' ? null : charAtCell(chars, record.pageNumber, cell.index)
+    // 字序来源：**优先用这一页自己认出来的字**（新模型：范围由扫描件决定）；没有认字结果时才退回
+    // 批次的全局字序（旧口径，供没有候选库的环境使用）
+    const char = record.kind === 'correction'
+      ? null
+      : ((record.pageChars && record.pageChars[cell.index]) || charAtCell(chars, record.pageNumber, cell.index))
     const item = {
       index: cell.index,
       char,
@@ -328,9 +418,11 @@ export async function recognizeBatch(files, options = {}) {
   const opt = { ...SCAN_DEFAULTS, ...options }
   const batch = opt.batch || null
   const chars = resolveBatchChars(batch)
-  const expectedBatchCode = batch && typeof batch.batchCode === 'number'
-    ? batch.batchCode
-    : (typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null)
+  // 新模型（决策 五-9）：**批次校验码不再当闸门** —— 字序由纸面参考字定位决定，而批次是自动建的容器
+  // （`store.ensureScanBatch()`），两者的码本来就可能不同，拿它拦批会误伤。页脚码改用**自校验**：
+  // recognizePage 把"识别出的字序算出的码"与"纸面读出的码"对一下（footerSelfCheck），对不上只提示复核。
+  // 要旧口径（校验码不符即整批拦下）可显式传 expectedBatchCode。
+  const expectedBatchCode = typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
   const pages = []
   const caches = new Map()
   for (let i = 0; i < files.length; i++) {
