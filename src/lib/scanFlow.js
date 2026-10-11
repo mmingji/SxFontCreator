@@ -195,11 +195,14 @@ export async function recognizePage(file, options = {}) {
   record.footerOk = !!(page.footer && page.footer.ok)
   record.pageNumber = page.footer && page.footer.ok ? page.footer.pageNumber : null
   record.batchCode = page.footer && page.footer.ok ? page.footer.batchCode : null
+  // 件类型（决策 一-9、二-13）：更正册的页脚校验码为 0、主区是批次校验码、读不出时未知 ——
+  // 与 summarizeBatch 同一口径（那边按 row.kind 分拣重复页与批次比对）。
+  // **必须排在 batchMatch 之前**：下面要用它决定"这一页参不参与批次比对"。顺序写反过一次 ——
+  //   kind 此刻还是 undefined，于是更正册页的 batchMatch 被算成"码 0 vs 所选批次"的 false；
+  //   界面与收批闸门都按 kind 先分拣，用户看不到，所以这条只影响页记录本身（测试已钉住）。
+  record.kind = record.footerOk ? (record.batchCode === 0 ? 'correction' : 'main') : 'unknown'
   record.batchMatch = record.kind === 'correction' ? null : (page.batch ? page.batch.match : null)
   record.footer = footerShape(page.footer)
-  // 件类型（决策 一-9、二-13）：更正册的页脚校验码为 0、主区是批次校验码、读不出时未知 ——
-  // 与 summarizeBatch 同一口径（那边按 row.kind 分拣重复页与批次比对）
-  record.kind = record.footerOk ? (record.batchCode === 0 ? 'correction' : 'main') : 'unknown'
   if (record.pageNumber === null && typeof opt.pageNumberOverride === 'number') {
     record.pageNumber = opt.pageNumberOverride
     record.orderFromUser = true // 页序是用户手选的（决策 二-7），界面要显式标出来
