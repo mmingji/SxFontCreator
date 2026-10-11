@@ -1,11 +1,11 @@
 <script setup>
-// 第 4 步：更正核对（阶段一「界面串联」B3b；规则见《决策记录》一-7、二-13）
+// 第 2 步：更正核对（阶段一「界面串联」B3b；规则见《决策记录》一-7、二-13）
 // 职责：把「第 k 个被圈字 ↔ 更正册第 m 格」并排摆出来，允许**改派 / 删除 / 补录**，确认后交给字体构建。
 // 为什么必须有这一步：红圈识别与顺序配对都只是初值 —— 配对错一个字，整套字体就有一个字对错人。
 //   界面确认是最后一道闸（决策 一-7）。
 // 数据来源：识别页记录在 store.scan.pages；配对初值由 lib/scanFlow.pairCorrections 算（纯逻辑、有测试）；
-//   字形缩略图从 lib/scanCache 的"格子拼图"里按格裁（与第 3 步同一套精灵图做法，不额外占内存）。
-import { computed, onMounted, ref } from 'vue'
+//   字形缩略图从 lib/scanCache 的"格子拼图"里按格裁（与第 2 步同一套精灵图做法，不额外占内存）。
+import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
 import { getPageCache } from '../lib/scanCache.js'
@@ -118,15 +118,31 @@ function ensurePairing(force) {
   initialStats.value = { signature: current, stats: mapped.stats }
 }
 
-onMounted(() => {
+// 缩略图：从内存缓存（lib/scanCache 的"格子拼图"）里取。识别完才有的东西，所以每次识别结果变化都要重取
+function restoreImages() {
   const restored = {}
   for (const page of pages.value) {
     const cache = getPageCache(page.fileIndex)
     if (cache) restored[page.fileIndex] = { sheet: cache.sheet }
   }
   images.value = restored
+}
+
+onMounted(() => {
+  restoreImages()
   if (store.scan.pages.length) ensurePairing(false)
-  else setMessage('还没有识别结果：先回到第 3 步上传扫描件并识别', 'error')
+  else setMessage('还没有识别结果：先在上面选好文件夹并完成识别', 'error')
+})
+
+// 2026-10-11：更正核对并入「识别」这一步之后，本组件挂在识别页里、**不会再被重新挂载** ——
+// 识别结果一变（重新识别 / 重传某一页）必须自己跟上：重取缩略图 + 重算配对初值。
+// 签名只看"哪些页可用、每页被圈了哪些格"，这几项变了配对才需要重算（配对依赖被圈字清单）。
+const scanSignature = computed(() => pages.value
+  .map((p) => p.fileIndex + ':' + (p.ok ? '1' : '0') + ':' + (p.markedCells || []).join('.'))
+  .join('|'))
+watch(scanSignature, () => {
+  restoreImages()
+  if (pages.value.length) ensurePairing(false)
 })
 
 function applyOverride(order, value) {
@@ -163,7 +179,7 @@ function confirmAll() {
     ((store.correction.circled || []).length - effectivePairs.value.length) + ' 个被圈的字保留主区原字形', 'done')
 }
 
-// 精灵图：从"格子拼图"里裁出某一格（与第 3 步单格放大同一套做法）
+// 精灵图：从"格子拼图"里裁出某一格（与第 2 步单格放大同一套做法）
 function cellThumbStyle(fileIndex, cellIndex) {
   const sheet = images.value[fileIndex]
   if (!sheet || !sheet.sheet) return {}
@@ -179,10 +195,12 @@ function cellThumbStyle(fileIndex, cellIndex) {
 
 <template>
   <div class="step-body">
-    <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
+    <!-- data-role：更正核对并入识别页之后，同一页里有两套消息与按钮（识别的、更正的），
+         自动化测试与样式钩子都要能把它们分开 -->
+    <p v-if="message" class="panel-message" :class="messageType" data-role="correction-message">{{ message }}</p>
 
     <div v-if="!pages.length" class="panel-hint">
-      这一步需要先在第 3 步上传并识别扫描件（主区写了字的页，以及用红笔圈掉错字的那几页）。
+      这一步需要先在上面完成识别（主区写了字的页，以及用红笔圈掉错字的那几页）。
     </div>
 
     <template v-else>
@@ -195,7 +213,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
 
       <p v-if="!hasCorrectionBook && (store.correction.circled || []).length" class="step-note">
         主区有被圈掉的字，但没上传更正册：这些字会保留主区原字形（写错的那个）。
-        要更正的话，回第 3 步把更正册（空白 5 页那张，页脚校验码 0）一起上传识别。
+        要更正的话，把第 1 步压缩包里的更正册（空白 5 页那张，页脚校验码 0）写好、和主区放进同一个文件夹，再识别一次。
       </p>
 
       <ul v-if="(store.correction.messages || []).length" class="scan-problems">
@@ -272,7 +290,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
       </p>
 
       <div class="panel-actions">
-        <button class="primary" :disabled="!rows.list.length && !plan.items.length" @click="confirmAll">
+        <button class="primary" data-role="correction-confirm" :disabled="!rows.list.length && !plan.items.length" @click="confirmAll">
           {{ store.correction.confirmed ? '重新确认（已确认过）' : '确认这份更正对应' }}
         </button>
         <button class="text" type="button" @click="ensurePairing(true)">按识别结果重算配对</button>

@@ -122,19 +122,16 @@ export function reorderPages(pages, overrides, chars) {
 
 /**
  * 收批闸门：这批识别结果能不能进入下一步（更正核对 / 字体构建）。
- * 规则（2026-10-04 用户拍板 + 《决策记录》二-6、二-7、八-9、八-10）：
+ * 规则（《决策记录》二-6、二-7、五-9、六-14）：
  *   · **单页失败**（找不到四角定位块、校正超限）→ **跳过并标红**，不拦整批（二-6 的口径是让那一页重扫）
- *   · **页脚读不出的页** → 必须由用户手选页序（二-7）；页脚的批次码也随之失效，
- *     所以还**必须显式确认"这批扫描件属于所选批次"**，否则拦下
- *   · **批次级问题** → 整批拦下：校验码与所选批次不符、同一页被重复上传、所选批次已作废（未显式放行）
+ *   · **页脚读不出的页** → 字序优先从纸面参考字 / 字序文件定位得到；定位不出来的那一页手选页序
+ *     （手选本身即确认）。页脚的批次码只作自校验，**不再当闸门**（五-9 ⑥）
+ *   · **整批拦下**只剩两条：页脚校验码与所选批次不符、同一页被重复上传；「批次作废」这一态已删（六-14）
  *   · 缺页只是提醒（warn），不拦 —— 用户可以先把已经写好的页做完
  * 判据全部来自 summarizeBatch 的 rows（按"种类"分拣），**不靠匹配提示文案** —— 文案会改，种类不会。
  * @param {object} input
  * @param {object} input.summary summarizeBatch 的结果（rows 在 summary.pages 里）
  * @param {Array} input.pages 页记录（含 ok / pageNumber / footerOk）
- * @param {boolean} input.batchConfirmed 用户是否显式确认了批次
- * @param {boolean} input.batchIsVoid 所选批次是否已作废
- * @param {boolean} input.allowVoidBatch 用户是否显式放行作废批次
  * @returns {{canProceed:boolean, blockers:Array<string>, skipped:Array<object>, notes:Array<string>, usablePages:number, needsConfirm:boolean}}
  */
 export function evaluateScanGate(input = {}) {
@@ -198,8 +195,12 @@ export function evaluateScanGate(input = {}) {
     else usablePages++
   }
 
+  // 2026-10-11（决策 六-14 ③）：页脚校验码不符**降为提示**，不再拦批 ——
+  // 批次对用户不可见，界面上没有"改选批次"这条出路，拦下来就是死路；码本身仍照常解、照常显示，
+  // 认错了字在识别结果里看得见（逐格复核 + 更正核对那两道闸还在）。
   if (batchMismatch > 0) {
-    blockers.push('有 ' + batchMismatch + ' 页的页脚校验码与所选批次不符：请确认批次选对了，或重新生成模板、重印重写')
+    notes.push('有 ' + batchMismatch + ' 页的页脚校验码与当前批次不一致：多半不是同一批纸（或用的是旧模板），' +
+      '请对照结果里的"字序来源"确认这几页认得对不对')
   }
   if ((summary.duplicates || []).length) {
     blockers.push('有 ' + summary.duplicates.length + ' 页被重复上传（页脚页号相同）：请去掉重复的那一张')

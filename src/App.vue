@@ -6,14 +6,12 @@
 //   界面不维护第二份状态机，步骤条上的"已完成 / 当前 / 未开始 / 待接入"都是算出来的。
 // 内容按需加载：模板步骤依赖 pdf-lib + fontkit + pdf.js（构建后是独立 chunk），静态引入会让首屏一起下载
 //   （实测冷启动白屏 3.5 秒里一大半是它），所以第 1 步用 defineAsyncComponent 懒加载。
-import { computed, defineAsyncComponent, h, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
 import { buildFlowState, flowSummary, stepIndex } from './lib/flow.js'
 import { checkBrowserSupport } from './lib/browserSupport.js'
 import StepContent from './components/StepContent.vue'
 import GuideLink from './components/GuideLink.vue'
-import ProjectBackup from './components/ProjectBackup.vue'
-import ResetProject from './components/ResetProject.vue'
 
 // 第 1 步「选字与出模板」按需加载（pdf-lib + fontkit + pdf.js）
 const StepLoading = {
@@ -27,29 +25,18 @@ const TemplatePreview = defineAsyncComponent({
   delay: 120,
   timeout: 60000
 })
-// 第 3 步「上传识别」同样按需加载：它依赖四个识别模块（预处理 / 切格 / 红圈 / 提取），首屏用不到
+// 第 2 步「识别」按需加载：它依赖四个识别模块（预处理 / 切格 / 红圈 / 提取）+ 参考字读取，
+// 首屏用不到。更正核对（原独立的第 4 步）现在也挂在这一步里（决策 八-15 ④）
 const ScanUpload = defineAsyncComponent({
   loader: () => import('./components/ScanUpload.vue'),
   loadingComponent: StepLoading,
   delay: 120,
   timeout: 60000
 })
-// 第 4 步「更正核对」也按需加载（用到识别记录与格子拼图）
-const CorrectionConfirm = defineAsyncComponent({
-  loader: () => import('./components/CorrectionConfirm.vue'),
-  loadingComponent: StepLoading,
-  delay: 120,
-  timeout: 60000
-})
-// 第 5 步「生成字体」与第 6 步「下载安装」：字体合成要 potrace + fonteditor，打包要 jszip，都按需加载
+// 第 3 步「生成」按需加载：字体合成要 potrace + fonteditor，下载打包与网页预览要 jszip + FontFace。
+// 2026-10-11 三步流程：原第 5、6 步（生成字体 / 下载安装）已并成这一个组件（决策 八-15 ①）
 const BuildFont = defineAsyncComponent({
   loader: () => import('./components/BuildFont.vue'),
-  loadingComponent: StepLoading,
-  delay: 120,
-  timeout: 60000
-})
-const ResultDownload = defineAsyncComponent({
-  loader: () => import('./components/ResultDownload.vue'),
   loadingComponent: StepLoading,
   delay: 120,
   timeout: 60000
@@ -57,25 +44,20 @@ const ResultDownload = defineAsyncComponent({
 
 const store = useProjectStore()
 
-// 流程进度快照：全部来自真实数据（批次 / 识别结果 / 更正确认 / 字体产物），六个步骤的状态与
+// 流程进度快照：全部来自真实数据（模板元信息 / 识别结果 / 更正确认 / 字体产物），三个步骤的状态与
 // "下一步能不能走"都由 lib/flow.js 按它推导 —— 界面不维护第二份状态机
 const scanStats = computed(() => store.scanGlyphStats)
 const progress = computed(() => ({
-  // 生成过模板（第 1 步的完成判据，也是能不能进第 2 / 3 步的门槛）——
+  // 生成过模板（第 1 步的完成判据，也是能不能进第 2 步的门槛）——
   // 2026-10-11 起不再看批次：第 1 步不记批次了，改读 store.template 那笔元信息（决策 五-9 的收尾）
   templatePages: store.template && store.template.sheetPages ? store.template.sheetPages : 0,
-  batchCount: store.batches.length,
-  activeBatchCount: store.activeBatches.length,
   uploadedPages: scanStats.value.pagesUsable,
   glyphCount: scanStats.value.written,
-  // 有被红笔圈掉的字时，必须先在第 4 步确认更正对应，才允许生成字体（决策 一-7 的最后一道闸）
+  // 有被红笔圈掉的字时，必须先确认更正对应，才允许生成字体（决策 一-7 的最后一道闸）
   needsCorrection: (store.correction.circled || []).length > 0,
   correctionConfirmed: store.correction.confirmed,
-  fontBuilt: store.font.built,
-  // "下载安装"这一步：字体一旦生成，产物就在手上了（下载随时可做），所以**以 fontBuilt 为准**。
-  // 原来这里数的是"下载过字体 zip"，随字段改名一并订正 —— 它混用了"项目包备份"那个字段，
-  // 而项目包备份是另一件事（决策 五-3 的提醒），不该决定这一步的状态
-  exported: store.font.built === true
+  // "生成"这一步以**字体已生成**为准：产物一旦生成，下载随时可做（决策 五-7 的同一口径）
+  fontBuilt: store.font.built === true
 }))
 const flow = computed(() => buildFlowState(progress.value))
 // 打开页面时停在"第一个还没做完的步骤"（用户 2026-10-04 的界面形态要求：向导式）
@@ -98,16 +80,7 @@ function goto(key) {
   }
 }
 
-// 「清空项目」（决策 五-8）：顶栏那个组件清完之后只做两件事 —— 把界面**推回第 1 步**、
-// 并让第 1 步整块重挂载（见下面模板里的 `:key`）。为什么走 store 里的计数器而不是事件或 props：
-// 入口在顶栏、第 1 步在内容区，两者之间隔着这一层（与 backupOpen 同一个理由）。
-// 顺手清掉"某一步进不去"的原因文案：清空之后那句话说的已经是上一份项目的事了。
-watch(() => store.ui.resetToken, () => {
-  currentKey.value = 'template'
-  blockedReason.value = ''
-})
-
-// 运行环境：这三项是后续步骤真实依赖的浏览器能力，缺哪一项哪一步就干不了（单行状态栏按它们渲染）// （本机字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取；IndexedDB 是数据落盘的唯一真相）
+// 运行环境：这三项是后续步骤真实依赖的浏览器能力，缺哪一项哪一步就干不了（单行状态栏按它们渲染）// （参考字字体用于模板 PDF 嵌入参考字，决策记录 一-11；画布 2D 用于切格与笔迹提取；IndexedDB 是数据落盘的唯一真相）
 // 判据要与实现一致：界面用的是 <input type="file"> + File.arrayBuffer()，不是 File System Access API
 // 更全的能力检测见 lib/browserSupport.js：那份清单只在**缺失时**出一条中文提示条（决策 六-10），
 // 不挤进这条单行状态栏 —— 状态栏是"平时就要看到的三项"，提示条是"出问题才出现的"
@@ -132,12 +105,10 @@ const recoverDismissed = ref(false)
           <p class="brand-sub">手写字体制作器 · 纯前端 · 离线可用</p>
         </div>
       </div>
-      <!-- 顶栏右侧：清空项目 + 项目备份。清空放「项目备份」左边、样式与它一致（用户 2026-10-08 口径）；
-           两者都是"与当前在第几步无关"的项目级动作，所以放顶栏。清空是不可撤销的操作 ——
-           弹窗里用"行内确认条 + 手输「清空」二字"两道门槛，并在弹窗内给出「先导出项目包」（决策 五-8） -->
+      <!-- 顶栏右侧：只挂「查看完整说明」（2026-10-11 三步流程，决策 五-10：去掉「项目备份」与
+           「清空项目」两个功能页，说明入口从步骤标题行挪到这里 —— 与当前在第几步无关） -->
       <span class="topbar-actions">
-        <ResetProject />
-        <ProjectBackup />
+        <GuideLink />
       </span>
     </header>
 
@@ -199,24 +170,17 @@ const recoverDismissed = ref(false)
             <span class="step-hint">{{ currentStep.hint }}</span>
           </h2>
           <span class="step-head-right">
-            <!-- 步骤级操作位：当前步骤可以把自己的操作按钮 Teleport 到这里（第 1 步的「更新预览」），
-                 顺序上排在「查看完整说明」之前 —— 操作在左、说明入口在右（2026-10-08 用户要求） -->
+            <!-- 步骤级操作位：当前步骤可以把自己的操作按钮 Teleport 到这里（第 1 步的「更新预览」）。
+                 说明入口（「查看完整说明」）已挪到顶栏（决策 五-10 ①） -->
             <span id="step-head-actions"></span>
-            <!-- 每一步都能打开同一份《使用说明》（单文件 HTML，新标签页）：界面只留摘要，正文只有一份 -->
-            <GuideLink />
           </span>
         </div>
         <p v-if="currentStep.note" class="step-note">{{ currentStep.note }}</p>
 
-        <!-- `:key` 绑在「清空项目」的计数器上：清空后第 1 步**整块重挂载**一次 ——
-             "写哪些字"回到默认的单页试打、本机字体选择清掉、模板预览与书写示意重新生成。
-             不这么做的话，清空前若停在「自定义选字」，组件不会卸载、档位会留在那一档，
-             那就不是"刚装上软件的状态"了（决策 五-8） -->
-        <TemplatePreview v-if="currentKey === 'template'" :key="store.ui.resetToken" />
-        <ScanUpload v-else-if="currentKey === 'upload'" />
-        <CorrectionConfirm v-else-if="currentKey === 'correct'" />
+        <!-- 三步流程（决策 八-15）：一次只显示当前这一步的内容 -->
+        <TemplatePreview v-if="currentKey === 'template'" />
+        <ScanUpload v-else-if="currentKey === 'scan'" />
         <BuildFont v-else-if="currentKey === 'build'" />
-        <ResultDownload v-else-if="currentKey === 'download'" />
         <StepContent v-else :step="currentStep" />
       </section>
     </main>

@@ -19,9 +19,8 @@ const SNAPSHOT_KEY = 'sxfont.snapshot.v1'
 const DB_NAME = 'sxfont-db'
 const DB_STORE = 'projects'
 const DB_KEY = 'sxfont.project.v1'
-// 导入项目包之前、把"当前这份"另存到同一个对象仓的这个键下（**不覆盖真相键**）：
-// 万一用户选错了包，至少还有一条能捞回来的路（决策 五-6）。只留最近一次，不做历史版本。
-export const BACKUP_KEY = 'sxfont.backup.before-import.v1'
+// 2026-10-11（决策 五-10）：原来这里还有一个导入保底键（`sxfont.backup.before-import.v1`）——
+// 随"导出 / 导入项目包"一起去掉了；库里若还留着那个键也不再有人读它。
 
 // 字形数据（掩膜）另存分片键：`sxfont.glyphs.v1.<批次>.<页序>`（见 lib/glyphStore.js）。
 // 为什么不塞进上面那个项目对象：字形量大（全量约 6900 格），而 persist 每次改动都会重写整份对象，
@@ -198,90 +197,9 @@ export async function loadProject() {
   return { data, source: 'snapshot-only' }
 }
 
-/**
- * 整份替换项目（导入项目包时用，决策 五-6）：
- *   ① rev 取 **max(当前 rev, 包内 rev) + 1** —— 直接用包内 rev 会有两个坑：包来自另一台机器时
- *      它的 rev 可能比本机大得多（此后每次保存都从一个大数往上爬），或比本机小（旧快照反而"更新"而翻盘）；
- *   ② IndexedDB 与 localStorage 快照**同时**写同一个新 rev —— 否则下一步启动时按"rev 取大者"恢复，
- *      旧快照会把刚导入的数据盖回去。
- * 写失败返回 ok=false，调用方**不要**再往下走（这时打开着的还是原来那份数据）。
- * @param {object} data 导入进来的项目数据（含 meta / selection / batches / scan / correction …）
- * @returns {Promise<{ok:boolean, rev:number}>}
- */
-export async function replaceProject(data) {
-  const current = await readFromIdb()
-  const currentRev = current ? Number(current.rev) || 0 : 0
-  const incomingRev = Number(data && data.rev) || 0
-  const rev = Math.max(currentRev, incomingRev) + 1
-  const res = await persistWithRev({ ...data, rev }, rev)
-  return { ok: res.ok, rev }
-}
-
-/**
- * 导入前的保底：把当前这份项目数据另存一份（同一个对象仓的另一个键，**不动真相键**）。
- * 为什么要有：导入是**不可撤销**的整份替换，用户有可能选错包；有一条"最近被替换掉的那份"，
- * 出事时至少能人工捞回来。它不参与正常读取，因此不影响启动链路。
- * @returns {Promise<{ok:boolean}>}
- */
-export async function stashCurrentProject(data) {
-  try {
-    const clean = JSON.parse(JSON.stringify(data))
-    const record = { ...clean, stashedAt: Date.now() }
-    const db = await openDb()
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(DB_STORE, 'readwrite')
-      tx.objectStore(DB_STORE).put(record, BACKUP_KEY)
-      tx.oncomplete = () => resolve()
-      tx.onerror = () => reject(tx.error || new Error('保底写入失败'))
-    })
-    return { ok: true }
-  } catch (e) {
-    console.error('导入前的保底快照写入失败', e)
-    return { ok: false }
-  }
-}
-
-/**
- * 清空本机存着的这一份项目（「清空项目」用，决策 五-8）：三个键**全删**。
- * 为什么一个都不能少：
- *   ① **真相键** —— 不删的话 IndexedDB 里还是旧项目；
- *   ② **localStorage 快照** —— 这一条最容易漏，也最要命：读取规则是"**rev 取大者**"（五-4），
- *      只删真相键的话，rev 更大的旧快照会在下次启动时被当成"较新的一份"恢复并固化回 IndexedDB，
- *      旧项目当场复活（冒烟里"清空 → 刷新 → 仍为空"这条就是钉它的）；
- *   ③ **导入保底键** —— 导入项目包时另存的那一份（五-6），它没有界面入口，
- *      留着就等于"清空"之后库里还藏着一份旧项目。
- * 调用时机：它是"先删干净、再写一份新的空项目"里的第一步，**必须在 store 复位之前**调用
- * （顺序见五-8 的五段式；反过来的话，中间那一刻盘上是空的而内存里还是旧数据）。
- * @returns {Promise<{ok:boolean, removed:{project:boolean, snapshot:boolean, backup:boolean}, error?:string}>}
- *   removed 的语义是"这一步已执行"，不区分那个键原本在不在（删不存在的键在 IndexedDB 里也算成功）
- */
-export async function clearProject() {
-  const removed = { project: false, snapshot: false, backup: false }
-  try {
-    const db = await openDb()
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(DB_STORE, 'readwrite')
-      const store = tx.objectStore(DB_STORE)
-      store.delete(DB_KEY)
-      store.delete(BACKUP_KEY)
-      tx.oncomplete = () => resolve()
-      tx.onerror = () => reject(tx.error || new Error('IndexedDB 删除失败'))
-      tx.onabort = () => reject(tx.error || new Error('IndexedDB 删除中止'))
-    })
-    removed.project = true
-    removed.backup = true
-  } catch (e) {
-    // 删不掉就明确失败：界面据此给中文原因，**不要**再往下复位界面（否则界面空了、盘上还留着旧项目）
-    return { ok: false, removed, error: e && e.message ? e.message : String(e) }
-  }
-  try {
-    localStorage.removeItem(SNAPSHOT_KEY)
-    removed.snapshot = true
-  } catch (e) {
-    return { ok: false, removed, error: e && e.message ? e.message : String(e) }
-  }
-  return { ok: true, removed }
-}
+// 2026-10-11（决策 五-10）：原来这里还有 replaceProject（整份替换，导入项目包用）、
+// stashCurrentProject（导入前保底）与 clearProject（清空项目）三个函数 —— 随那三个入口一起去掉了。
+// 存储层现在只剩"读 / 写当前项目 + 只读快照"这条主干（决策 五-4）。
 
 // 存储状态（供界面自检展示）：两边各自的 rev，用于一眼看出是否对齐
 export async function getStorageState() {

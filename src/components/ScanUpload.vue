@@ -1,5 +1,5 @@
 <script setup>
-// 第 3 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
+// 第 2 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
 // 职责：① 取这一轮要用的批次（**用户不再选**：进这一步时自动复用最近一个仍有效的，或顺手建一个）
 //   ② 准备参考字候选库 → 多选扫描件 → 串行识别，边跑边显示、可中止（决策 二-1：绝不能整批读进内存）
 //   ③ 批次判定与**收批闸门**（单页失败跳过、批次级问题整批拦下）
@@ -16,12 +16,15 @@ import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { buildLibrary } from '../lib/referenceCharReader.js'
 import { loadBuiltinFont } from '../lib/referenceFont.js'
+import { describeOrderFile } from '../lib/orderFile.js'
+import { IMAGE_EXTENSIONS, findOrderFile, pickScanInputs } from '../lib/scanInput.js'
 import { LAYOUT } from '../lib/layout.js'
 import CharReview from './CharReview.vue'
+import CorrectionConfirm from './CorrectionConfirm.vue'
 
 // ── 参考字候选库（认字与定字序都要它）──────────────────────────────────────
 // 为什么要缓存：建一次要 8274 字逐个渲染 + 取特征，实测约 2.3 秒 —— 一轮识别（可能几十页）只该付一次。
-// 为什么放在模块级而不是组件里：组件会在离开第 3 步时卸载（App.vue 是 v-if 挂载），
+// 为什么放在模块级而不是组件里：组件会在离开第 2 步时卸载（App.vue 是 v-if 挂载），
 //   放在组件里等于"每次回来都重建一遍"，用户会以为程序卡住。
 // 为什么用 Promise 而不是"建好的库"：并发的两个入口（整批识别与单页重传）不能各建一份。
 let libraryPromise = null
@@ -48,11 +51,43 @@ function ensureLibrary(onProgress) {
 
 const store = useProjectStore()
 
-const files = ref([]) // 用户选的扫描件（File 对象；只在内存里，不上传）
+// ── 输入：**一个文件夹**（决策 二-18）──────────────────────────────────────
+// 为什么改成指定文件夹：纸与字序文件本来就是一起给用户的（第 1 步的压缩包），
+//   让程序一次读全比"手动挑图片、再靠认字反推字序"少一个出错环节 —— 目录里那份 字序.json
+//   直接把"这批纸按什么顺序排字"说死（决策 一-18），认参考字降为没有文件时的退路。
+const dirFiles = ref([]) // 目录选择给回来的原始清单（只在内存里，不上传）
+const scanInput = ref(null) // pickScanInputs 的产物：{ images, orderCandidates, ignoredSubdir, ignoredOther, folderName, total }
+const orderFile = ref(null) // 读到的字序文件：{ ok, fileName, file, reason }
+const readingDir = ref(false)
+// 这一轮用的图片（File 数组，按文件名自然序）
+const files = computed(() => (scanInput.value ? scanInput.value.images : []))
 const running = ref(false)
 const stage = ref('')
-const progress = ref({ done: 0, total: 0 })
+// 进度（决策 二-18 ④ 要显示四件事）：当前动作、页进度、还剩几步、预计剩余时间
+// 每页固定这么几个动作（与 scanFlow 里 stage() 的调用点一一对应），"还剩几步"按它折算
+const STAGES_PER_PAGE = 5
+const progress = ref({ done: 0, total: 0, currentPage: 0, stageIndex: 0, etaMs: null })
+let runStartedAt = 0
+const stageIndexOf = (text) => {
+  const order = ['预处理', '切格', '认参考字', '红圈', '提取']
+  for (let i = 0; i < order.length; i++) if (text.indexOf(order[i]) >= 0) return i + 1
+  return 0
+}
+// 剩余步数 = 剩余整页 × 每页动作数 + 这一页还没走完的动作（粗算，只用来给用户一个量级）
+const remainingSteps = computed(() => {
+  const left = Math.max(0, progress.value.total - progress.value.done)
+  const inPage = Math.max(0, STAGES_PER_PAGE - progress.value.stageIndex)
+  return left * STAGES_PER_PAGE + inPage
+})
+// 预计剩余时间：按"已处理页的平均耗时"外推。**前 2 页不报** —— 刚开局那两页的数字只会乱跳
+const etaLabel = computed(() => {
+  if (!running.value || progress.value.etaMs === null) return ''
+  const sec = Math.round(progress.value.etaMs / 1000)
+  if (sec < 60) return '约 ' + Math.max(1, sec) + ' 秒'
+  return '约 ' + Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒'
+})
 const images = ref({}) // fileIndex → { thumb, sheet }（来自内存缓存，用于渲染；不落盘）
+const IMAGE_HINT = IMAGE_EXTENSIONS.join(' / ')
 const openIndex = ref(null) // 展开格级视图的页
 const zoomIndex = ref(null) // 单格放大
 const reviewIndex = ref(null) // 打开逐格复核的页（fileIndex）
@@ -81,6 +116,19 @@ function sequenceLabel(seqKey) {
 // 序列定位命中时，这一页是全序里从第几个字开始的一段 —— 页号由它反推（纸面自己说得清是第几页）
 function locatedStartPage(page) {
   return Math.floor(page.located.start / LAYOUT.perPage) + 1
+}
+// 这一页的字是**从哪儿来的**（决策 一-18 ⑤）：三种来源对用户的信任度不同，必须在界面上说清 ——
+//   file 文件夹里的字序文件（文件给死的）/ sequence 纸面参考字序列定位（认出来的）/ cells 逐格认字（猜的）
+function orderSourceLabel(page) {
+  if (page.orderSource === 'file') {
+    const hit = page.located && page.located.seqKey === 'file'
+    return '来自文件夹里的字序文件' + (hit ? '（在文件里定位到第 ' + locatedStartPage(page) + ' 页起）' : '（按页脚页号取）')
+  }
+  if (page.orderSource === 'sequence') {
+    return sequenceLabel(page.located ? page.located.seqKey : '') + ' · 第 ' + locatedStartPage(page) + ' 页起'
+  }
+  if (page.orderSource === 'cells') return '逐格认字（认不准的格需要人工确认）'
+  return ''
 }
 // 还要人工确认的格 = 认不准的格 ∪ 还没认出字的格（两者可能重叠，按格号去重）
 function reviewCount(page) {
@@ -125,40 +173,79 @@ onMounted(() => {
   glyphStoreStats().then((s) => { savedStats.value = s }).catch(() => {})
 })
 
-// 批次被删掉（批次管理里删的正是当前这一批）时立刻补一个：让"在第 3 步就一定有批次"成为不变量 ——
+// 批次被删掉（批次管理里删的正是当前这一批）时立刻补一个：让"在第 2 步就一定有批次"成为不变量 ——
 // 否则字形会落到 `default` 分片键上（既不属于任何批次、也没法在批次管理里清掉，冒烟里踩到过）
 watch(() => store.scan.batchId, (id) => {
   if (!id) store.ensureScanBatch()
 })
 
-function onPickFiles(event) {
+// 选一个文件夹：程序在里面挑图片（根层、按文件名自然序）并读字序文件（决策 二-18 ②）
+async function onPickDir(event) {
   const picked = Array.from(event.target.files || [])
-  files.value = picked
-  event.target.value = '' // 清空 input，便于再次选择同一批文件
-  setMessage(picked.length ? '已选择 ' + picked.length + ' 个文件：点「开始识别」逐页处理（串行，逐页释放内存）' : '', 'info')
+  event.target.value = '' // 清空 input，便于再次选同一个文件夹（File 引用仍然有效）
+  dirFiles.value = picked
+  orderFile.value = null
+  if (!picked.length) {
+    scanInput.value = null
+    setMessage('', 'info')
+    return
+  }
+  readingDir.value = true
+  try {
+    const input = pickScanInputs(picked)
+    scanInput.value = input
+    // 字序文件：固定名「字序.json」优先，读不了再试目录里别的 .json（决策 一-18 ② 的容错）
+    const found = await findOrderFile(input.orderCandidates, { perPage: LAYOUT.perPage })
+    orderFile.value = found
+    const parts = ['已选文件夹「' + (input.folderName || '（未命名）') + '」：找到 ' + input.images.length + ' 张图片']
+    if (input.ignoredSubdir) parts.push('忽略了子文件夹里的 ' + input.ignoredSubdir + ' 个文件')
+    if (input.ignoredOther) parts.push('跳过了 ' + input.ignoredOther + ' 个非图片文件')
+    if (!input.images.length) {
+      parts.push('这个文件夹里没有可用的图片（支持 ' + IMAGE_HINT + '），请确认选的是扫描件所在的那一层')
+    }
+    if (found.ok) {
+      parts.push('字序文件：' + found.fileName + '（' + describeOrderFile(found.file) + '）—— 按它定字序')
+    } else if (input.orderCandidates.length) {
+      parts.push('字序文件读不了，这一轮改用「认纸面参考字」定字序：' + found.reason)
+    } else {
+      parts.push('文件夹里没有字序文件，这一轮改用「认纸面参考字」定字序（要求这份纸是本程序模板印的）')
+    }
+    setMessage(parts.join('；'), 'info')
+  } catch (e) {
+    setMessage('读取文件夹失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    readingDir.value = false
+  }
 }
 
 async function start() {
   if (running.value) return
   if (!files.value.length) {
-    setMessage('还没有选择扫描件', 'error')
+    setMessage('还没有可识别的图片：先点上面的「选择文件夹」，指向扫描件所在的那一层', 'error')
     return
   }
   // 批次是内部容器：再取一次（复用最近一个仍有效的，或自动补一个）—— 界面上已经无处可选它。
   // 2026-10-11（决策 五-9）：这里原来还有一道"作废批次要显式放行"的拦截，随那个勾选框一起去掉了 ——
   // 批次对用户不可见，也就没有"作废"这回事（改选字不再作废批次，见 store.setSelection）
   const currentBatch = store.ensureScanBatch()
+  // 字序文件（有就用它，没有就走"认参考字"那条退路，决策 一-18 ⑤）
+  const withOrderFile = !!(orderFile.value && orderFile.value.ok)
+  const orderChars = withOrderFile ? orderFile.value.file.chars : ''
+  const orderPages = withOrderFile ? orderFile.value.file.pageCount : undefined
   running.value = true
   cancelled = false
   openIndex.value = null
   zoomIndex.value = null
   closeReview()
   images.value = {}
-  progress.value = { done: 0, total: files.value.length }
-  const t0 = performance.now()
+  progress.value = { done: 0, total: files.value.length, currentPage: 0, stageIndex: 0, etaMs: null }
+  runStartedAt = performance.now()
+  const t0 = runStartedAt
   try {
     // ① 参考字候选库：认字与定字序都靠它。建一次约 2~3 秒（8274 字逐个渲染 + 取特征），
-    //    建好后整个会话复用 —— 所以放在"清空上一轮结果"之前：准备失败时不该把已有结果清掉
+    //    建好后整个会话复用 —— 所以放在"清空上一轮结果"之前：准备失败时不该把已有结果清掉。
+    //    即使有字序文件也要建：**"这是不是自家模板印的纸"这条判据靠它**（决策 五-9 ④：
+    //    参考字覆盖率不达标就整页失败，外来图片一个字形也不产生）
     setMessage('正在准备参考字识别…（首次约 2~3 秒，之后不用再等）', 'info')
     const lib = await ensureLibrary((done, total) => {
       setMessage('正在准备参考字识别…（' + done + ' / ' + total + '）', 'info')
@@ -171,19 +258,41 @@ async function start() {
     // 同一批重新识别：先把这批已落盘的字形清掉，避免旧页与新页混在一起（分片键是按批次 + 页序写的）
     await clearGlyphs({ batchId: store.scan.batchId })
     savedStats.value = null
-    store.beginScanRun({ batchId: store.scan.batchId, chars: resolveBatchChars(currentBatch) })
-    setMessage('正在识别…（单页约 1~2 秒，51 页约 85 秒；中途可以点「中止」，已识别的页会保留）', 'info')
+    store.beginScanRun({ batchId: store.scan.batchId, chars: orderChars || resolveBatchChars(currentBatch) })
+    setMessage(
+      '正在识别 ' + files.value.length + ' 张图片（单页约 1~2 秒；中途可以点「中止」，已识别的页会保留）' +
+        (withOrderFile ? '；字序按文件夹里的字序文件对应' : '；字序靠认纸面参考字定位'),
+      'info'
+    )
     const res = await recognizeBatch(files.value, {
       batch: currentBatch,
       // 传了它才做"认参考字 + 定字序"；不传就退回旧的"按批次全局字序取字"口径
       library: lib,
-      onStage: (text) => { stage.value = text },
+      // 字序文件优先（决策 一-18）：给了它，序列定位只在文件那一个全序里找起点
+      orderChars,
+      orderPages,
+      onPageStart: (pageNo, total) => {
+        progress.value = { ...progress.value, currentPage: pageNo, total, stageIndex: 0 }
+      },
+      onStage: (text) => {
+        stage.value = text
+        progress.value = { ...progress.value, stageIndex: stageIndexOf(text) }
+      },
       shouldStop: () => cancelled,
       onPage: async (record, index, total, cache) => {
         putPageCache(index, cache)
         images.value = { ...images.value, [index]: { thumb: cache.thumb, sheet: cache.sheet } }
         store.appendScanPage(record)
-        progress.value = { done: index + 1, total }
+        // 预计剩余时间按"已处理页的平均耗时"外推；前 2 页不报（刚开局的数字只会乱跳）
+        const done = index + 1
+        const elapsed = performance.now() - runStartedAt
+        progress.value = {
+          ...progress.value,
+          done,
+          total,
+          stageIndex: STAGES_PER_PAGE,
+          etaMs: done >= 2 && done < total ? (elapsed / done) * (total - done) : null
+        }
         // 字形**逐页落盘**（掩膜存 PNG，分片键）：关掉浏览器或刷新后不用重扫，
         // 字体合成（下一步）直接从这里取原料 —— 口径见《决策记录》二-16
         const res = await savePageGlyphs({
@@ -225,7 +334,7 @@ function stop() {
 
 function clearAll() {
   if (running.value) return
-  files.value = []
+  // 只清"结果"：选好的文件夹留着 —— 用户点"清空结果"多半是想重跑一遍，不是想重新选目录
   images.value = {}
   openIndex.value = null
   zoomIndex.value = null
@@ -263,9 +372,13 @@ async function rescanPage(page, event) {
       setMessage('正在准备参考字识别…（' + done + ' / ' + total + '）', 'info')
     })
     const expectedBatchCode = currentBatch && typeof currentBatch.batchCode === 'number' ? currentBatch.batchCode : null
+    // 重传这一页也用同一个字序来源：文件夹里有字序文件就按文件定（决策 一-18），
+    // 没有才走"认纸面参考字"（否则这一页的字会退回按**批次的全局字序**取 —— 自定义选字的纸会被张冠李戴）
     const { record, cache } = await recognizePage(file, {
       chars: chars.value,
       library: lib,
+      orderChars: orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : '',
+      orderPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined,
       expectedBatchCode,
       fileIndex: page.fileIndex, // 复用原页序号：分片键与缓存键都按它覆盖
       pageNumberOverride: page.pageNumber || undefined
@@ -297,7 +410,7 @@ async function rescanPage(page, event) {
     if (!saved.ok) {
       setMessage('这一页识别成功，但字形落盘失败（结果只在内存里，刷新会丢）：' + saved.error, 'error')
     }
-    // 被圈字变了 → 之前的更正配对失效（配对依赖被圈字清单）：清掉并明确提示去第 4 步重新核对
+    // 被圈字变了 → 之前的更正配对失效（配对依赖被圈字清单）：清掉并明确提示去下面的更正核对重来
     const markedChanged = (page.markedCells || []).join(',') !== (record.markedCells || []).join(',')
     if (markedChanged) store.resetCorrection()
     // 重算整批汇总（页号重复 / 批次码不符 / 缺页 / 收批闸门都读它）；顺序保持原位置，不把这一页挪到最后
@@ -317,7 +430,7 @@ async function rescanPage(page, event) {
       '已重传第 ' + (record.pageNumber || page.pageNumber || '?') + ' 页（' + file.name + '）：写出 ' +
         record.counts.written + ' 格 / 被圈 ' + record.counts.marked + ' 个' +
         (res.replaced ? '' : '（结果里原本没有这一页，已补上）') +
-        (markedChanged ? '。这一页的被圈字有变化，之前的更正配对已作废，请到第 4 步重新核对' : '') +
+        (markedChanged ? '。这一页的被圈字有变化，之前的更正配对已作废，请在下面的「更正核对」里重新核对' : '') +
         '。这一页的字形已更新，字体要重新生成才生效',
       markedChanged ? 'info' : 'done'
     )
@@ -436,35 +549,47 @@ const zoomIsMarkedLabel = computed(() => {
 
 <template>
   <div class="step-body">
-    <!-- ① 识别方式 -->
-    <!-- 2026-10-11（决策 五-9）：批次在界面上彻底消失 —— 原来这里还有一个「批次管理」入口与两个勾选框
-         （"确认这批扫描件属于所选批次"、"我知道这是作废模板"），它们都建立在"批次对用户可见"之上；
-         批次退成内部容器后一并去掉（进这一步时程序自动复用最近一个仍有效的批次，一个都没有就顺手建一个） -->
+    <!-- ① 识别方式：指定一个文件夹 -->
+    <!-- 2026-10-11（决策 二-18 / 一-18）：不再手动挑图片、也不再选批次 ——
+         给一个文件夹，程序读里面的图片与 字序.json；没有字序文件时才靠"认纸面参考字"定字序。
+         批次在界面上彻底消失（进这一步时程序自动复用最近一个，一个都没有就顺手建一个） -->
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">识别方式</span>
         <span class="panel-hint" data-role="scan-mode">
-          按纸面上印的<strong>参考字</strong>认出这一页写了哪些字、该按什么字序对应 —— 不需要你先选批次
+          指定<strong>扫描件所在的文件夹</strong>：程序读里面的图片，并优先按第 1 步压缩包里的
+          <strong>字序.json</strong> 定字序；文件夹里没有字序文件时，改用<strong>认纸面上印的参考字</strong>来定位字序
         </span>
       </div>
     </div>
 
-    <!-- ② 文件与进度 -->
+    <!-- ② 文件夹与进度 -->
     <div class="panel-row">
       <div class="panel-field">
-        <label class="file-button">
-          选择扫描件
-          <input type="file" multiple accept="image/*" :disabled="running" @change="onPickFiles" />
+        <label class="file-button" data-role="pick-dir">
+          选择文件夹
+          <input
+            type="file"
+            webkitdirectory
+            directory
+            multiple
+            :disabled="running || readingDir"
+            @change="onPickDir"
+          />
         </label>
-        <button class="primary" :disabled="running || !files.length" @click="start">开始识别</button>
+        <button class="primary" :disabled="running || readingDir || !files.length" @click="start">开始识别</button>
         <button v-if="running" type="button" @click="stop">中止</button>
         <button class="text" type="button" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
-        <span class="panel-hint">
-          {{ files.length }} 个文件<span v-if="running">；{{ stage }}（{{ progress.done }} / {{ progress.total }} 页）</span>
-        </span>
+        <span class="panel-hint">{{ readingDir ? '正在读取文件夹…' : files.length + ' 张图片' }}</span>
       </div>
     </div>
-    <p v-if="message" class="panel-message" :class="messageType">{{ message }}</p>
+    <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
+    <p v-if="running" class="panel-hint" data-role="scan-progress">
+      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}；
+      进度 {{ progress.done }} / {{ progress.total }} 页；
+      还剩 {{ progress.total - progress.done }} 页（约 {{ remainingSteps }} 步）<span v-if="etaLabel">，预计还要 {{ etaLabel }}</span>
+    </p>
+    <p v-if="message" class="panel-message" :class="messageType" data-role="scan-message">{{ message }}</p>
     <p v-if="savedStats && savedStats.glyphs" class="panel-hint">
       字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
       —— 存的是笔迹掩膜（PNG 无损），<strong>刷新或关掉浏览器后不用重扫</strong>，下一步生成字体直接用它
@@ -488,13 +613,15 @@ const zoomIsMarkedLabel = computed(() => {
         <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
       </ul>
       <p v-if="gate.canProceed" class="panel-message done">
-        这一批可以继续：点上方「制作流程」里的第 4 步「更正核对」进去（只有被红笔圈掉的字才需要更正册）
+        这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里核对并确认
+          （只有被圈掉的字才需要更正册）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 2 步「生成」了</span>
       </p>
-      <!-- 决策 五-3：「识别完成」这个节点提醒一次导出项目包备份（不做常驻计数） -->
-      <p v-if="gate.canProceed && store.backupReminder" class="step-note backup-reminder" data-role="backup-reminder">
-        这一批已经识别完并落盘了，但<strong>项目还没备份</strong>：数据只在本机浏览器里，清缓存或换电脑就没了 ——
-        建议现在导出一次项目包（含选字、批次、识别进度与全部字形）。
-        <button type="button" class="text" @click="store.openBackup()">立即导出项目包</button>
+      <!-- 数据兜底的口径（决策 五-10 ②）：识别结果与字形都落在本机浏览器里，刷新与关浏览器都不丢；
+           会丢的只有"清浏览器数据 / 换电脑 / 换浏览器"，那时把文件夹重指一次重跑即可 -->
+      <p class="step-note" data-role="data-note">
+        识别结果与字形保存在<strong>本机浏览器</strong>里：刷新、关掉浏览器都不会丢；
+        只有清理浏览器数据或换电脑才会没有 —— 那时把文件夹重指一次、重跑一遍即可（同样的输入必得同样的结果）。
+        扫描件原图程序不留，请自己留一份。
       </p>
     </div>
 
@@ -547,8 +674,8 @@ const zoomIsMarkedLabel = computed(() => {
             <template v-if="page.cornerMaxError !== null"> · 四角误差 {{ page.cornerMaxError }} 像素</template>
           </span>
           <!-- 定字序的结果（2026-10-11 新模型）：这一页是某个全序的连续一段 → 整页 136 个字全部确定 -->
-          <span v-if="page.located" class="scan-page-order" data-role="scan-located">
-            字序：{{ sequenceLabel(page.located.seqKey) }} · 第 {{ locatedStartPage(page) }} 页起（校验码 {{ page.batchCode }}）
+          <span v-if="page.orderSource" class="scan-page-order" data-role="scan-located">
+            字序：{{ orderSourceLabel(page) }}<template v-if="page.batchCode !== null">（校验码 {{ page.batchCode }}）</template>
           </span>
           <span v-if="page.ok" class="scan-page-stats">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span
@@ -631,13 +758,16 @@ const zoomIsMarkedLabel = computed(() => {
     </div>
 
     <p v-if="!pages.length && !running" class="panel-hint">
-      选好扫描件后点「开始识别」：程序会逐页做「预处理 → 切格（方向不对会自动转正）→ 认纸面上的参考字
-      （认出这一页写了哪些字、该按什么字序对应）→ 红圈识别 → 字形提取」，
-      并把每页的页号来源、写出格数与可疑格报给你；认不出整页字序的页会开一个「逐格确认」让你过一眼，
-      红笔圈掉的字留到下一步核对。
+      选好文件夹后点「开始识别」：程序对每张图片逐页做「预处理 → 切格（方向不对会自动转正）→
+      按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
+      并把每页的页号来源、写出格数与可疑格报给你；认不准的格会开一个「逐格确认」让你过一眼。
     </p>
 
     <!-- 逐格复核（2026-10-11 新模型）：认不出整页字序的页在这里逐格确认 / 手输 -->
     <CharReview v-if="reviewPage" :page="reviewPage" :open="reviewOpen" @close="closeReview" />
+
+    <!-- 更正核对（原独立的第 2 步，2026-10-11 并入本页 —— 决策 八-15 ④）：
+         它是识别结果的下一步处理，不该另占一步；有识别结果时就挂在这里 -->
+    <CorrectionConfirm v-if="pages.length && !running" />
   </div>
 </template>

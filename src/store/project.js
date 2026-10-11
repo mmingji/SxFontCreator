@@ -17,7 +17,7 @@ import { collectGlyphStats } from '../lib/scanMeta.js'
 import { toggleSnapshotExcluded } from '../lib/glyphCheckup.js'
 
 // 默认字体族名：产品命名（决策记录 七-1）。名称表字段自 1.9 起已全部有默认值（决策 四-1），
-// 界面上在第 5 步「生成字体」里改（顶栏原来那个族名输入框已去掉，一处填写）
+// 界面上在第 3 步「生成字体」里改（顶栏原来那个族名输入框已去掉，一处填写）
 const DEFAULT_FAMILY_NAME = 'SxFontCreator'
 
 // 落盘防抖：连续点字、连续切换分类时不至于每次都写一遍 IndexedDB
@@ -30,7 +30,7 @@ function schedulePersist(store) {
 export const useProjectStore = defineStore('project', {
   state: () => ({
     rev: 0,
-    // 字体名称表字段（决策 四-1：**全部给默认值**，零配置也能导出可用字体；想改的在第 5 步页面上改）
+    // 字体名称表字段（决策 四-1：**全部给默认值**，零配置也能导出可用字体；想改的在第 3 步页面上改）
     meta: {
       familyName: DEFAULT_FAMILY_NAME,
       fullName: '我的手写体 SxFontCreator',
@@ -49,30 +49,24 @@ export const useProjectStore = defineStore('project', {
     // 2026-10-08 修订（决策 八-2 重写）：分级改用《通用规范汉字表》规范三级 + 基础字符，
     // 原来的 GB2312 与"频次标准"字段都已删除
     selection: { chars: '' },
-    // 批次列表（八-6、八-9、八-10）。每个批次记：
-    //   chars     —— 该批选字（按字表位置排序，保证字序可复现）；空串表示全部 8274 字
+    // 批次列表：**内部容器**（决策 五-9 ⑤、六-14）。它只剩一个用途 —— 字形分片的命名空间
+    //   （分片键 `sxfont.glyphs.v1.<批次 id>.<页序>`）；字序现在由纸面（字序文件或参考字）决定。
+    //   界面上完全看不到它，也没有"作废"这一态（旧模型里批次 = 用户手上的选字计划）。每个批次记：
+    //   chars     —— 该批字序（按字表位置排序，保证可复现）；空串表示全部 8274 字
     //   pageCount —— 该批模板的字表页数
     //   batchCode —— 12 位校验码，与印在页脚的高 12 位一致（八-10）
-    //   status    —— active 可用 / void 已作废（选字一改即作废）。2026-10-11 新模型（五-9 ⑤）之后
-    //                "作废"不再由用户处理：第 3 步的 ensureScanBatch() 只挑 active 的，一个都没有就补一个
-    //   printed   —— 是否已生成过模板（"未写"这一态的判据之一，八-8）
-    //   source    —— 谁建的：'template' 第 1 步出模板 / 'auto' 第 3 步自动补（**界面不显示**，只作留痕）
-    //   label     —— 给内部看的一行说明（同上，随项目包进出）
-    //   uploads   —— 已绑定的扫描件（八-7；阶段一后半接入）
+    //   source    —— 谁建的：'template' 第 1 步出模板（历史数据）/ 'auto' 识别时自动补（界面不显示）
+    //   label     —— 给内部看的一行说明（同上）
     batches: [],
     // 扫描识别（阶段一「界面串联」B2）：只存**轻量记录**，掩膜与缩略图在 lib/scanCache.js 的内存缓存里
-    //   batchId         —— 这批扫描件所属批次（决策 五-9 ⑤ 之后**不再由用户选**：进第 3 步时由
-    //                      ensureScanBatch() 自动复用最近一个仍有效的，一个都没有就顺手建一个）
-    //   batchConfirmed  —— 是否显式确认"这批扫描件属于该批次"（决策 二-7：页脚读不出时批次码失效，必须显式确认）
-    //   allowVoidBatch  —— 明知是作废批次仍要继续（决策 八-10 的"禁传"要留一个显式放行口）
+    //   batchId         —— 这批扫描件所属批次（**内部容器**，用户看不到也不用选：进第 2 步时由
+    //                      ensureScanBatch() 自动复用最近一个，一个都没有就顺手建一个）
     //   pages           —— 每页的轻量记录（页码 / 校验码 / 计数 / 每格判定，不含掩膜与图）
     //   orderOverrides  —— 用户手选的页序 `{ [fileIndex]: pageNumber }`（只对页脚读不出的页有效）
     //   chars           —— 这一批的字序（识别时按它把"页内格号"映射成字）
     //   summary         —— 最近一次批次汇总判定（轻量：problems / ok / message）
     scan: {
       batchId: null,
-      batchConfirmed: false,
-      allowVoidBatch: false,
       pages: [],
       orderOverrides: {},
       chars: '',
@@ -104,7 +98,7 @@ export const useProjectStore = defineStore('project', {
     // 待重写（决策 八-8 扩充出来的第四种书写状态，2026-10-09 随清单一-12 落地）：
     //   rewrite —— `{ [字]: { at, reason } }` 被**标为待重写**的字：本次不进字体，但记在清单上等重写。
     //   与"剔除"的区别（界面上要说清）：**剔除 = 这个字不要了；待重写 = 先不进字体、以后补上**。
-    //   落地路径：重写那几页 → 第 3 步的「重传这一页」原地覆盖（决策 八-14），不需要新机制。
+    //   落地路径：重写那几页 → 第 2 步的「重传这一页」原地覆盖（决策 八-14），不需要新机制。
     //   同样按"字"记录（不按格，重扫之后仍作数）；与剔除**互斥** —— 同一个字只能占一种。
     rewrite: {},
     // 字体产物（步骤 1.9 / 1.10）：只存**元信息**，不存字节（TTF 能由字形重算，全量约 30 秒；
@@ -125,28 +119,16 @@ export const useProjectStore = defineStore('project', {
       // 体检之后又改过东西（剔除字形、改名称表）→ 快照已经与当前状态不一致，界面要提示"点生成字体重新生成"。
       // 为什么不复用 `built`：`built=false` 只说明"产物需要重建"，而空库时它本来就是 false —— 用它当"快照过期"
       // 会让界面在剔除一个字之后**整块体检面板消失**（实测踩到：剔除后看不到清单、也没法恢复）
-      checkupStale: false,
-      // 项目包导出时间（决策 五-3 的两个提醒节点以此为判据；原字段名 exportedAt 语义含糊，
-      // 容易被读成"下载过字体 zip"—— 而它一直是"备份提醒用"的那一个，2026-10-07 随 3.5 一并改名）
-      projectExportedAt: null
+      checkupStale: false
     },
     // 界面开关（不进"数据"的范畴，但也要能在组件之间共享）：
-    //   backupOpen —— 顶栏「项目备份」弹窗是否打开。放在 store 里是为了让**第 3 / 第 5 步的提醒条**
-    //   也能打开同一个弹窗，而不必把事件从页面根部一层层传下来
-    //   batchManagerOpen —— 第 3 步「批次管理」弹窗是否打开（清单 一-6）。同样放这里：入口在第 3 步，
-    //   但"删掉批次后要刷新第 3 步的批次选择"这类联动需要跨组件读同一个状态
     //   orderMode —— 模板排列方式：'rank' 按使用频率 / 'charset' 笔画序（官方字表顺序，决策 八-11）。
-    //   放进 store 是为了让
-    //   **选字面板与模板预览两处的单选用同一份状态**（2026-10-08 用户要求联动：在选字面板切换排序之后，
-    //   出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"）。它与 selection 不同 —— 切换它
-    //   **不改已建批次的字序**（批次自己记了 order），所以不作废批次；也不进落盘数据（刷新回默认
-    //   "按使用频率"，与它原先作为组件内状态的旧行为一致）
-    //   resetToken / resetNotice —— 「清空项目」（决策 五-8）的两个信号，同样不进落盘数据：
-    //   resetToken 是自增计数器，App.vue 监听它把界面**强制推回第 1 步**（并让第 1 步整块重挂载）；
-    //   resetNotice 是那一次的结果消息（删了多少页分片、释放多少 MB），第 1 步读到即显示、随即清空。
-    //   为什么走 store 而不是父子传参：入口在顶栏、第 1 步在内容区，两者之间隔着 App.vue 一层
-    //   （与 backupOpen 同一个理由）
-    ui: { backupOpen: false, batchManagerOpen: false, orderMode: 'rank', resetToken: 0, resetNotice: '' },
+    //   放进 store 是为了让**选字面板与模板预览两处的单选用同一份状态**（2026-10-08 用户要求联动：
+    //   在选字面板切换排序之后，出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"）。
+    //   它与 selection 不同 —— 切换它**不改已建批次的字序**（批次自己记了 order）；也不进落盘数据。
+    // 2026-10-11（决策 五-10）：原来还有 backupOpen / batchManagerOpen / resetToken / resetNotice
+    //   四个字段，随「项目备份」「批次管理」「清空项目」三个入口一起去掉了。
+    ui: { orderMode: 'rank' },
     storage: { idb: false, idbRev: null, snapshotRev: null },
     saveState: 'idle', // idle | saving | saved | failed —— 状态栏文案的数据源
     dirty: false, // 有改动还没落盘：关页兜底只在这种情况下才写快照
@@ -159,31 +141,12 @@ export const useProjectStore = defineStore('project', {
     selectedCount: (state) => countChars(state.selection.chars),
     // 出模板时要排的字：没选字就是全量（默认体验：零配置也能直接打全量模板）
     charsForTemplate: (state) => (state.selection.chars.length ? state.selection.chars : getAllChars().join('')),
-    activeBatches: (state) => state.batches.filter((batch) => batch.status === 'active'),
-    // 最近一个仍可上传的批次（上传界面默认选它）
-    latestActiveBatch: (state) => {
-      for (let i = state.batches.length - 1; i >= 0; i--) {
-        if (state.batches[i].status === 'active') return state.batches[i]
-      }
-      return null
-    },
-    // 这批扫描件所属的批次（决策 八-7）
+    // 最近一个批次（识别这一步自动复用它，没有就新建一个；决策 五-9 ⑤）
+    latestBatch: (state) => (state.batches.length ? state.batches[state.batches.length - 1] : null),
+    // 这批扫描件所属的批次（内部容器，界面不显示）
     scanBatch: (state) => state.batches.find((item) => item.id === state.scan.batchId) || null,
-    // 所选批次是不是已作废（八-10 的"禁传"要留一个显式放行口）
-    scanBatchIsVoid: (state) => {
-      const batch = state.batches.find((item) => item.id === state.scan.batchId)
-      return !!batch && batch.status === 'void'
-    },
     // 这批识别结果能拿出多少字形（页数 / 写了多少格 / 可疑多少 / 被圈多少 / 去重字数）
     scanGlyphStats: (state) => collectGlyphStats(state.scan.pages),
-    // 要提醒"导出项目包备份"（决策 五-3：只在**识别完成**与**字体生成后**两个节点各提醒一次，
-    // 不做"距上次导出已过 N 天""有未导出的改动"这类常驻计数）。
-    // 判据：有可用识别结果、或已生成字体；且这次会话里还没导出过项目包
-    backupReminder: (state) => {
-      const hasScan = collectGlyphStats(state.scan.pages).pagesUsable > 0
-      const hasFont = state.font.built === true
-      return (hasScan || hasFont) && !state.font.projectExportedAt
-    },
     // 被剔除的字（数组形式，界面与构建都要用）
     excludedChars: (state) => Object.keys(state.excluded || {}),
     excludedCount: (state) => Object.keys(state.excluded || {}).length,
@@ -302,7 +265,7 @@ export const useProjectStore = defineStore('project', {
      * @param {number} info.pageCount 该批模板的字表页数
      * @param {string} [info.chars] 指定字序（默认取当前选字；空选字 = 全量）
      * @param {string} [info.order] 排列方式：'rank' 按使用频率 / 'charset' 笔画序（八-6 的修订、八-11）
-     * @param {string} [info.source] 这一批是谁建的：'template' 第 1 步出模板 / 'auto' 第 3 步自动补
+     * @param {string} [info.source] 这一批是谁建的：'template' 第 1 步出模板 / 'auto' 第 2 步自动补
      * @param {string} [info.label] 给内部看的一行说明（**界面不显示**）
      * @returns {object} 新建的批次
      */
@@ -322,10 +285,7 @@ export const useProjectStore = defineStore('project', {
         // 出模板建的还是扫描时自动补的，决定它能不能代表"用户手上那份纸"
         source: source || 'template',
         label: label || '',
-        createdAt: new Date().toISOString(),
-        status: 'active',
-        printed: true,
-        uploads: []
+        createdAt: new Date().toISOString()
       }
       this.batches.push(batch)
       this.markDirty()
@@ -335,7 +295,7 @@ export const useProjectStore = defineStore('project', {
 
     /**
      * 记一笔"已经生成过模板"（决策 五-9 的收尾：第 1 步不再记批次，只留这条元信息）
-     * 为什么要它：进度判据里"第 1 步完成 / 能不能进第 2、3 步"原本靠 batchCount，而批次现在只由第 3 步
+     * 为什么要它：进度判据里"第 1 步完成 / 能不能进第 2、3 步"原本靠 batchCount，而批次现在只由第 2 步
      *   按需自动建 —— 不换判据的话，生成过模板也进不去下一步（flow.js 的 templatePages 读这里）。
      * 只存元信息、**不存 PDF 字节**：产物按需重建（五-5 的口径）。
      * @param {object} info { sheetPages, charCount, order, scope, fileName }
@@ -353,88 +313,26 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
-    // 作废一个批次（八-9）：作废后不再接受上传，除非用户显式勾选"我知道这是作废模板"
-    voidBatch(id, reason) {
-      const batch = this.batches.find((item) => item.id === id)
-      if (!batch || batch.status === 'void') return false
-      batch.status = 'void'
-      batch.voidReason = reason || ''
-      batch.voidedAt = new Date().toISOString()
-      this.markDirty()
-      schedulePersist(this)
-      return true
-    },
+    // 2026-10-11（决策 六-14）：原来这里的 voidBatch / voidActiveBatches 随"批次作废"这一态一起去掉了 ——
+    // 界面上没有任何放行入口，留着只会把用户卡在第 2 步；新模型里改选字也不会让已打印的纸失效。
 
-    // 把所有仍有效的批次标记作废（选字一改就调用）
-    voidActiveBatches(reason) {
-      let count = 0
-      for (const batch of this.batches) {
-        if (batch.status === 'active') {
-          batch.status = 'void'
-          batch.voidReason = reason || ''
-          batch.voidedAt = new Date().toISOString()
-          count++
-        }
-      }
-      return count
-    },
-
-    /**
-     * 删除一个批次（清单 一-6，口径见《决策记录》八-11）
-     * 两条约束：
-     *   ① **只删已作废的**：仍有效的批次对应的纸可能还在用户手上，直接删掉会让那批纸彻底失去上传资格 ——
-     *      界面上先「作废」再「删除」，是一条明确放弃的路径（作废语义沿用 八-9）。
-     *   ② 这里删的是**批次记录**；该批已落盘的字形分片由调用方先清（分片在 IndexedDB 里，store 不碰存储层）——
-     *      顺序反过来会出现"界面里批次没了、分片还在"的孤儿数据，见 BatchManager.vue 的删除流程。
-     * 若删掉的正是第 3 步「上传识别」**当前在用**的批次，顺带清空那个选择 —— 那边的 watch 会立刻用
-     * ensureScanBatch 补一个（复用别的仍有效批次，或自动新建），所以不会留下"指向一个不存在的批次"。
-     * 识别结果与已落盘的字形不受影响：它们里面的字在识别时就已固化（分片另有键）。
-     * @returns {{ok: boolean, reason?: 'not-found'|'active', clearedScanBatch?: boolean}}
-     */
-    removeBatch(id) {
-      const index = this.batches.findIndex((item) => item.id === id)
-      if (index < 0) return { ok: false, reason: 'not-found' }
-      if (this.batches[index].status !== 'void') return { ok: false, reason: 'active' }
-      const clearedScanBatch = this.scan.batchId === id
-      this.batches.splice(index, 1)
-      if (clearedScanBatch) this.setScanBatch(null) // 一并复位"已确认"与"作废放行"两个勾选
-      this.markDirty()
-      schedulePersist(this)
-      return { ok: true, clearedScanBatch }
-    },
+    // 2026-10-11（决策 六-14）：removeBatch（连同「批次管理」弹窗的"先作废再删"那条路径）一并去掉 ——
+    // 批次对用户不可见之后，"删掉某一批"这个动作没有入口，也没有意义。
 
     // ── 扫描识别（阶段一「界面串联」B2）────────────────────────────────────
-    // 换批次要把"已确认"与"作废放行"一起复位 —— 这两个勾选是针对上一批扫描件的确认，换批次后必须重新确认，
-    // 不能沿用。**用户已经不再手工选批次**（2026-10-11 新模型）：唯一的调用者是 ensureScanBatch()，
-    // 它只会挑仍有效的批次；界面上的"选批次"下拉已删除（决策 五-9 ⑤）
+    // **用户不选批次**（2026-10-11 三步流程，决策 五-9 ⑤ / 六-14）：唯一的调用者是 ensureScanBatch()，
+    // 它复用最近一个批次、没有就新建一个。原来这里还有"显式确认批次"与"作废批次放行"两个勾选的写口，
+    // 随那两个勾选框一起去掉了。
     setScanBatch(batchId) {
       if (this.scan.batchId === batchId) return
       this.scan.batchId = batchId || null
-      this.scan.batchConfirmed = false
-      this.scan.allowVoidBatch = false
-      this.markDirty()
-      schedulePersist(this)
-    },
-
-    // 显式确认"这批扫描件属于所选批次"（决策 二-7：页脚读不出时批次码失效，只能靠这一步）
-    setScanBatchConfirmed(confirmed) {
-      this.scan.batchConfirmed = !!confirmed
-      this.markDirty()
-      schedulePersist(this)
-    },
-
-    // 明知是作废批次仍要继续（决策 八-10 的显式放行口）。
-    // 2026-10-11 起界面上不再有"选批次"这一步，所以这个勾选框也只在"当前批次刚被作废"时才出现；
-    // 动作保留：口径仍是"作废批次默认拦下，用户显式放行才能继续"
-    setScanAllowVoid(allow) {
-      this.scan.allowVoidBatch = !!allow
       this.markDirty()
       schedulePersist(this)
     },
 
     /**
      * 取"这一轮上传识别"要用的批次（2026-10-11 新模型，决策 五-9 ⑤：批次退成内部容器）
-     * 规则：有仍有效的批次就**复用最后一个**（最近生成的那份纸）；一个都没有就用当前选字新建一个。
+     * 规则：有批次就**复用最后一个**；一个都没有就用当前选字新建一个。
      * 为什么要有这一步：新模型下"这批扫描件属于哪个批次"不再由用户回答 —— 纸面上的参考字自己
      *   说得清这一页写了哪些字（认参考字定字序），批次只剩两个用途：字形分片键的命名空间、
      *   以及没有候选库可用时的字序兜底。第 1 步若因改选字把旧批次作废了，这里会自动补一个，用户无感。
@@ -442,7 +340,7 @@ export const useProjectStore = defineStore('project', {
      * @returns {object} 可用的批次对象（一定非空）
      */
     ensureScanBatch() {
-      const last = this.latestActiveBatch
+      const last = this.latestBatch
       if (last) {
         this.setScanBatch(last.id)
         return last
@@ -458,7 +356,7 @@ export const useProjectStore = defineStore('project', {
     },
 
     /**
-     * 逐格复核：把某一格的字改成用户确认的值（第 3 步的逐格复核界面）。
+     * 逐格复核：把某一格的字改成用户确认的值（第 2 步的逐格复核界面）。
      * 三处必须一起改，少一处界面与产物就会打架：
      *   · pageChars[i]   —— 这一页 136 格的字（界面显示、复核计数用）
      *   · cells[i].char  —— 字形计划（scanMeta.buildFinalGlyphPlan）与统计（collectGlyphStats）读的是它，
@@ -523,7 +421,6 @@ export const useProjectStore = defineStore('project', {
       this.scan.summary = null
       this.scan.chars = ''
       this.scan.orderOverrides = {}
-      this.scan.batchConfirmed = false
       this.scan.lastRunAt = null
       // 识别结果一清，之前的配对与确认就都失效了（配对依赖被圈字清单）
       this.resetCorrection()
@@ -616,7 +513,7 @@ export const useProjectStore = defineStore('project', {
     },
 
     // ── 字体产物（步骤 1.9 / 1.10）与字形体检（阶段三 3.2）──────────────────
-    // 改名称表字段（第 5 步的表单）：改了就把"已构建"标记清掉 —— 否则界面会显示上一次的产物，
+    // 改名称表字段（第 3 步的表单）：改了就把"已构建"标记清掉 —— 否则界面会显示上一次的产物，
     // 而产物里的 name 表其实还是旧值（字体字节在内存里，重建只需点一下按钮）
     setFontMeta(patch) {
       Object.assign(this.meta, patch || {})
@@ -642,14 +539,13 @@ export const useProjectStore = defineStore('project', {
       this.font.checkup = checkup || null
       this.font.checkupStale = false
       this.font.builtAt = new Date().toISOString()
-      this.font.projectExportedAt = null
       this.markDirty()
       schedulePersist(this)
     },
 
     // ── 人工剔除（决策 八-8 的"已剔除"，清单 一-8）────────────────────────
     /**
-     * 剔除 / 恢复一个字（第 5 步体检清单里的按钮）。
+     * 剔除 / 恢复一个字（第 3 步体检清单里的按钮）。
      * 剔除后这个字**不进字体、也不计入收录数**；恢复即回到正常。
      * 剔除会清掉"已构建"标记 —— 产物里还留着那个字形，不重新生成就与界面说的不一致。
      */
@@ -680,7 +576,7 @@ export const useProjectStore = defineStore('project', {
       return true
     },
 
-    // 清除全部剔除记录（第 5 步的「全部恢复」）
+    // 清除全部剔除记录（第 3 步的「全部恢复」）
     clearExcluded() {
       const was = Object.keys(this.excluded || {})
       this.excluded = {}
@@ -696,7 +592,7 @@ export const useProjectStore = defineStore('project', {
 
     // ── 待重写清单（决策 八-8 扩充的第四态，清单一-12）────────────────────
     /**
-     * 把一个字标为待重写 / 移出重写清单（第 5 步体检面板里的两个按钮）。
+     * 把一个字标为待重写 / 移出重写清单（第 3 步体检面板里的两个按钮）。
      * **与"剔除"的区别**：剔除是"这个字不要了"；待重写是"这次先不进字体、以后补上"。
      * 两者在构建时的效果一样（都排除），区别在于**有没有一条待办挂在清单上**。
      * 标为待重写时**自动撤销剔除**（同一个字只能占一种状态，见 八-8）。
@@ -733,7 +629,7 @@ export const useProjectStore = defineStore('project', {
       return true
     },
 
-    // 清空整份待重写清单（第 5 步的「全部移出」—— 表示这批字就这样用，不重写了）
+    // 清空整份待重写清单（第 3 步的「全部移出」—— 表示这批字就这样用，不重写了）
     clearRewrite() {
       this.rewrite = {}
       if (this.font.built) {
@@ -748,78 +644,19 @@ export const useProjectStore = defineStore('project', {
     clearFont() {
       this.font = {
         built: false, fileName: null, familyName: null, sizes: null, stats: null,
-        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null, checkupStale: false,
-        projectExportedAt: null
+        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null, checkupStale: false
       }
       this.markDirty()
       schedulePersist(this)
     },
 
-    /**
-     * 清空项目（决策 五-8）：把内存状态复位成"刚装上软件"的样子，并写一份全新的空项目。
-     * **只做五段式的第 ④⑤ 步**：调用方必须先把三样外部的按顺序清掉 ——
-     *   内存缓存（scanCache / buildFont / fontPreview）→ 字形分片（glyphStore.clearGlyphs）
-     *   → 本机存储（persist.clearProject：真相键 + 快照 + 导入保底键）。
-     * 为什么顺序不能换：前两步清的是"别人"，第三步清的是"盘上那一份"，把盘上删干净之后
-     *   内存里还留着旧数据没有关系（下一步就复位了）；反过来先复位内存，中间那一刻盘上还是旧项目，
-     *   万一此时用户刷新，读回来的就是旧项目。
-     *
-     * 为什么复位之后还要 persist 一次：落盘里总得有一份"当前项目"（否则启动时读到 null，
-     *   界面虽然也是空的，但 rev 与 storage 状态无从对齐）；而这一份的 rev 从 0 重新数起
-     *   （saveProject 写 currentRev + 1 = **1**），**IndexedDB 与 localStorage 快照两边同 rev** ——
-     *   下次启动因此不会走"快照更新"那条恢复分支。这一步是"旧项目复活"这个坑的最后一道封口。
-     *
-     * @param {string} [notice] 给界面看的结果消息（删除量由调用方算好传进来），落在第 1 步
-     * @returns {Promise<{ok: boolean, rev: number}>} ok=false 表示最后那次落盘失败（数据仍在内存里）
-     */
-    async resetProject(notice) {
-      // 先掐掉可能还排着的落盘防抖（400ms）：不清的话，排队中的那次"旧数据写入"会在这之后跑一遍
-      // （最终仍会被空项目覆盖，但没必要留这个中间态）
-      clearTimeout(persistTimer)
-      // token 与消息都在 $reset 的清除范围内，所以**必须先算好、复位后再写回**。
-      // 踩点：第二次清空时若不先算，token 会归零再被赋成与上次相同的值，App.vue 的 watch 不触发、
-      // 界面就停在原地不回第 1 步（第一次清空时恰好是 0 → 1，看不出问题）
-      const nextToken = (this.ui.resetToken || 0) + 1
-      this.$reset()
-      this.ui.resetToken = nextToken
-      this.ui.resetNotice = notice || ''
-      this.markDirty()
-      const ok = await this.persist()
-      return { ok, rev: this.rev }
-    },
-
-    // 第 1 步把清空消息显示出来之后调用：那条消息是**一次性**的，读过就撤掉 ——
-    // 否则下次再进这一步、或组件重挂载时，同一条消息会再显示一遍（决策 五-8）
-    consumeResetNotice() {
-      this.ui.resetNotice = ''
-    },
-
-    // 项目备份弹窗（顶部入口与两处提醒条共用同一个弹窗）──────────────────
-    openBackup() {
-      this.ui.backupOpen = true
-    },
-    closeBackup() {
-      this.ui.backupOpen = false
-    },
+    // 2026-10-11（决策 五-10）：原来这里的 resetProject（清空项目）、consumeResetNotice、
+    // openBackup / closeBackup（项目备份）、openBatchManager / closeBatchManager（批次管理）、
+    // markProjectExported（备份提醒）随那三个入口一起去掉了 —— 项目级动作只剩顶栏的「查看完整说明」。
 
     // 模板排列方式（决策 八-11）：界面选择，不进落盘数据 —— 已建批次各自的 order 字段已经留痕
     setOrderMode(mode) {
       this.ui.orderMode = mode === 'charset' ? 'charset' : 'rank'
-    },
-
-    // 批次管理弹窗（第 3 步批次选择旁的入口）────────────────────────────
-    openBatchManager() {
-      this.ui.batchManagerOpen = true
-    },
-    closeBatchManager() {
-      this.ui.batchManagerOpen = false
-    },
-
-    // 导出过项目包（决策 五-3：识别完成与字体生成后各提醒一次，导出过就不再提醒）
-    markProjectExported() {
-      this.font.projectExportedAt = new Date().toISOString()
-      this.markDirty()
-      schedulePersist(this)
     },
 
     /**
@@ -841,7 +678,7 @@ export const useProjectStore = defineStore('project', {
         ? data.rewrite
         : {}
       this.scan = {
-        batchId: null, batchConfirmed: false, allowVoidBatch: false, pages: [],
+        batchId: null, pages: [],
         orderOverrides: {}, chars: '', summary: null, lastRunAt: null,
         ...(data.scan || {})
       }
@@ -855,7 +692,7 @@ export const useProjectStore = defineStore('project', {
       // 注意 `built: false` 必须写在展开**之后**：写在前面会被包里的 true 覆盖（这是个真实踩点）
       this.font = {
         built: false, fileName: null, familyName: null, sizes: null, stats: null,
-        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null, projectExportedAt: null,
+        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null,
         ...(data.font || {}),
         built: false
       }

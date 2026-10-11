@@ -45,6 +45,10 @@ export const SCAN_DEFAULTS = {
   // 参考字候选库（lib/referenceCharReader.js 的 buildLibrary 产物）：**传了它才做"认参考字 + 定字序"**；
   // 不传就退回旧口径（按批次的全局字序取字），供纯逻辑测试与没有字体可用的环境使用。
   library: null,
+  // 这一批的字序（**来自目录里的字序文件**，决策 一-18）：给了它就"文件说了算" ——
+  //   序列定位只在这个全序里找起点；定位不上但页脚读出了页号时，直接按页号从它里面切一段。
+  //   没给（目录里没有字序文件、或文件不合格式）才退回"两份预置全序去猜"，即认参考字那条退路。
+  orderChars: '',
   // 这一页上"有参考字的格"占比低于它 → 判定**不是本程序生成的模板**，整页失败
   // （用户 2026-10-11 拍板：只认自家模板产出的纸，外来图片一个字形也不产生）。
   // 实测自家模板在这条上是 0.99~1.00（参考字是印上去的，即使模糊也能取到）。
@@ -153,13 +157,17 @@ export async function recognizePage(file, options = {}) {
   const chars = opt.chars || getAllChars().join('')
   const fileIndex = opt.fileIndex || 0
   const messages = []
+  // 阶段文案回调（界面用它显示"现在到底在做什么"）：每个动作开始前报一次，文案是给人看的中文动作名
+  const stage = (text) => { if (typeof opt.onStage === 'function') opt.onStage(text) }
 
   // ① 预处理（1.4）：灰度（去噪）+ 二值图 + 彩色原图；彩色最大，用完立刻释放引用
+  stage('正在预处理（去噪、二值化）')
   const prepared = await preprocessFile(file)
   const gray = prepared.gray
   let rgba = prepared.rgba
 
   // ② 切格（1.5）：方向纠正 → 找四角 → 透视校正 → 页脚解码 → 按已知网格切 136 格
+  stage('正在切格（找四角、透视校正、读页脚）')
   const page = analyzePage(gray, {
     autoOrient: opt.autoOrient,
     keepDesignGray: true,
@@ -191,6 +199,9 @@ export async function recognizePage(file, options = {}) {
     footerSelfCheck: null,
     pageChars: null,
     pageNumberSource: null, // sequence（序列定位反推）| footer（页脚读出）| user（手选）| unknown
+    // 这一页的字是**从哪儿来的**：file 目录里的字序文件 / sequence 纸面参考字序列定位 / cells 逐格认字。
+    // 界面要把它显示出来 —— "字序是文件给死的"与"是猜出来的"对用户的信任度完全不同（决策 一-18 ⑤）
+    orderSource: null,
     unsureCells: [],
     // 复核用的候选（每格最多 5 个）：认不准的格在界面上让用户从候选里挑，或直接手输
     charCandidates: null,
@@ -233,6 +244,7 @@ export async function recognizePage(file, options = {}) {
   let extractionBoxes = page.boxes
   let designRedMask = null
   if (opt.detectRedMarks && rgba) {
+    stage('正在识别红笔圈')
     // attachRedMarks 在这些前提不满足时返回 null（页面不可用 / 没有矩阵 / 没开 keepDesignGray / 没彩色像素）：
     // 那就退回"不剔红圈"的切格结果，绝不因为拿不到红掩膜就整页失败
     const attached = attachRedMarks(page, rgba, {
@@ -261,8 +273,16 @@ export async function recognizePage(file, options = {}) {
   //   · 有参考字：优先**序列定位** —— 预置档位的纸连页脚都不用读，页号与整页 136 字一起确定；
   //     定位不上（自定义选字的纸不是任何全序的连续段）→ 退到"逐格识别的字 + 页脚页号"，
   //     认不准的格记进 unsureCells 交界面复核
+  const orderChars = typeof opt.orderChars === 'string' && opt.orderChars.length ? opt.orderChars : ''
   if (opt.library && record.kind !== 'correction' && page.designGray) {
-    const read = readReferenceChars(page.designGray, opt.library, { redMask: designRedMask })
+    stage('正在认参考字、定字序')
+    // 有字序文件时**只试它那一个序列**：文件说了算，不能再拿两份预置全序去猜 ——
+    //   猜中的那一个可能是另一套字序（纸上的字确实按那个顺序排过），于是整页的字被换成另一套，
+    //   而且"看起来还挺对"（这正是 一-18 要把字序显式落成文件的原因）。
+    const sequences = orderChars
+      ? [{ key: 'file', label: '字序文件', chars: Array.from(orderChars) }]
+      : undefined
+    const read = readReferenceChars(page.designGray, opt.library, { redMask: designRedMask, sequences })
     record.read = {
       emptyCount: read.emptyCount,
       sureCount: read.sureCount,
@@ -283,6 +303,8 @@ export async function recognizePage(file, options = {}) {
       record.located = record.read.located
       record.pageNumber = Math.floor(read.located.start / LAYOUT.perPage) + 1
       record.pageNumberSource = 'sequence'
+      // 序列定位用的候选序列就是字序文件时，这一页的字等于"文件给死的那一段"（不是猜出来的）
+      record.orderSource = orderChars ? 'file' : 'sequence'
       record.pageChars = read.located.chars.slice()
       record.batchCode = read.batchCode
       // 整页已由序列确定 → **没有"需要人工确认"的格**（认不出的那几格的字同样已确定）
@@ -303,9 +325,25 @@ export async function recognizePage(file, options = {}) {
           })
         }
       }
+    } else if (orderChars && record.pageNumber !== null) {
+      // 字序文件在、页脚也读出了页号：直接按页号从文件字序里切一段。
+      // 为什么这条路比"逐格认字"硬：文件给死的是**完整字序**，页号一确定，这一页 136 个字就全确定，
+      //   一个也不用猜、也不必人工复核（逐格认字的错会静默进成品，这里没有可猜的余地）。
+      const list = Array.from(orderChars)
+      const start = (record.pageNumber - 1) * LAYOUT.perPage
+      record.pageChars = list.slice(start, start + LAYOUT.perPage)
+      record.pageNumberSource = 'footer'
+      record.orderSource = 'file'
+      record.needReview = false
+      messages.push({
+        level: 'info',
+        text: '这一页的字序取自目录里的字序文件：第 ' + record.pageNumber + ' 页 = 字序里的第 ' +
+          (start + 1) + ' ~ ' + (start + record.pageChars.length) + ' 个字'
+      })
     } else {
       record.pageChars = read.cells.map((c) => (c.empty ? null : c.char))
       record.pageNumberSource = record.pageNumber !== null ? 'footer' : (record.orderFromUser ? 'user' : 'unknown')
+      record.orderSource = 'cells'
       record.needReview = read.unsureCount > 0 || read.emptyCount > 0
       messages.push({
         level: record.needReview ? 'warn' : 'info',
@@ -316,6 +354,7 @@ export async function recognizePage(file, options = {}) {
   }
 
   // ④ 字形提取（1.6）：灰度分层 + 面积过滤，红圈像素按附加图层跳过
+  stage('正在提取笔迹')
   const extracted = extractPage(extractionBoxes)
   const markedSet = new Set(record.markedCells || [])
   const uncertainSet = new Set(record.uncertainCells || [])
@@ -417,7 +456,9 @@ export async function recognizePage(file, options = {}) {
 export async function recognizeBatch(files, options = {}) {
   const opt = { ...SCAN_DEFAULTS, ...options }
   const batch = opt.batch || null
-  const chars = resolveBatchChars(batch)
+  // 这一批的字序：**字序文件优先**（决策 一-18）—— 它给死的就是"这批纸的字序"；
+  // 没有文件时才用批次的全局字序兜底（认参考字那条退路里，"逐格认字 + 页脚页号"要用到它）
+  const chars = opt.orderChars || resolveBatchChars(batch)
   // 新模型（决策 五-9）：**批次校验码不再当闸门** —— 字序由纸面参考字定位决定，而批次是自动建的容器
   // （`store.ensureScanBatch()`），两者的码本来就可能不同，拿它拦批会误伤。页脚码改用**自校验**：
   // recognizePage 把"识别出的字序算出的码"与"纸面读出的码"对一下（footerSelfCheck），对不上只提示复核。
@@ -431,7 +472,9 @@ export async function recognizeBatch(files, options = {}) {
       opt.stopped = true
       break
     }
-    if (opt.onStage) opt.onStage('正在预处理第 ' + (i + 1) + ' / ' + files.length + ' 页…')
+    // onPageStart 报"开始处理第几页"，页内的细阶段由 recognizePage 的 onStage 报（同一个回调透传下去）：
+    // 界面据此显示"第 3 / 12 页 · 正在认参考字"这样的当前动作（决策 二-18 ④）
+    if (opt.onPageStart) opt.onPageStart(i + 1, files.length)
     const { record, cache } = await recognizePage(files[i], {
       ...opt,
       chars,
@@ -447,7 +490,8 @@ export async function recognizeBatch(files, options = {}) {
   }
   const summary = summarizeBatch(pages, {
     expectedBatchCode,
-    sheetPages: batch ? batch.pageCount : undefined
+    // 页数口径：有字序文件时以**文件声明的页数**为准（自检页的判据就靠它：页号超出字表页数即自检页）
+    sheetPages: typeof opt.orderPages === 'number' ? opt.orderPages : (batch ? batch.pageCount : undefined)
   })
   return { pages, caches, summary, chars, stopped: !!opt.stopped }
 }

@@ -48,7 +48,7 @@ const commonPages = Math.ceil(commonCount / LAYOUT.perPage)
 const scope = ref('single')
 const pickerOpen = computed(() => scope.value === 'custom')
 // 参考字字体：**只有内置楷体一条路**（2026-10-11 去掉"选本机字体"，决策 五-9）——
-// 参考字是第 3 步"认字定序"的比对基准，必须与内置子集一致；换了字体，纸上那套参考字就认不出来。
+// 参考字是第 2 步"认字定序"的比对基准，必须与内置子集一致；换了字体，纸上那套参考字就认不出来。
 // （lib/referenceFont.js 的 loadFontFromFile 与 lib/fontFormat.js 的规整能力保留：那是可复用的库能力，
 //   测试仍在覆盖；界面上不再暴露入口。）
 
@@ -200,15 +200,8 @@ function setMessage(text, type) {
   messageType.value = type || 'info'
 }
 
-// 「清空项目」的结果消息（决策 五-8）：顶栏清完之后经 store.ui.resetNotice 送到这里 ——
-// 用户口径是"消息落在第 1 步"，而清空后界面本来就会被推回这一步（App.vue 监听同一个计数器）。
-// `immediate` 是必需的：清空后本组件是**重新挂载**的，消息在挂载之前就已经写好了。
-// 显示之后立刻让 store 撤掉它（一次性），否则下次进这一步又会看见同一条。
-watch(() => store.ui.resetNotice, (text) => {
-  if (!text) return
-  setMessage(text, 'done')
-  store.consumeResetNotice()
-}, { immediate: true })
+// 2026-10-11（决策 五-10）：「清空项目」入口已去掉，原来这里读 store.ui.resetNotice 显示清空结果的那段
+// watch 一并在去掉（第 1 步不再需要承接别的组件送来的消息）。
 
 // 参考字字体固定用内置楷体（理由见上面那段注释：它是认字定序的比对基准）
 async function resolveFont() {
@@ -460,11 +453,15 @@ async function generatePack() {
     </p>
 
     <!-- 纯说明类长文（打印设置 / 书写要求 / 扫描设置）已整合进《使用说明》单文件页（决策 一-15）：
-         界面这里只留"这一步马上要用的三句"，正文只有一份，改口径时不会两处各说各话 -->
+         界面这里只留"这一步马上要用的几句"，正文只有一份，改口径时不会两处各说各话。
+         2026-10-11 三步流程（决策 八-15 ②）：原「手写与扫描」不再占一步，它的要点并进这一段 ——
+         它是纸面动作、本来就只有几句说明，单独占一步只会让流程看起来更长 -->
     <p class="panel-hint">
-      打印：彩色喷墨、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>（有些驱动叫「无边框」）；先打最后一页自检页、用尺子量 1cm 方框确认尺寸。
-      书写：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字（如"日""一""小"）居中写小些；写错的字用红笔圈这一格的<strong>参考字</strong>。
-      扫描：平板扫描仪、<strong>彩色 300dpi、照片模式</strong>；用手机 App 时选<strong>「智能高清」（默认档）</strong>，其它档会识别失败。<br />
+      <strong>打印</strong>：彩色喷墨、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>（有些驱动叫「无边框」）；先打最后一页自检页、用尺子量 1cm 方框确认尺寸。<br />
+      <strong>书写</strong>：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字（如"日""一""小"）居中写小些；不描不改、一笔写成；
+      写错的字用红笔<strong>把这一格的参考字圈起来</strong>，要重写的字写到更正册上（按被圈字的顺序从第 1 格起，一格一个字）。<br />
+      <strong>扫描</strong>：平板扫描仪、<strong>彩色 300dpi、照片模式</strong>，一页一个文件、文件名随意；用手机 App 时选<strong>「智能高清」（默认档）</strong>，其它档会识别失败；
+      纸面别翘边、折叠或受潮。<br />
       <!-- 「写哪些字」下面那段"没写的字会回退、不必写完也能用"按用户要求插在这个位置：
            扫描那一句之后、"完整说明见…"之前；随选择变化的"这次排哪些字、多少页"仍留在上面那一组里 -->
       <span data-role="fallback-hint">没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> —— 所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。</span>

@@ -1,117 +1,71 @@
-// 制作流程的步骤定义与状态推导（阶段一「界面串联」的第一步）
-// 职责：把"七步流程"落成**可推导的状态**——每步是"已完成 / 当前 / 未开始 / 待接入"，由项目数据算出来，
+// 制作流程的步骤定义与状态推导
+// 职责：把"三步流程"落成**可推导的状态**——每步是"已完成 / 当前 / 未开始 / 待接入"，由项目数据算出来，
 //   而不是另一份需要手工维护的状态机。界面只负责按这份状态渲染，判断逻辑（含"为什么还不能进入下一步"）
 //   全在这里，因此可以在 Node 里直接断言（test/flow.mjs）。
-// 数据来源：调用方传入的 progress（批次、上传页数、更正确认、字体产物），目前由 store 提供一部分，
-//   扫描上传 / 更正核对 / 字体构建接入后补齐（步骤 1.10 那一轮）。
-// 为什么把步骤由 7 步并为 6 步：原第 1 步「选字」在第 2 步「出模板」里只是一个下级选项（用户 2026-10-04 拍板），
-//   单独占一步会让流程看起来多一步、也让"选字"与"当前选字 / 自定义选字"两处说法打架。
+// 数据来源：调用方传入的 progress（模板元信息、识别页数、更正确认、字体产物），由 store 提供。
+// 步骤沿革（决策 八-15）：原 7 步并入 6 步（"选字"并进"出模板"，2026-10-04），
+//   2026-10-11 用户拍板"流程不该分这么细"→ **6 步并为 3 步**：
+//     · 原「手写与扫描」不再占一步（它是纸面动作、内容本来只是一段说明，要点并入第 1 步末尾的说明段）；
+//     · 原第 2、3、4 步（写与扫 / 上传识别 / 更正核对）并为第 2 步「识别」；
+//     · 原第 5、6 步（生成字体 / 下载安装）并为第 3 步「生成」。
 
 // 步骤表：key 用于状态推导与界面定位，label 是给用户看的一句话，hint 是这一步要干什么
 export const FLOW_STEPS = [
   {
     key: 'template',
-    label: '选字与出模板',
-    hint: '挑要写的字、生成模板 PDF 打印（可以先打单页确认版式）'
+    label: '选模板',
+    hint: '挑要写的字，下载模板压缩包（模板 PDF + 更正册 + 完整说明 + 字序文件），打印出来照着写'
   },
   {
-    key: 'write',
-    label: '手写与扫描',
-    hint: '照着格子写，按 300dpi 彩色扫描回传'
-  },
-  {
-    key: 'upload',
-    label: '上传识别',
-    hint: '上传扫描件，自动切格、提取笔迹、识别被红笔圈掉的字'
-  },
-  {
-    key: 'correct',
-    label: '更正核对',
-    hint: '核对"更正册第 k 格 → 主区哪个字"，可改派 / 删除 / 补录'
+    key: 'scan',
+    label: '识别',
+    hint: '指定扫描件所在的文件夹，程序读里面的图片与字序文件，逐页切格、提取笔迹，并核对更正'
   },
   {
     key: 'build',
-    label: '生成字体',
-    hint: '矢量化并组装 TTF / woff / woff2，可先做字形体检'
-  },
-  {
-    key: 'download',
-    label: '下载安装',
-    hint: '下载 zip（字体 + CSS + 使用说明）并安装到系统'
+    label: '生成',
+    hint: '矢量化并组装字体，可先做字形体检 / 剔除 / 标记待重写，最后下载 zip 安装到系统'
   }
 ]
 
-// 哪些步骤已经接入实现（2026-10-05：**6 步全部接入**）
-// 「手写与扫描」不需要代码，它是纸面动作 + 说明，所以也算已接入
+// 哪些步骤已经接入实现（三步全部接入）
 export const IMPLEMENTED_STEPS = {
   template: true,
-  write: true,
-  upload: true,
-  correct: true,
-  build: true,
-  download: true
+  scan: true,
+  build: true
 }
 
 // 空的进度快照：调用方只传它有的字段，其余按"还没做"处理
 export function emptyProgress() {
   return {
-    // 2026-10-11（决策 五-9 的收尾）：第 1 步不再记批次，**"生成过模板"改由 templatePages 承载** ——
-    // 它读 store.template.sheetPages（生成成功时写一笔元信息）。原来的 batchCount 做不到这件事：
-    // 批次现在只由第 3 步按需自动建，第 1 步刚生成完模板时它还是 0。
+    // 第 1 步的完成判据：生成过模板（读 store.template 那笔元信息 —— 第 1 步不记批次，决策 五-9 ⑩）
     templatePages: 0,
-    batchCount: 0, // 已记录的批次数（现在只由第 3 步自动建，作统计留痕）
-    activeBatchCount: 0, // 其中仍可上传的批次数（**不再当闸门**，只作统计留痕）
-    uploadedPages: 0, // 已识别的扫描页数
+    uploadedPages: 0, // 已识别的扫描页数（第 2 步）
     glyphCount: 0, // 已提取到笔迹的字形数
     needsCorrection: false, // 主区有没有被红笔圈掉的字（有就必须先确认更正对应）
     correctionConfirmed: false, // 更正对应是否已人工确认
-    fontBuilt: false, // 字体是否已生成
-    exported: false // 是否已下载过（下载步骤没有"完成"以外的强判据）
+    fontBuilt: false // 字体是否已生成（第 3 步的完成判据，也是"下载"能不能点的判据）
   }
 }
 
 // 每一步的完成判据（写成表，便于核对"状态是从哪算出来的"）
 const DONE_WHEN = {
   template: (p) => p.templatePages > 0,
-  write: (p) => p.uploadedPages > 0,
-  upload: (p) => p.uploadedPages > 0,
-  correct: (p) => p.correctionConfirmed === true,
-  build: (p) => p.fontBuilt === true,
-  download: (p) => p.exported === true
+  scan: (p) => p.uploadedPages > 0,
+  build: (p) => p.fontBuilt === true
 }
 
 // 每一步"能不能进入"的判据 + 不能进入时的中文原因（界面直接把 reason 显示出来）
 const AVAILABLE_WHEN = {
   template: () => ({ ok: true, reason: '' }),
-  write: (p) => (p.templatePages > 0
+  scan: (p) => (p.templatePages > 0
     ? { ok: true, reason: '' }
-    : { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }),
-  upload: (p) => {
-    if (p.templatePages === 0) return { ok: false, reason: '还没有生成过正式模板（先在第一步出模板并打印）' }
-    // 2026-10-11 起**不再要求"有仍有效的批次"**（原来会拦下"选字改过、旧批次都作废"的情形）：
-    // 新模型（决策 五-9 ⑤）里批次退成**内部容器**，纸面上的参考字自己说得清"这一页写了哪些字、
-    // 该按什么字序对应"，改选字并不会让已经打印出来的纸作废。第 3 步进来时会自己复用最近一个
-    // 仍有效的批次、一个都没有就顺手补一个（store.ensureScanBatch）—— 若还在这里拦住，那条
-    // "自动补一个"的分支就永远走不到，用户也会看到一个已经不该再出现的"批次作废"概念。
-    return { ok: true, reason: '' }
-  },
-  correct: (p) => (p.uploadedPages > 0
-    ? { ok: true, reason: '' }
-    : { ok: false, reason: '还没有上传识别结果（先在第三步上传扫描件）' }),
-  build: (p) => {
-    if (p.uploadedPages === 0 || p.glyphCount === 0) {
-      return { ok: false, reason: '还没有可用的字形（先完成「上传识别」这一步、提取到笔迹）' }
-    }
-    // 有被红笔圈掉的字时，必须先确认更正对应（决策 一-7 的最后一道闸）：
-    // 没确认就生成，写错的那个字会照样进字体，而用户以为已经改过来了
-    if (p.needsCorrection && !p.correctionConfirmed) {
-      return { ok: false, reason: '主区有被红笔圈掉的字：先到「更正核对」核对并确认，再生成字体' }
-    }
-    return { ok: true, reason: '' }
-  },
-  download: (p) => (p.fontBuilt
-    ? { ok: true, reason: '' }
-    : { ok: false, reason: '还没有生成字体（先在第五步生成字体）' })
+    : { ok: false, reason: '还没有生成过模板（先在第 1 步下载模板压缩包、打印出来写）' }),
+  // 第 3 步**随时可进**（用户 2026-10-11 口径："这一步随时可点进去看"）——
+  // 进来之后页内会提示上一步的状态，且"生成字体""下载"这类动作在扫描没完成 / 没有可用结果时不可点
+  // （判断在组件里，理由是那几条要读具体的识别统计，不是流程级的一句话能说清的）。
+  // 为什么不做成"进不去"：用户想先看一眼名称表、先改族名是合理需求，挡在门外只会让人以为程序坏了。
+  build: () => ({ ok: true, reason: '' })
 }
 
 /**
@@ -129,8 +83,7 @@ export function buildFlowState(progress) {
     // "完成"只看数据，不看功能有没有接入 —— 数据齐了就是齐了（接入与否只影响界面上能不能操作）
     const done = DONE_WHEN[step.key](p)
     const avail = AVAILABLE_WHEN[step.key](p)
-    // "当前"= 第一个还没完成、且条件已满足的步骤；**不跳过未接入的步骤** ——
-    // 跳过会让流程指针落到"下载安装"上（明明还没生成字体），用户看到的是一个不合理的落点
+    // "当前"= 第一个还没完成、且条件已满足的步骤
     let status
     if (done) status = 'done'
     else if (!seenCurrent && avail.ok) {
@@ -188,7 +141,7 @@ export function stepNavigation(state, currentKey) {
   }
 }
 
-// 流程概览文案：给界面上"已完成 x / 6 步"用
+// 流程概览文案：给界面上"已完成 x / 3 步"用
 export function flowSummary(state) {
   return '已完成 ' + state.doneCount + ' / ' + state.total + ' 步'
 }

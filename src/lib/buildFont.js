@@ -80,7 +80,7 @@ export async function collectGlyphInputs(items, { batchId, onStage } = {}) {
  */
 export async function buildFontFromPlan({ items, meta, batchId, woff2WasmUrl, excluded, onProgress, onStage }) {
   if (!items || !items.length) {
-    const err = new Error('没有可用的字形：先在第 3 步识别扫描件，并在第 4 步确认更正对应')
+    const err = new Error('没有可用的字形：先在第 2 步识别扫描件，并在第 2 步确认更正对应')
     err.code = 'NO_GLYPHS'
     throw err
   }
@@ -88,7 +88,7 @@ export async function buildFontFromPlan({ items, meta, batchId, woff2WasmUrl, ex
   const planned = items.filter((it) => !excludedSet.has(it.char))
   const { inputs, missing, masks, fromStore } = await collectGlyphInputs(planned, { batchId, onStage })
   if (!inputs.length) {
-    const err = new Error('一个字形原料都没取到：请回到第 3 步重新识别一次（落盘的掩膜可能已被清空）')
+    const err = new Error('一个字形原料都没取到：请回到第 2 步重新识别一次（落盘的掩膜可能已被清空）')
     err.code = 'NO_INPUTS'
     throw err
   }
