@@ -17,7 +17,6 @@ import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.
 import { buildLibrary } from '../lib/referenceCharReader.js'
 import { loadBuiltinFont } from '../lib/referenceFont.js'
 import { LAYOUT } from '../lib/layout.js'
-import BatchManager from './BatchManager.vue'
 import CharReview from './CharReview.vue'
 
 // ── 参考字候选库（认字与定字序都要它）──────────────────────────────────────
@@ -71,10 +70,7 @@ const stats = computed(() => store.scanGlyphStats)
 // 收批闸门：能不能进下一步（规则在 lib/scanMeta.js，这里只渲染结论）
 const gate = computed(() => evaluateScanGate({
   summary: store.scan.summary || { problems: [] },
-  pages: pages.value,
-  batchConfirmed: store.scan.batchConfirmed,
-  batchIsVoid: store.scanBatchIsVoid,
-  allowVoidBatch: store.scan.allowVoidBatch
+  pages: pages.value
 }))
 
 // ── 页级结果里的"新模型"信息（定位到的字序 / 还要确认几格）──────────────────
@@ -148,12 +144,10 @@ async function start() {
     setMessage('还没有选择扫描件', 'error')
     return
   }
-  // 批次是内部容器：再取一次（复用最近一个仍有效的，或自动补一个）—— 界面上已经无处可选它
+  // 批次是内部容器：再取一次（复用最近一个仍有效的，或自动补一个）—— 界面上已经无处可选它。
+  // 2026-10-11（决策 五-9）：这里原来还有一道"作废批次要显式放行"的拦截，随那个勾选框一起去掉了 ——
+  // 批次对用户不可见，也就没有"作废"这回事（改选字不再作废批次，见 store.setSelection）
   const currentBatch = store.ensureScanBatch()
-  if (store.scanBatchIsVoid && !store.scan.allowVoidBatch) {
-    setMessage('这一批的模板已经作废（改过选字就会作废）：请重新生成模板、重印重写，或勾选"我知道这是作废模板"再继续', 'error')
-    return
-  }
   running.value = true
   cancelled = false
   openIndex.value = null
@@ -442,40 +436,15 @@ const zoomIsMarkedLabel = computed(() => {
 
 <template>
   <div class="step-body">
-    <!-- ① 识别方式 + 批次管理入口 -->
-    <!-- 批次在界面上不再让用户选（2026-10-11 新模型）：进这一步时程序自动复用最近一个仍有效的批次，
-         一个都没有就顺手建一个；上传后按**纸面上的参考字**认出这一页写了哪些字、该按什么字序对应。
-         「批次管理」入口保留：旧批次的字形分片还在库里，要能一次看全、把不要的清掉 -->
+    <!-- ① 识别方式 -->
+    <!-- 2026-10-11（决策 五-9）：批次在界面上彻底消失 —— 原来这里还有一个「批次管理」入口与两个勾选框
+         （"确认这批扫描件属于所选批次"、"我知道这是作废模板"），它们都建立在"批次对用户可见"之上；
+         批次退成内部容器后一并去掉（进这一步时程序自动复用最近一个仍有效的批次，一个都没有就顺手建一个） -->
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">识别方式</span>
         <span class="panel-hint" data-role="scan-mode">
           按纸面上印的<strong>参考字</strong>认出这一页写了哪些字、该按什么字序对应 —— 不需要你先选批次
-        </span>
-        <BatchManager />
-      </div>
-    </div>
-
-    <div class="panel-row">
-      <div class="panel-field">
-        <label class="radio">
-          <input
-            type="checkbox"
-            :checked="store.scan.batchConfirmed"
-            :disabled="running"
-            @change="store.setScanBatchConfirmed($event.target.checked)"
-          />确认这批扫描件属于所选批次
-        </label>
-        <label v-if="store.scanBatchIsVoid" class="radio">
-          <input
-            type="checkbox"
-            :checked="store.scan.allowVoidBatch"
-            :disabled="running"
-            @change="store.setScanAllowVoid($event.target.checked)"
-          />我知道这是作废模板
-        </label>
-        <span class="panel-hint">
-          页脚能读出页序与批次码时会自动核对；页脚读不出的页要靠手选页序 —— 那时批次码也失效了，所以必须在这里显式确认
         </span>
       </div>
     </div>

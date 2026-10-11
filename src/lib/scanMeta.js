@@ -182,7 +182,8 @@ export function evaluateScanGate(input = {}) {
       continue
     }
     if (!row.footerOk) {
-      // 页脚读不出：页序与批次码都不可信 → 必须手选页序 + 显式确认批次（决策 二-7）
+      // 页脚读不出：新模型下不再要求"显式确认批次" —— 字序优先由纸面参考字定位得到（决策 五-9）；
+      // 定位不出来的页才需要手选页序（手选本身即确认）
       needsConfirm = true
       if (page.pageNumber) {
         if (isCorrection) correctionPages++
@@ -203,11 +204,11 @@ export function evaluateScanGate(input = {}) {
   if ((summary.duplicates || []).length) {
     blockers.push('有 ' + summary.duplicates.length + ' 页被重复上传（页脚页号相同）：请去掉重复的那一张')
   }
-  if (input.batchIsVoid && !input.allowVoidBatch) {
-    blockers.push('所选批次已经作废（改过选字就会作废）：要么重新生成模板、重印重写，要么勾选"我知道这是作废模板"再继续')
-  }
-  if (needsConfirm && !input.batchConfirmed) {
-    blockers.push('有扫描件的页脚没读出（页序与批次码都不可信）：请在结果里手选页序，并勾选"确认这批扫描件属于所选批次"')
+  // 2026-10-11（决策 五-9）：界面上「确认这批扫描件属于所选批次」「我知道这是作废模板」两个勾选框
+  // 已随"批次对用户不可见"一起去掉，所以这两条**不能再拦人** —— 用户无从勾选，拦下来就是死路。
+  // 页脚的码仍照常解、照常显示（自校验用）；作废的批次也不再拦（字序由纸面参考字定位得到）。
+  if (needsConfirm) {
+    notes.push('有扫描件的页脚没读出：字序会优先从纸面参考字定位得到；定位不出来的那一页请在结果里手选页序')
   }
   for (const m of summary.problems || []) {
     if (m.level === 'warn') notes.push(m.text)

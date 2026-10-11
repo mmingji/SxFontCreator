@@ -271,7 +271,9 @@ export const useProjectStore = defineStore('project', {
       const next = normalizeSelection(chars).join('')
       if (next === this.selection.chars) return { changed: false, count: countChars(next), voided: 0 }
       this.selection.chars = next
-      const voided = this.voidActiveBatches('选字清单已改动')
+      // 2026-10-11（决策 五-9）：**改选字不再作废批次** —— 批次已退成内部容器，界面上也没有"作废"这个概念了；
+      // 留着它会让自动建的批次被作废，而界面上又没有放行入口，用户直接被卡死。voided 保留是为了不动下面的返回值
+      const voided = 0
       this.markDirty()
       schedulePersist(this)
       return { changed: true, count: countChars(next), voided }
