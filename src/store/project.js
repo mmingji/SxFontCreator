@@ -9,7 +9,7 @@
 // 数据来源与去向：启动时从 persist 读（IndexedDB 是唯一真相，快照只作异常关闭后的恢复），改动后写回。
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
-import { loadProject, saveProject, getStorageState } from '../lib/persist.js'
+import { loadProject, saveProject, getStorageState, clearStorage } from '../lib/persist.js'
 import { getAllChars, countChars } from '../lib/charset.js'
 import { normalizeSelection } from '../lib/frequency.js'
 import { computeBatchCode } from '../lib/batchCode.js'
@@ -415,17 +415,14 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
-    // 清掉识别结果（重新上传前调用；内存缓存由组件一并清）
+    // 清掉识别结果（第 2 步的「清空结果」按钮用；内存缓存由组件一并清）。
+    // **与第 3 步的「清空识别结果」是同一件事**，所以直接走 clearScanResults ——
+    // 两处各写一套清理清单必然走样，而"清干净了没有"正是这个功能最容易出错的地方。
+    // 差别只在界面文案：第 2 步那一下是为了重跑，第 3 步那一下是为了回到"还没识别"。
     clearScan() {
-      this.scan.pages = []
-      this.scan.summary = null
-      this.scan.chars = ''
-      this.scan.orderOverrides = {}
-      this.scan.lastRunAt = null
-      // 识别结果一清，之前的配对与确认就都失效了（配对依赖被圈字清单）
-      this.resetCorrection()
-      this.markDirty()
-      schedulePersist(this)
+      // 注意：clearScanResults 会把 scan.batchId 置空（旧批次的字形分片已经没了，留着那个 id 没意义）；
+      // 第 2 步再次识别时 store.ensureScanBatch() 会自动补一个（决策 五-9 ⑤ 的既有机制）
+      return this.clearScanResults()
     },
 
     /**
@@ -653,6 +650,55 @@ export const useProjectStore = defineStore('project', {
     // 2026-10-11（决策 五-10）：原来这里的 resetProject（清空项目）、consumeResetNotice、
     // openBackup / closeBackup（项目备份）、openBatchManager / closeBatchManager（批次管理）、
     // markProjectExported（备份提醒）随那三个入口一起去掉了 —— 项目级动作只剩顶栏的「查看完整说明」。
+
+    // ── 两级清空（2026-10-12 用户拍板，决策 五-11）──────────────────────────
+    /**
+     * 「清空识别结果」：回到"还没识别"，**模板元信息与名称表保留**。
+     * 范围（五-11 ②）：页级记录 + 字形掩膜分片 + 更正配对 + 体检快照 + 剔除与待重写清单。
+     * 为什么要连体检快照与字体产物元信息一起清（起因见 五-11 ①）：用户真机上出现"体检信息一直留着、
+     *   状态自相矛盾"——光清页记录的话，第 3 步仍显示上一份产物与体检清单，那正是要消灭的现象。
+     * **字形分片按全量清**（不带批次）：清空之后旧批次再没有入口可管理，留着就是谁也管不到的孤儿数据。
+     * 内存里的缓存（页面缩略图 / 掩膜 / 已构建的字体字节 / 预览字体）由调用组件一并释放 ——
+     * store 不认识那些模块级缓存，硬塞进来会让数据层依赖界面层。
+     * @returns {{pages:number, excluded:number, rewrite:number, hadFont:boolean}} 清掉了多少（供界面如实汇报）
+     */
+    clearScanResults() {
+      const removed = {
+        pages: this.scan.pages.length,
+        excluded: Object.keys(this.excluded || {}).length,
+        rewrite: Object.keys(this.rewrite || {}).length,
+        hadFont: this.font.built === true || !!this.font.checkup
+      }
+      this.scan.batchId = null
+      this.scan.pages = []
+      this.scan.summary = null
+      this.scan.chars = ''
+      this.scan.orderOverrides = {}
+      this.scan.lastRunAt = null
+      this.resetCorrection()
+      this.excluded = {}
+      this.rewrite = {}
+      this.clearFont()
+      this.markDirty()
+      schedulePersist(this)
+      return removed
+    },
+
+    /**
+     * 「清空全部数据」：等于回到刚打开软件（决策 五-11 ③）—— 上面那些 + 模板元信息 + 名称表复位 + 选字复位。
+     * **落盘处理**：删掉 IndexedDB 真相与 localStorage 快照，并且**不再写一份空项目** ——
+     *   界面复位后由用户刷新一次，启动时读不到真相、也没有快照，自然得到一份全新的空项目
+     *   （这样连 rev 都从 0 重新开始，比"写一份 rev+1 的空项目"更干净；代价是要刷新，界面会明说）。
+     * 与 五-8（旧「清空项目」）的口径一致：**顺序不能换** —— 先复位内存、再删盘上那一份。
+     * @returns {Promise<{ok:boolean, error?:string}>}
+     */
+    async clearAllData() {
+      this.$reset()
+      // $reset 会把批次表也清空 —— 这正是"回到刚打开软件"该有的样子；接下来只处理盘上那一份
+      const res = await clearStorage()
+      this.dirty = false
+      return res
+    },
 
     // 模板排列方式（决策 八-11）：界面选择，不进落盘数据 —— 已建批次各自的 order 字段已经留痕
     setOrderMode(mode) {

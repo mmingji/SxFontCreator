@@ -212,3 +212,34 @@ export async function getStorageState() {
     snapshotRev: snap ? Number(snap.rev) || 0 : null
   }
 }
+
+/**
+ * 清空本机这一份项目数据（决策 五-11 的两级清空用）。
+ * 为什么必须**两处一起删**：读取规则是"rev 取大者"（五-4）—— 只删真相键的话，
+ *   rev 更大的旧快照会在下次启动把旧项目原样恢复回来（清空项目的年代踩过这个坑，见决策 五-8 ③）。
+ * 调用方（store.clearAllData）随后**不再落盘**：界面复位后由用户刷新一次，
+ *   启动时读不到真相、也没有快照 → 得到一份全新的空项目，落盘由那次启动的第一次改动负责。
+ * @returns {Promise<{ok:boolean, snapshotCleared:boolean, error?:string}>}
+ */
+export async function clearStorage() {
+  let snapshotCleared = false
+  try {
+    localStorage.removeItem(SNAPSHOT_KEY)
+    snapshotCleared = true
+  } catch (e) {
+    // localStorage 不可写（隐私模式等）：继续删真相 —— 遍历顺序上真相才是权威
+  }
+  try {
+    const db = await openDb()
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite')
+      tx.objectStore(DB_STORE).delete(DB_KEY)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error || new Error('清空失败'))
+      tx.onabort = () => reject(tx.error || new Error('清空被中止'))
+    })
+    return { ok: true, snapshotCleared }
+  } catch (e) {
+    return { ok: false, snapshotCleared, error: e && e.message ? e.message : String(e) }
+  }
+}

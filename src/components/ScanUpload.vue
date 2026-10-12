@@ -17,7 +17,7 @@ import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.
 import { buildLibrary } from '../lib/referenceCharReader.js'
 import { loadBuiltinFont } from '../lib/referenceFont.js'
 import { describeOrderFile } from '../lib/orderFile.js'
-import { IMAGE_EXTENSIONS, findOrderFile, pickScanInputs } from '../lib/scanInput.js'
+import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, pickScanInputs } from '../lib/scanInput.js'
 import { LAYOUT } from '../lib/layout.js'
 import CharReview from './CharReview.vue'
 import CorrectionConfirm from './CorrectionConfirm.vue'
@@ -51,14 +51,24 @@ function ensureLibrary(onProgress) {
 
 const store = useProjectStore()
 
-// ── 输入：**一个文件夹**（决策 二-18）──────────────────────────────────────
-// 为什么改成指定文件夹：纸与字序文件本来就是一起给用户的（第 1 步的压缩包），
+// ── 输入：**一个文件夹**（决策 二-18 / 六-13）───────────────────────────────
+// 为什么是文件夹：纸与字序文件本来就是一起给用户的（第 1 步的压缩包），
 //   让程序一次读全比"手动挑图片、再靠认字反推字序"少一个出错环节 —— 目录里那份 字序.json
 //   直接把"这批纸按什么顺序排字"说死（决策 一-18），认参考字降为没有文件时的退路。
-const dirFiles = ref([]) // 目录选择给回来的原始清单（只在内存里，不上传）
+//
+// 主路是 `showDirectoryPicker`（决策 六-13 改判）：它弹的是**系统原生文件夹对话框**（有路径面包屑、
+//   能新建文件夹），正是用户要的"像装软件选路径那样"。代价是 Firefox / Safari 完全不支持它 ——
+//   所以留了一条退路：不支持时自动改用 `<input webkitdirectory>`（普通文件选择器外壳，但能用），
+//   并在界面上明说一句"换 Chrome / Edge 能看到系统文件夹对话框"（不静默降级）。
+// 两条路最后都汇成同一份文件清单，再交给 lib/scanInput.js 的 pickScanInputs 挑图片与字序文件。
 const scanInput = ref(null) // pickScanInputs 的产物：{ images, orderCandidates, ignoredSubdir, ignoredOther, folderName, total }
 const orderFile = ref(null) // 读到的字序文件：{ ok, fileName, file, reason }
 const readingDir = ref(false)
+const folderName = ref('') // 这一轮选的文件夹名（句柄那条路直接有；webkitdirectory 从相对路径里取）
+// 这台浏览器有没有系统文件夹对话框（Firefox / Safari 没有）—— 界面据此决定按钮形态与那句提示
+const canPickDirectory = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
+// 上一次选中的目录句柄（只在本次会话里留着）：ref 而不是普通变量 —— 按钮文案"重读上次的文件夹"要跟着变
+const dirHandle = ref(null)
 // 这一轮用的图片（File 数组，按文件名自然序）
 const files = computed(() => (scanInput.value ? scanInput.value.images : []))
 const running = ref(false)
@@ -179,26 +189,73 @@ watch(() => store.scan.batchId, (id) => {
   if (!id) store.ensureScanBatch()
 })
 
-// 选一个文件夹：程序在里面挑图片（根层、按文件名自然序）并读字序文件（决策 二-18 ②）
-async function onPickDir(event) {
+// ── 目录选择：两条入口，同一套下游处理 ─────────────────────────────────────
+// 允许测试在页面里替换"怎么拿到目录内容"这一步（决策 六-13 的冒烟口径：不再靠 CDP 喂件）。
+// 挂到 window 上是**唯一**能让自动化脚本介入的地方：系统目录对话框无法无人值守驱动，
+//   而识别这一整条链路（挑图片、读字序文件、逐页识别、落盘）都该被冒烟覆盖 —— 替换的只是"选目录"那一下。
+// 默认实现就是真实调用：拿目录句柄 → 读根层文件（lib/scanInput.js 的 collectDirectoryFiles）。
+let pickDirectoryImpl = async () => {
+  const handle = await window.showDirectoryPicker({ mode: 'read' })
+  dirHandle.value = handle
+  return await collectDirectoryFiles(handle)
+}
+
+/** 选一个文件夹：拿到文件清单后统一走 applyDirFiles() */
+async function onPickDirClick() {
+  if (running.value || readingDir.value) return
+  readingDir.value = true
+  try {
+    const res = await pickDirectoryImpl()
+    if (!res) return // 用户取消（AbortError 由下面接住，这里兜住"返回空"的实现）
+    // dirHandle 在默认实现里已经存好；注入的假实现没有句柄，就保持原来那个
+    if (res.handle) dirHandle.value = res.handle
+    applyDirFiles(res.files || [], res.folderName || '', res.subdirFiles || 0)
+  } catch (e) {
+    // 用户点了取消：不是错误，什么都不做（静默返回，界面不弹红字）
+    if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return
+    setMessage('读取文件夹失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    readingDir.value = false
+  }
+}
+
+/** 退路：`<input webkitdirectory>`（Firefox / Safari 没有系统文件夹对话框时用） */
+function onPickDirInput(event) {
   const picked = Array.from(event.target.files || [])
   event.target.value = '' // 清空 input，便于再次选同一个文件夹（File 引用仍然有效）
-  dirFiles.value = picked
+  // 子目录里的文件会一起给出来（带 webkitRelativePath）—— 数量由 pickScanInputs 数出来并报到界面上
+  const folder = picked.length && picked[0].webkitRelativePath
+    ? picked[0].webkitRelativePath.split('/')[0]
+    : ''
+  applyDirFiles(picked, folder, 0)
+}
+
+/**
+ * 拿到文件清单之后一件件做：挑图片 / 找字序文件 → 把结果讲给用户听。
+ * 这是两条入口**共用**的一段 —— 识别下游不关心文件是从系统对话框还是普通选择器来的。
+ * @param {File[]} picked 目录根层 + 子目录里的全部文件
+ * @param {string} folder 目录名（句柄那条路直接给；webkitdirectory 从相对路径取）
+ * @param {number} subdirFiles 句柄那条路数出来的"子文件夹里的文件数"（webkitdirectory 那条路是 0，它自己会算）
+ */
+async function applyDirFiles(picked, folder, subdirFiles) {
   orderFile.value = null
+  folderName.value = folder || ''
   if (!picked.length) {
     scanInput.value = null
-    setMessage('', 'info')
+    setMessage('这个文件夹里没有文件，请确认选的是扫描件所在的那一层', 'error')
     return
   }
   readingDir.value = true
   try {
     const input = pickScanInputs(picked)
+    if (!input.folderName) input.folderName = folderName.value
     scanInput.value = input
     // 字序文件：固定名「字序.json」优先，读不了再试目录里别的 .json（决策 一-18 ② 的容错）
     const found = await findOrderFile(input.orderCandidates, { perPage: LAYOUT.perPage })
     orderFile.value = found
     const parts = ['已选文件夹「' + (input.folderName || '（未命名）') + '」：找到 ' + input.images.length + ' 张图片']
-    if (input.ignoredSubdir) parts.push('忽略了子文件夹里的 ' + input.ignoredSubdir + ' 个文件')
+    const ignored = input.ignoredSubdir || subdirFiles
+    if (ignored) parts.push('忽略了子文件夹里的 ' + ignored + ' 个文件')
     if (input.ignoredOther) parts.push('跳过了 ' + input.ignoredOther + ' 个非图片文件')
     if (!input.images.length) {
       parts.push('这个文件夹里没有可用的图片（支持 ' + IMAGE_HINT + '），请确认选的是扫描件所在的那一层')
@@ -210,13 +267,51 @@ async function onPickDir(event) {
     } else {
       parts.push('文件夹里没有字序文件，这一轮改用「认纸面参考字」定字序（要求这份纸是本程序模板印的）')
     }
-    setMessage(parts.join('；'), 'info')
-  } catch (e) {
-    setMessage('读取文件夹失败：' + (e && e.message ? e.message : e), 'error')
+    setMessage(parts.join('；'), input.images.length ? 'info' : 'error')
   } finally {
     readingDir.value = false
   }
 }
+
+/**
+ * 再次点按钮时的行为：已经有目录句柄就直接重读同一个目录，**不再弹一次对话框**。
+ * 为什么要这样：`showDirectoryPicker` 每次点击都会弹窗，而 `getFile()` 需要"用户激活"还没过期 ——
+ *   直接沿用同一个句柄重读既省一次点击，也绕开了激活窗口过期导致的读取失败。
+ * 传 force=true 时才重新弹（用户想换一个文件夹）。
+ */
+async function reopenDir() {
+  if (!dirHandle.value || running.value || readingDir.value) return
+  readingDir.value = true
+  try {
+    const res = await collectDirectoryFiles(dirHandle.value)
+    applyDirFiles(res.files || [], res.folderName || '', res.subdirFiles || 0)
+  } catch (e) {
+    dirHandle.value = null // 句柄失效（目录被删 / 权限收回）：下一次点击重新弹对话框
+    setMessage('重新读取上次的文件夹失败（' + (e && e.message ? e.message : e) + '），请再点一次「选择文件夹」重选', 'warn')
+  } finally {
+    readingDir.value = false
+  }
+}
+
+const pickLabel = computed(() => {
+  if (readingDir.value) return '正在读取…'
+  if (!files.value.length) return '选择文件夹'
+  return dirHandle.value ? '重读上次的文件夹' : '重新选择文件夹'
+})
+
+onMounted(() => {
+  // 给自动化脚本留一个注入口（默认是真实实现）：见上面 pickDirectoryImpl 的注释
+  window.__sxScanPickDir = {
+    set(fn) { pickDirectoryImpl = typeof fn === 'function' ? fn : pickDirectoryImpl },
+    reset() {
+      pickDirectoryImpl = async () => {
+        const handle = await window.showDirectoryPicker({ mode: 'read' })
+        dirHandle.value = handle
+        return await collectDirectoryFiles(handle)
+      }
+    }
+  }
+})
 
 async function start() {
   if (running.value) return
@@ -481,7 +576,66 @@ function onDropPage(target) {
   applyOrder(overrides, '已交换两页的页序：' + source.fileName + ' → 第 ' + b + ' 页，' + target.fileName + ' → 第 ' + a + ' 页')
 }
 
-// ── 格级视图 ─────────────────────────────────────────────────────────────
+// ── 结果卡片（2026-10-12 用户口径，决策 八-16 ④⑤）──────────────────────────
+// 卡片上只放四样：文件名、状态（颜色 + 一个短词）、一行统计、三个操作。
+// 缩略图与 136 格视图收进「看格子」弹窗（点开才渲染），完整信息塞进 title（hover 才看）——
+// 五六十页时旧的行式列表既常驻几十张 dataURL 图、又被页数拉得很长，卡片化之后列表长度与图片都受控。
+// 状态四态与通用版 二-3 的配色一致：成功 = 绿、失败 = 红、待处理 = 橙、更正册 = 青（不是"失败"，是另一类件）。
+function cardClass(page) {
+  if (!page.ok) return 'is-failed'
+  if (page.kind === 'correction') return 'is-correction'
+  if (page.needReview) return 'is-review'
+  return 'is-ok'
+}
+function cardStatusLabel(page) {
+  if (!page.ok) return '失败'
+  if (page.kind === 'correction') return '更正册'
+  if (page.needReview) return '待确认'
+  return '已识别'
+}
+// 页号与"这个页号是怎么来的"：序列定位 > 页脚读出 > 手选 —— 三种来源的可信度不同，必须逐页说清
+function pageNumberLabel(page) {
+  if (page.kind === 'correction' && page.pageNumber) return '更正册第 ' + page.pageNumber + ' 页（页脚校验码 0）'
+  if (page.pageNumberSource === 'sequence') return '第 ' + page.pageNumber + ' 页（按纸面参考字序定位）'
+  if (page.footerOk) return '第 ' + page.pageNumber + ' 页（页脚读出）'
+  if (page.pageNumber) return '第 ' + page.pageNumber + ' 页（手选）'
+  return '页号待手选'
+}
+// hover 的完整信息（多行）：页号来源 / 校验码 / 方向纠正 / 四角误差 / 字序来源 / 写出统计
+function cardTitle(page) {
+  const lines = [page.fileName, pageNumberLabel(page)]
+  const bits = []
+  if (page.footerOk && page.kind !== 'correction') {
+    bits.push('校验码 ' + page.batchCode + (page.batchMatch === false ? '（与所选批次不符）' : '（与所选批次一致）'))
+  }
+  if (page.orientation && page.orientation.corrected) bits.push('已自动转正 ' + page.orientation.turns * 90 + ' 度')
+  if (page.cornerMaxError !== null && page.cornerMaxError !== undefined) bits.push('四角误差 ' + page.cornerMaxError + ' 像素')
+  if (bits.length) lines.push(bits.join(' · '))
+  if (page.orderSource) lines.push('字序：' + orderSourceLabel(page))
+  // 认不出整页字序的页（自定义选字的纸）：有多少格要人工过一眼 —— 完整说法在 hover 里，
+  // 卡片上只在「逐格确认」按钮上带一个数字（八-16 ④ 的按钮带计数）
+  if (page.ok && page.needReview) {
+    const n = reviewCount(page)
+    lines.push(n ? '需要确认 ' + n + ' 格（整页字序没认出来，逐格认字的结果要你过一眼）' : '已全部确认')
+  }
+  if (page.ok) {
+    lines.push('写出 ' + page.counts.written + ' 格（可疑 ' + page.counts.suspect + '）· 被圈 ' + page.counts.marked + ' 个' +
+      (page.counts.uncertain ? ' · 归属待确认 ' + page.counts.uncertain : ''))
+  } else {
+    lines.push(page.reason || '这一页没能识别')
+  }
+  if (needsManualOrder(page)) lines.push('页脚读不出页号：可在「看格子」里手选页序，或拖到另一张卡片上交换')
+  return lines.join('\n')
+}
+// 弹窗里的一行摘要：与 hover 同一份信息，压成一行（弹窗顶部）
+function sheetSummary(page) {
+  return cardTitle(page).split('\n').slice(1).join('；')
+}
+
+// 弹窗里那一页的页记录（由「看格子」设置 openIndex；没有打开时是 null，弹窗整块不渲染）
+const sheetPage = computed(() => pages.value.find((p) => p.fileIndex === openIndex.value) || null)
+
+// ── 格级视图（在「看格子」弹窗里渲染）────────────────────────────────────
 function togglePage(page) {
   if (!page.ok) return
   openIndex.value = openIndex.value === page.fileIndex ? null : page.fileIndex
@@ -566,7 +720,31 @@ const zoomIsMarkedLabel = computed(() => {
     <!-- ② 文件夹与进度 -->
     <div class="panel-row">
       <div class="panel-field">
-        <label class="file-button" data-role="pick-dir">
+        <!-- 主路：系统文件夹对话框（showDirectoryPicker）；已有句柄时按钮变成"重读上次的文件夹"。
+             退路：这台浏览器没有这个接口（Firefox / Safari）时改用 <input webkitdirectory>，
+             并明说一句换浏览器能得到系统对话框 —— 不静默降级（决策 六-13） -->
+        <template v-if="canPickDirectory">
+          <button
+            class="primary"
+            type="button"
+            data-role="pick-dir"
+            :disabled="running || readingDir"
+            @click="dirHandle && files.length ? reopenDir() : onPickDirClick()"
+          >
+            {{ pickLabel }}
+          </button>
+          <button
+            v-if="dirHandle && files.length"
+            class="text"
+            type="button"
+            data-role="pick-dir-again"
+            :disabled="running || readingDir"
+            @click="onPickDirClick"
+          >
+            换一个文件夹
+          </button>
+        </template>
+        <label v-else class="file-button" data-role="pick-dir">
           选择文件夹
           <input
             type="file"
@@ -574,15 +752,19 @@ const zoomIsMarkedLabel = computed(() => {
             directory
             multiple
             :disabled="running || readingDir"
-            @change="onPickDir"
+            @change="onPickDirInput"
           />
         </label>
-        <button class="primary" :disabled="running || readingDir || !files.length" @click="start">开始识别</button>
-        <button v-if="running" type="button" @click="stop">中止</button>
-        <button class="text" type="button" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
-        <span class="panel-hint">{{ readingDir ? '正在读取文件夹…' : files.length + ' 张图片' }}</span>
+        <button class="primary" data-role="scan-start" :disabled="running || readingDir || !files.length" @click="start">开始识别</button>
+        <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
+        <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
+        <span class="panel-hint">{{ readingDir ? '正在读取文件夹…' : (folderName ? '文件夹「' + folderName + '」· ' : '') + files.length + ' 张图片' }}</span>
       </div>
     </div>
+    <p class="step-note" data-role="picker-note">
+      <template v-if="canPickDirectory">点「选择文件夹」会打开系统文件夹对话框，选中扫描件所在的那一层即可。</template>
+      <template v-else>这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样。想要"像装软件选路径"那样的系统对话框，请用 Chrome 或 Edge 打开（86 及以上版本）。</template>
+    </p>
     <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
     <p v-if="running" class="panel-hint" data-role="scan-progress">
       当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}；
@@ -625,134 +807,134 @@ const zoomIsMarkedLabel = computed(() => {
       </p>
     </div>
 
-    <!-- ④ 页级结果 + ⑤ 格级视图 -->
-    <div v-if="pages.length" class="scan-pages">
+    <!-- ④ 结果总览：**一页一张小卡片**（2026-10-12 决策 八-16 ④⑤）——
+         卡片只有文件名、状态、一行统计与三个操作；缩略图与 136 格视图收进「看格子」弹窗、点开才加载；
+         完整信息（页号来源 / 校验码 / 方向纠正 / 四角误差 / 字序来源 / 写出统计）在 hover 的 title 里 -->
+    <div v-if="pages.length" class="scan-cards" data-role="scan-cards">
       <div
         v-for="page in pages"
         :key="page.fileIndex"
-        class="scan-page-row"
-        :class="{ failed: !page.ok, active: openIndex === page.fileIndex }"
+        class="scan-card"
+        :class="[cardClass(page), { active: openIndex === page.fileIndex }]"
         :data-file-index="page.fileIndex"
         :data-page-number="page.pageNumber === null ? '' : page.pageNumber"
         :data-ok="page.ok ? '1' : '0'"
+        :data-status="cardStatusLabel(page)"
+        :data-role="'scan-card'"
+        :title="cardTitle(page)"
       >
-        <span
-          class="scan-page-handle"
-          :class="{ draggable: needsManualOrder(page) }"
-          :draggable="needsManualOrder(page)"
-          title="页脚读不出的页可以拖到另一页上交换页序"
-          @dragstart="onDragStart(page)"
-          @dragover.prevent
-          @drop="onDropPage(page)"
-        >
-          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-            <path d="M6 3h4M6 8h4M6 13h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-          </svg>
-        </span>
-        <img
-          v-if="images[page.fileIndex] && images[page.fileIndex].thumb"
-          class="scan-page-thumb"
-          :src="images[page.fileIndex].thumb"
-          alt="页面缩略图"
-        />
-        <span v-else class="scan-page-thumb empty">无缩略图</span>
-
-        <div class="scan-page-info">
-          <span class="scan-page-name">{{ page.fileName }}</span>
-          <span class="scan-page-meta">
-            页号：
-            <template v-if="page.kind === 'correction' && page.pageNumber">更正册第 {{ page.pageNumber }} 页（页脚校验码 0）</template>
-            <template v-else-if="page.pageNumberSource === 'sequence'">第 {{ page.pageNumber }} 页（按纸面参考字序定位）</template>
-            <template v-else-if="page.footerOk">第 {{ page.pageNumber }} 页（页脚读出）</template>
-            <template v-else-if="page.pageNumber">第 {{ page.pageNumber }} 页（手选）</template>
-            <template v-else>待手选</template>
-            <template v-if="page.footerOk && page.kind !== 'correction'">
-              · 校验码 {{ page.batchCode }}
-              <span :class="page.batchMatch === false ? 'error' : 'ok'">{{ page.batchMatch === false ? '（与所选批次不符）' : '（与所选批次一致）' }}</span>
-            </template>
-            <template v-if="page.orientation && page.orientation.corrected"> · 已自动转正 {{ page.orientation.turns * 90 }} 度</template>
-            <template v-if="page.cornerMaxError !== null"> · 四角误差 {{ page.cornerMaxError }} 像素</template>
+        <div class="scan-card-head">
+          <!-- 拖动改页序：只有页脚读不出的页可以拖（页脚读出的页序是权威的，决策 二-7） -->
+          <span
+            class="scan-card-handle"
+            :class="{ draggable: needsManualOrder(page) }"
+            :draggable="needsManualOrder(page)"
+            title="页脚读不出版号的页可以拖到另一张卡片上交换页序"
+            @dragstart="onDragStart(page)"
+            @dragover.prevent
+            @drop="onDropPage(page)"
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path d="M6 3h4M6 8h4M6 13h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
           </span>
-          <!-- 定字序的结果（2026-10-11 新模型）：这一页是某个全序的连续一段 → 整页 136 个字全部确定 -->
-          <span v-if="page.orderSource" class="scan-page-order" data-role="scan-located">
-            字序：{{ orderSourceLabel(page) }}<template v-if="page.batchCode !== null">（校验码 {{ page.batchCode }}）</template>
-          </span>
-          <span v-if="page.ok" class="scan-page-stats">
+          <span class="scan-card-name" :title="page.fileName">{{ page.fileName }}</span>
+          <span class="scan-card-badge">{{ cardStatusLabel(page) }}</span>
+        </div>
+        <p class="scan-card-stats">
+          <template v-if="page.ok">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span
               v-if="page.counts.uncertain"
             > · 归属待确认 {{ page.counts.uncertain }}</span>
-          </span>
-          <span v-else class="scan-page-stats error">{{ page.reason }}</span>
+          </template>
+          <template v-else>{{ page.reason }}</template>
+        </p>
+        <div class="scan-card-actions">
+          <button class="text" type="button" :disabled="!page.ok" data-role="view-cells" @click="togglePage(page)">
+            {{ openIndex === page.fileIndex ? '收起格子' : '看格子' }}
+          </button>
+          <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来。
+               2026-10-12 按用户口径由实体按钮改成文本按钮「重传」，位置紧跟「看格子」之后 -->
+          <label
+            class="scan-card-rescan"
+            :class="{ disabled: running || rescanning !== null }"
+            data-role="rescan-page"
+            title="重扫这一页并替换它的识别结果与字形（其它页不动）"
+          >
+            {{ rescanning === page.fileIndex ? '重传中…' : '重传' }}
+            <input
+              type="file"
+              accept="image/*"
+              :disabled="running || rescanning !== null"
+              @change="rescanPage(page, $event)"
+            />
+          </label>
           <!-- 认不出整页字序的页（自定义选字的纸）：认不准的格 + 还没认出来的格交人过一眼。
                全部确认完之后入口仍留着（想再核对一遍 / 改某个字还能进去），只是文案改成"已全部确认" -->
-          <span v-if="page.needReview" class="scan-page-review">
-            {{ reviewCount(page) ? '需要确认 ' + reviewCount(page) + ' 格' : '已全部确认' }}
-            <button type="button" class="text" data-role="review-chars" @click="openReview(page)">逐格确认</button>
-          </span>
-          <span v-if="needsManualOrder(page)" class="scan-order">
-            手选页序
-            <input
-              type="number"
-              min="1"
-              :max="batch ? batch.pageCount : 999"
-              :value="page.pageNumber || ''"
-              :disabled="running"
-              @change="onOrderInput(page, $event.target.value)"
-            />
-          </span>
+          <button
+            v-if="page.needReview"
+            class="text"
+            type="button"
+            data-role="review-chars"
+            @click="openReview(page)"
+          >
+            逐格确认{{ reviewCount(page) ? '（' + reviewCount(page) + '）' : '（已全部确认）' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单页详情（弹窗）：136 格视图 + 单格放大 + 页脚读不出时手选页序。
+         为什么收进弹窗：60 页时行内展开会把列表撑得很长，而且每页那 136 个格子的覆盖层与格子拼图会常驻 DOM -->
+    <div v-if="sheetPage" class="backup-overlay" @click.self="togglePage(sheetPage)">
+      <div class="backup-modal scan-sheet-modal" role="dialog" aria-label="这一页的格子" data-role="scan-sheet">
+        <div class="backup-head">
+          <h3>{{ sheetPage.fileName }}</h3>
+          <button class="text" type="button" data-role="sheet-close" @click="togglePage(sheetPage)">关闭</button>
+        </div>
+        <p class="panel-hint">{{ sheetSummary(sheetPage) }}</p>
+
+        <div v-if="!images[sheetPage.fileIndex] || !images[sheetPage.fileIndex].sheet" class="panel-hint">
+          格子缩略图不可用（刷新页面后内存缓存会清空）—— 重新点「开始识别」跑一遍就能看到
+        </div>
+        <div v-else class="scan-grid-wrap">
+          <img class="scan-grid-sheet" :src="images[sheetPage.fileIndex].sheet" alt="136 格缩略图" />
+          <span
+            v-for="cell in sheetPage.cells"
+            :key="cell.index"
+            class="scan-cell"
+            :class="cellClass(cell)"
+            :style="cellStyle(cell)"
+            :data-index="cell.index"
+            :data-verdict="cell.verdict"
+            :data-marked="cell.marked ? '1' : '0'"
+            :title="cellTitle(cell)"
+            @click="zoomIndex = cell.index"
+          ></span>
+        </div>
+        <p class="panel-hint">
+          蓝框 = 有笔迹、橙框 = 可疑（偏淡或太小）、红框 = 被红笔圈掉、黄虚线 = 圈压在两格之间（归属待确认）；点任意一格看放大与统计
+        </p>
+
+        <div v-if="zoomCell" class="scan-cell-zoom">
+          <div class="scan-cell-zoom-img" :style="zoomStyle"></div>
+          <div class="scan-cell-zoom-info">
+            <strong>第 {{ zoomCell.cell.index }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
+            <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
+          </div>
         </div>
 
-        <button class="text" type="button" :disabled="!page.ok" @click="togglePage(page)">
-          {{ openIndex === page.fileIndex ? '收起格子' : '看格子' }}
-        </button>
-
-        <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来 -->
-        <label
-          class="file-button"
-          :class="{ disabled: running || rescanning !== null }"
-          data-role="rescan-page"
-          title="重扫这一页并替换它的识别结果与字形（其它页不动）"
-        >
-          {{ rescanning === page.fileIndex ? '重传中…' : '重传这一页' }}
+        <!-- 页脚读不出页号的页：在这里手选（页脚读出的页序是权威的，其余页不给这个入口） -->
+        <div v-if="needsManualOrder(sheetPage)" class="scan-order">
+          手选页序
           <input
-            type="file"
-            accept="image/*"
-            :disabled="running || rescanning !== null"
-            @change="rescanPage(page, $event)"
+            type="number"
+            min="1"
+            :max="batch ? batch.pageCount : 999"
+            :value="sheetPage.pageNumber || ''"
+            :disabled="running"
+            @change="onOrderInput(sheetPage, $event.target.value)"
           />
-        </label>
-
-        <!-- 格级视图：136 格拼图 + 判定覆盖层；点单格放大 -->
-        <div v-if="openIndex === page.fileIndex" class="scan-cell-grid">
-          <div v-if="!images[page.fileIndex] || !images[page.fileIndex].sheet" class="panel-hint">
-            格子缩略图不可用（刷新页面后内存缓存会清空）—— 重新点「开始识别」跑一遍就能看到
-          </div>
-          <div v-else class="scan-grid-wrap">
-            <img class="scan-grid-sheet" :src="images[page.fileIndex].sheet" alt="136 格缩略图" />
-            <span
-              v-for="cell in page.cells"
-              :key="cell.index"
-              class="scan-cell"
-              :class="cellClass(cell)"
-              :style="cellStyle(cell)"
-              :data-index="cell.index"
-              :data-verdict="cell.verdict"
-              :data-marked="cell.marked ? '1' : '0'"
-              :title="cellTitle(cell)"
-              @click="zoomIndex = cell.index"
-            ></span>
-          </div>
-          <p class="panel-hint">
-            蓝框 = 有笔迹、橙框 = 可疑（偏淡或太小）、红框 = 被红笔圈掉、黄虚线 = 圈压在两格之间（归属待确认）；点任意一格看放大与统计
-          </p>
-
-          <div v-if="zoomCell" class="scan-cell-zoom">
-            <div class="scan-cell-zoom-img" :style="zoomStyle"></div>
-            <div class="scan-cell-zoom-info">
-              <strong>第 {{ zoomCell.cell.index }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
-              <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
-            </div>
-          </div>
         </div>
       </div>
     </div>

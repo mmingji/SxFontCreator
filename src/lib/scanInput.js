@@ -4,8 +4,11 @@
 //   而"哪些算图片、按什么顺序排、哪份是字序文件、子文件夹里的算不算"全是判据，放在组件里既难读也难测。
 //   这里只做纯逻辑（零浏览器 API，除了最后那个读文件的函数用 `File.text()`），可在 Node 侧直接断言。
 //
-// 目录读取选 webkitdirectory 的代价与实测见 决策 六-13：拿不到完整路径与目录句柄，
-//   所以"相对路径"只能来自 `File.webkitRelativePath`（形如 `扫描件/第1页.jpg`）。
+// 目录读取的两种入口（决策 六-13：主路走 `showDirectoryPicker`，`webkitdirectory` 只作退路）：
+//   · `showDirectoryPicker`：走系统原生目录对话框，拿到**目录句柄**，本模块的 collectDirectoryFiles
+//     负责把句柄读成文件清单（只认根层，子目录只计数）；
+//   · `<input webkitdirectory>`：扁平的 files + `File.webkitRelativePath`（形如 `扫描件/第1页.jpg`）。
+//   两条路最后都汇进同一个 pickScanInputs —— 下游（识别）不必知道自己是从哪条路来的。
 import { ORDER_FILE_NAME, parseOrderFile } from './orderFile.js'
 
 // 认哪些扩展名（决策 二-18 ②）。刻意不含 .gif / .tif：前者动画帧没有意义，后者本项目链路的
@@ -67,6 +70,76 @@ export function naturalCompare(a, b) {
     }
   }
   return ax.length - bx.length
+}
+
+/**
+ * 一个目录句柄 → 本轮要用的文件清单（决策 六-13 的主路：`showDirectoryPicker`）。
+ * 为什么要有它：目录句柄**没有**"一次拿到全部文件"的接口，只能一个个 entry 迭代 —— 而且这段是
+ *   async 的（每读一个 entry 都要 await）。放在这里而不是组件里，一是可测（冒烟注入一个假句柄就能跑），
+ *   二是"读到什么程度算完"这件事与 pickScanInputs 的判据是同一件事，两处分开写必然走样。
+ *
+ * 三条口径与 二-18 ② 完全一致：
+ *   · **只取根层的文件**；子目录整个不进去（只数一遍里面的文件个数，供界面报"忽略了子文件夹里的 N 个文件"）；
+ *   · 顺序不在这里定 —— 交给 pickScanInputs 按文件名自然序排（它也要给 webkitdirectory 那条路排序）；
+ *   · 文件类型不筛（图片 / json / 其它都收），筛选同样归 pickScanInputs。
+ * @param {FileSystemDirectoryHandle} dirHandle
+ * @returns {Promise<{files:Array, folderName:string, skippedSubdirs:number, subdirFiles:number}>}
+ */
+export async function collectDirectoryFiles(dirHandle) {
+  if (!dirHandle || typeof dirHandle.values !== 'function') {
+    throw new Error('目录句柄不可用（没有读到目录内容）')
+  }
+  const files = []
+  let subdirFiles = 0
+  let skippedSubdirs = 0
+  for await (const entry of dirHandle.values()) {
+    if (!entry) continue
+    if (entry.kind === 'directory') {
+      skippedSubdirs++
+      subdirFiles += await countFilesIn(entry, 3)
+      continue
+    }
+    // 只处理普通文件：`getFile()` 在某些浏览器上对特殊条目会抛，抛了就当它不存在（不因为一个坏条目放弃整个目录）
+    if (typeof entry.getFile !== 'function') continue
+    try {
+      const file = await entry.getFile()
+      // 补一个 webkitRelativePath：pickScanInputs 靠它取"目录名"、判"是不是根层"。
+      // 句柄这条路本来就知道层级（根层的文件名前面只有目录名），补上之后两条入口的输入形状就一致了，
+      // pickScanInputs 不必知道自己被哪条路调用（File 对象允许挂自定义属性，结构化克隆会丢掉它，但这里不需要克隆）
+      try {
+        Object.defineProperty(file, 'webkitRelativePath', {
+          value: (dirHandle.name || '') + '/' + file.name,
+          configurable: true,
+          enumerable: false
+        })
+      } catch (e) { /* 个别环境不允许改 File：那就在 pickScanInputs 里按"没有相对路径 = 根层"处理 */ }
+      files.push(file)
+    } catch (e) {
+      // 单个文件读不到（权限 / 已删除）：静默跳过，界面上的"共 N 个文件"会如实少一个
+    }
+  }
+  return {
+    files,
+    folderName: dirHandle.name || '',
+    skippedSubdirs,
+    subdirFiles
+  }
+}
+
+/** 递归数一个子目录里有几个文件（**只为报数**，深度上限防病态目录；数不出来就返回 0） */
+async function countFilesIn(dirHandle, depth) {
+  if (depth <= 0 || !dirHandle || typeof dirHandle.values !== 'function') return 0
+  let n = 0
+  try {
+    for await (const entry of dirHandle.values()) {
+      if (!entry) continue
+      if (entry.kind === 'directory') n += await countFilesIn(entry, depth - 1)
+      else n++
+    }
+  } catch (e) {
+    return n
+  }
+  return n
 }
 
 /**

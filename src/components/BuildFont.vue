@@ -6,7 +6,8 @@
 //   ③ 产物信息（体积 / 字形数 / 覆盖字数 / 跳过与缺原料）
 //   ④ 网页字体预览（决策 四-8）：不装机也能先看观感，原生未收录的字标出来
 //   ⑤ 下载 zip / 单件 / 字形总览图 + 安装与使用说明
-//   ⑥ 字形体检与「剔除 / 待重写」清单（决策 四-7、八-8）
+//   ⑥ 字形体检与「剔除 / 待重写」清单（决策 四-7、八-8）；体检默认收起，只给一行摘要（八-16 ⑥）
+//   ⑦ 两级清空：清空识别结果 / 清空全部数据（决策 五-11，行内确认条 + 标红）
 // 与上一步的关系（用户 2026-10-11 口径：**这一步随时可点进来**，但没料时动作不可点）：
 //   本页顶部始终显示上一步的状态 —— 没有识别结果、或有被圈字还没确认更正时，"生成字体"不可点并说明原因；
 //   字体没生成时，下载区整块给出"先点上面的生成字体"的提示而不是摆一排点不动的按钮。
@@ -16,10 +17,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { buildFinalGlyphPlan } from '../lib/scanFlow.js'
-import { buildFontFromPlan, getLastBuild } from '../lib/buildFont.js'
+import { buildFontFromPlan, clearLastBuild, getLastBuild } from '../lib/buildFont.js'
 import { buildGuideText, buildPreviewHtml, packFontZip } from '../lib/fontPack.js'
 import { downloadBytes, downloadText } from '../lib/download.js'
 import { OVERVIEW_DEFAULTS, overviewFileName, renderOverviewPng } from '../lib/glyphOverview.js'
+import { clearPageCache } from '../lib/scanCache.js'
+import { clearGlyphs } from '../lib/glyphStore.js'
+import { releaseAllPreviewFonts } from '../lib/fontPreview.js'
 import FontPreview from './FontPreview.vue'
 
 const store = useProjectStore()
@@ -135,8 +139,6 @@ async function build() {
       checkup: built.checkup
     })
     syncPreviewBytes() // 刚生成的字节同时交给网页预览用（先看效果再下载）
-    // 体检清单默认只列"要重写的"，没有要重写的就展开"留意"那一栏（一屏给到最有用的信息）
-    showNote.value = !(built.checkup && built.checkup.summary && built.checkup.summary.rewrite > 0)
     const secs = ((performance.now() - t0) / 1000).toFixed(1)
     const kb = (n) => (n / 1024).toFixed(1) + 'KB'
     const ck = built.checkup && built.checkup.summary
@@ -184,7 +186,7 @@ function coverageInfo(extra = {}) {
     : ''
   // 待重写的字（八-8 第四态）：与剔除**分开写** —— 一个是"不要了"，一个是"先不进、以后补"
   const rewriteNote = store.rewriteCount
-    ? '另有 ' + store.rewriteCount + ' 个字标了待重写（' + store.rewriteChars.join('、') + '），本次也没进字体；等你重写那几页后，用第 2 步的「重传这一页」覆盖即可。'
+    ? '另有 ' + store.rewriteCount + ' 个字标了待重写（' + store.rewriteChars.join('、') + '），本次也没进字体；等你重写那几页后，用第 2 步的「重传」覆盖即可。'
     : ''
   return {
     total: font.value.coverage ? font.value.coverage.total : 0,
@@ -297,7 +299,10 @@ async function exportOverview() {
 // ── 字形体检清单（决策 四-7 的替代手段：只提示、不改字形；八-8 的"已剔除 / 待重写"在这里处置）──
 const checkup = computed(() => store.font.checkup)
 const LIST_LIMIT = 40 // 一屏最多列这么多条：全量下可能有几百个字要重写，全铺出来反而看不出重点
-const showNote = ref(true) // "只是留意"那一栏是否展开
+// 体检整块**默认收起**，只显示一行摘要（2026-10-12 用户口径，决策 八-16 ⑥）：
+// 一屏给到"有没有要处理的"，想看细节再点开。**只在进入本页时收起一次** —— 用户点开之后
+// 反复点「生成字体」不该把它又折回去（那会让人以为清单没了）；展开状态不落盘。
+const checkupOpen = ref(false)
 // 已在重写清单里的字：查的是 **store 的状态**、不是体检快照里的字段 —— 标了 / 移出之后
 // computed 立刻重算，不必重跑体检（体检要几秒）
 const rewriteSet = computed(() => new Set(store.rewriteChars))
@@ -340,7 +345,7 @@ function restoreAll() {
 // 剔除 = 这个字不要了；待重写 = 这次先不进字体、以后补上（清单会一直记着，直到你移出）
 function markRewrite(char, reason) {
   store.setGlyphRewrite(char, true, reason)
-  setMessage('已把「' + char + '」放进重写清单：它这次不进字体；重写那几页后用第 2 步的「重传这一页」覆盖，再回这里重新生成', 'info')
+  setMessage('已把「' + char + '」放进重写清单：它这次不进字体；重写那几页后用第 2 步的「重传」覆盖，再回这里重新生成', 'info')
 }
 function unmarkRewrite(char) {
   store.setGlyphRewrite(char, false)
@@ -370,7 +375,7 @@ function exportRewriteList() {
   lines.push('待重写 ' + rows.length + ' 个字 —— 它们这次没有进字体。')
   lines.push('')
   lines.push('怎么用：按下表的页号回去重写那几页（写法见《使用说明》「二、书写」）；')
-  lines.push('写完后到第 2 步「识别」里找到那一页，点「重传这一页」覆盖识别结果，再回第 3 步点「生成字体」。')
+  lines.push('写完后到第 2 步「识别」里找到那一页，点「重传」覆盖识别结果，再回第 3 步点「生成字体」。')
   lines.push('')
   for (const [page, list] of [...byPage.entries()].sort((a, b) => a[0] - b[0])) {
     lines.push((page ? '第 ' + page + ' 页' : '页号未知') + '（' + list.length + ' 个字）')
@@ -391,6 +396,87 @@ function exportRewriteList() {
 const staleAfterExclude = computed(() => !!checkup.value && store.font.checkupStale)
 // 内存里还有没有刚生成的字节（没有就说明刷新过页面，下载会当场重建一次）
 const hasMemoryBuild = computed(() => !!getLastBuild())
+
+// 体检摘要那一行（收起时也看得到）：把"要处理几件"说全 —— 建议重写 / 已剔除 / 重写清单 / 只是留意
+const checkupSummaryText = computed(() => {
+  const ck = checkup.value
+  if (!ck) return ''
+  const parts = [ck.summary ? ck.summary.message : '']
+  if (rewriteList.value.length) parts.push('建议重写 ' + rewriteList.value.length + ' 个')
+  if (onRewriteList.value.length) parts.push('重写清单里 ' + onRewriteList.value.length + ' 个')
+  if (excludedList.value.length) parts.push('已剔除 ' + excludedList.value.length + ' 个')
+  if (noteList.value.length) parts.push('只是留意 ' + noteList.value.length + ' 个')
+  return parts.filter(Boolean).join('；')
+})
+
+// ── 两级清空（2026-10-12 用户拍板，决策 五-11）──────────────────────────────
+// 形态：行内确认条（通用版 四-4：破坏性动作标红、不用原生 confirm）—— 点一下先问一次，说清会删掉什么。
+const clearState = ref(null) // null | 'scan' | 'all'
+const afterClearAll = ref(false) // 清空全部数据之后：提示刷新一次（读数见 store.clearAllData）
+// 两个动作分别会删掉什么、删完剩什么（用户口径：说不清就别做破坏性动作）
+const clearConfirmText = computed(() => (clearState.value === 'all'
+  ? '「清空全部数据」会删掉：识别结果、字形、更正配对、体检与筛选记录、模板记录、名称表与选字 —— ' +
+    '等于回到刚打开软件的状态。本机浏览器里这一份数据会被删除，不能撤销；删完请刷新一次页面。'
+  : '「清空识别结果」会删掉：识别结果、落盘的字形、更正配对、体检快照、剔除与待重写清单 —— ' +
+    '回到"还没识别"。模板记录与名称表保留（把扫描件文件夹重指一次就能重跑识别）。不能撤销。'))
+
+function askClear(kind) {
+  afterClearAll.value = false
+  clearState.value = kind
+  setMessage('', 'info')
+}
+
+/** 释放那些"只活在内存里"的东西：页面缩略图与掩膜缓存、已构建的字体字节、注册进页面的预览字体 */
+function releaseMemory() {
+  releaseAllPreviewFonts()
+  clearLastBuild()
+  clearPageCache()
+}
+
+async function doClear() {
+  const kind = clearState.value
+  if (!kind || busy.value) return
+  busy.value = true
+  try {
+    if (kind === 'scan') {
+      // store.clearScan() 就是「清空识别结果」的数据层实现：页级记录 + 汇总 + 手选页序 + 更正配对，
+      // 外加体检快照、剔除与待重写清单、字体产物元信息（口径见 store.clearScanResults 的注释）
+      const removed = store.clearScanResults()
+      const glyphRes = await clearGlyphs({}) // 全部字形分片（清空之后旧批次再没有入口可管理）
+      releaseMemory()
+      syncPreviewBytes()
+      setMessage(
+        '已清空识别结果：' + removed.pages + ' 页记录' +
+        (glyphRes && glyphRes.removed ? '、' + glyphRes.removed + ' 份字形分片' : '') +
+        (removed.excluded ? '、' + removed.excluded + ' 个剔除记录' : '') +
+        (removed.rewrite ? '、' + removed.rewrite + ' 个待重写字' : '') +
+        (removed.hadFont ? '、上一次的字体产物与体检快照' : '') +
+        '。模板记录与名称表保留着 —— 到第 2 步把扫描件文件夹重指一次就能重跑识别。',
+        'done'
+      )
+    } else {
+      const res = await store.clearAllData()
+      releaseMemory()
+      syncPreviewBytes()
+      if (res.ok) {
+        afterClearAll.value = true
+        setMessage('已清空全部数据，回到刚打开软件的状态。请刷新一次页面（刷新后就是全新的空项目）。', 'done')
+      } else {
+        setMessage('清空全部数据失败：' + (res.error || '未知原因') + '。数据可能仍在盘上，请刷新后再试一次。', 'error')
+      }
+    }
+  } catch (e) {
+    setMessage('清空失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    busy.value = false
+    clearState.value = null
+  }
+}
+
+// 清空全部数据之后：界面里的 store 已被 $reset、盘上那一份也删了，刷新即回到全新状态
+function reloadNow() {
+  window.location.reload()
+}
 </script>
 
 <template>
@@ -497,18 +583,37 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
 
     <!-- ④ 字形体检（阶段三 3.2，决策 四-7）：只提示、不改字形；处置手段是"剔除"或"重写那一格"。
          放在 ready 分支**之外**：剔除一个字之后 `store.font.built` 会被清掉（提示"要重新生成"），
-         如果它在里面，面板会跟着整块消失 —— 那样就看不清单、也没法恢复（实测踩到） -->
+         如果它在里面，面板会跟着整块消失 —— 那样就看不清单、也没法恢复（实测踩到）。
+         2026-10-12（决策 八-16 ⑥）：整块**默认收起**，只显示一行摘要，点开才看清单 -->
     <div v-if="checkup" class="card nested" data-role="glyph-checkup">
       <div class="panel-head">
         <h3>字形体检</h3>
         <span class="panel-hint">只提示、不改字形 —— 字形大小与笔画粗细取决于你的书写</span>
+        <button
+          type="button"
+          class="text"
+          data-role="checkup-toggle"
+          @click="checkupOpen = !checkupOpen"
+        >{{ checkupOpen ? '收起清单' : '看清单' }}</button>
       </div>
-      <p class="panel-hint">{{ checkup.summary.message }}</p>
+      <!-- 摘要那一行：收起时也能一眼看到"有没有要处理的" -->
+      <p class="panel-hint" data-role="checkup-summary">{{ checkupSummaryText }}</p>
+      <!-- 批量动作留在**摘要行上**（不只在展开的清单里）：已剔除的字要能一键恢复、
+           重写清单要能一键导出 / 全部移出 —— 收起状态下也是"一眼看到 + 一步做到"，
+           不必为了恢复一个字先把整张清单铺开（冒烟里当场撞到过这个别扭） -->
+      <div v-if="excludedList.length || onRewriteList.length" class="panel-actions" data-role="checkup-bulk">
+        <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-export" @click="exportRewriteList">导出重写清单</button>
+        <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出重写清单</button>
+        <button v-if="excludedList.length" type="button" class="text" :disabled="busy" data-role="restore-all" @click="restoreAll">
+          恢复全部被剔除的字（{{ excludedList.length }}）
+        </button>
+      </div>
       <p v-if="staleAfterExclude" class="step-note" data-role="checkup-stale">
         体检之后你剔除过字形（或改过名称表）—— 现在显示的是上一次生成时的清单，
         点上面的「生成字体」重新生成一次即生效。
       </p>
 
+      <template v-if="checkupOpen">
       <div v-if="rewriteList.length" class="checkup-group">
         <p class="panel-hint">
           <strong>建议重写（{{ rewriteList.length }}）</strong>：成字后这些字会明显偏小或不成形。
@@ -537,9 +642,7 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
       <div v-if="onRewriteList.length" class="checkup-group" data-role="rewrite-plan">
         <p class="panel-hint">
           <strong>重写清单（{{ onRewriteList.length }}）</strong>：这些字这次不进字体。
-          重写完那几页后，用第 2 步的「重传这一页」覆盖，再回这里点「生成字体」。
-          <button type="button" class="text" :disabled="busy" data-role="rewrite-export" @click="exportRewriteList">导出重写清单</button>
-          <button type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出</button>
+          重写完那几页后，用第 2 步的「重传」覆盖，再回这里点「生成字体」。
         </p>
         <ul class="checkup-list" data-role="rewrite-plan-list">
           <li v-for="r in listSlice(onRewriteList)" :key="'w' + r.char">
@@ -557,9 +660,8 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
       <div v-if="noteList.length" class="checkup-group">
         <p class="panel-hint">
           <strong>只是留意（{{ noteList.length }}）</strong>：不影响成字，看一眼就行
-          <button type="button" class="text" @click="showNote = !showNote">{{ showNote ? '收起' : '展开' }}</button>
         </p>
-        <ul v-if="showNote" class="checkup-list" data-role="note-list">
+        <ul class="checkup-list" data-role="note-list">
           <li v-for="g in listSlice(noteList)" :key="'n' + g.char">
             <span class="checkup-char">{{ g.char }}</span>
             <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
@@ -569,7 +671,7 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
             <button type="button" class="text" :disabled="busy" @click="excludeGlyph(g.char)">剔除这个字</button>
           </li>
         </ul>
-        <p v-if="showNote && noteList.length > LIST_LIMIT" class="panel-hint">
+        <p v-if="noteList.length > LIST_LIMIT" class="panel-hint">
           还有 {{ noteList.length - LIST_LIMIT }} 个字没列出来
         </p>
       </div>
@@ -590,6 +692,41 @@ const hasMemoryBuild = computed(() => !!getLastBuild())
           剔除只影响<strong>这一次生成</strong>的字库：想真正补上，还是重写那一格、重新扫这一页（或用更正册覆盖）。
           重新识别之后，剔除记录仍会保留（可在上面「全部恢复」）。
         </p>
+      </div>
+      </template>
+    </div>
+
+    <!-- ⑤ 清理入口（2026-10-12 用户拍板，决策 五-11）：两级清空，都在这一块里。
+         起因：去掉「项目备份」「清空项目」两个功能页之后，界面上再没有清理旧数据的入口，
+         用户真机上出现"体检信息一直留着、状态自相矛盾"。
+         形态沿用通用版 四-4 / 五-8：**行内确认条**（不用原生 confirm）、按钮标红、说明写清会删掉什么 -->
+    <div class="card nested danger-zone" data-role="clear-zone">
+      <div class="panel-head">
+        <h3>清理数据</h3>
+        <span class="panel-hint">两个动作都<strong>不能撤销</strong>，会先问一次</span>
+      </div>
+      <div class="panel-actions">
+        <button class="text danger" type="button" data-role="clear-scan-open" :disabled="busy || clearState" @click="askClear('scan')">
+          清空识别结果
+        </button>
+        <button class="text danger" type="button" data-role="clear-all-open" :disabled="busy || clearState" @click="askClear('all')">
+          清空全部数据
+        </button>
+      </div>
+
+      <!-- 行内确认条：说清这一次会删掉什么、以及删完剩什么 -->
+      <div v-if="clearState" class="inline-confirm" data-role="clear-confirm">
+        <p class="panel-hint" data-role="clear-confirm-text">{{ clearConfirmText }}</p>
+        <div class="panel-actions">
+          <button class="text danger" type="button" data-role="clear-confirm-yes" :disabled="busy" @click="doClear">
+            {{ clearState === 'all' ? '清空全部数据' : '清空识别结果' }}
+          </button>
+          <button class="text" type="button" data-role="clear-confirm-no" :disabled="busy" @click="clearState = null">取消</button>
+        </div>
+      </div>
+      <!-- 清空全部数据之后要刷新一次才真正回到"刚打开软件"（读数见 store.clearAllData 的注释） -->
+      <div v-if="afterClearAll" class="panel-actions">
+        <button class="primary" type="button" data-role="reload-now" @click="reloadNow">立即刷新</button>
       </div>
     </div>
   </div>

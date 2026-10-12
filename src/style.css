@@ -168,84 +168,113 @@ small {
   font-size: 14px;
 }
 
-/* ── 向导步骤条（2026-10-04 由"平铺 7 步流程"改为向导：一次只显示一步）─────
-   状态由 src/lib/flow.js 的 buildFlowState() 算出来，这里只负责长相：
-   done 已完成（绿勾）/ current 当前（蓝底）/ todo 未开始（灰）/ pending 待接入（虚线） */
-.wizard-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.wizard-head h2 {
-  margin: 0;
-}
-
-.wizard-steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+/* ── 步骤卡片（2026-10-12 按决策 八-16 ① 由"向导步骤条"改成三张平等的卡片）─────
+   三张卡片**样式一致、都能直接点进**：没有"已完成（绿）/ 当前（蓝）/ 进不去（虚线灰）"的区别，
+   也没有"制作流程"标题与"已完成 X / 3 步 · 当前：…"那行汇总（状态自相矛盾就是从那儿来的）。
+   每张卡片底部一条进度：说明"这一步有多少可做、已经做了多少"，数据由 lib/flow.js 的 stepCardList 算。 */
+.step-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
   list-style: none;
-  margin: 10px 0 0;
+  margin: 0;
   padding: 0;
 }
 
-.wizard-step-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #fff;
-  font-size: 12px;
-  color: var(--text-2);
+/* 视口窄时竖排，避免三张卡片挤成一条条 */
+@media (max-width: 860px) {
+  .step-cards {
+    grid-template-columns: 1fr;
+  }
 }
 
-.wizard-step-index {
+.step-card-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.step-card-nav:hover {
+  border-color: #c7d2e0;
+  background: #fafbfd;
+}
+
+.step-card-nav:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 当前所在的那一步：只做一处轻描边，不是"状态色" */
+.step-card-nav.current {
+  border-color: var(--primary);
+  background: #f8fbff;
+}
+
+.step-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-card-index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #eef1f6;
-  color: inherit;
+  color: var(--text-2);
   font-size: 12px;
 }
 
-.wizard-step.status-done .wizard-step-button {
-  border-color: #bbf7d0;
-  background: #f0fdf4;
-  color: var(--success);
-}
-
-.wizard-step.status-done .wizard-step-index {
-  background: #dcfce7;
-}
-
-.wizard-step.status-current .wizard-step-button {
-  border-color: var(--primary);
-  background: #eff6ff;
-  color: var(--primary-dark);
-}
-
-.wizard-step.status-current .wizard-step-index {
+.step-card-nav.current .step-card-index {
   background: var(--primary);
   color: #fff;
 }
 
-.wizard-step.status-pending .wizard-step-button {
-  border-style: dashed;
+.step-card-label {
+  font-size: 14px;
+  font-weight: 600;
 }
 
-.wizard-step.clickable .wizard-step-button {
-  cursor: pointer;
+.step-card-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
 }
 
-.wizard-step-flag {
+.step-card-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.step-bar {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: #eef1f6;
+  overflow: hidden;
+}
+
+.step-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 0.2s;
+}
+
+.step-card-progress-label {
   font-size: 12px;
   color: var(--text-2);
 }
@@ -757,95 +786,160 @@ label.text-file input {
   border-left-color: var(--border);
 }
 
-.scan-pages {
-  display: flex;
-  flex-direction: column;
+/* 结果总览：一页一张小卡片（2026-10-12 决策 八-16 ④⑤ 由行式列表改成卡片）——————
+   旧的行式列表在五六十页时既常驻几十张 dataURL 缩略图、又把页面拉得很长；
+   现在卡片只有名称 / 状态 / 一行统计 / 三个操作，缩略图与 136 格视图在「看格子」弹窗里按需渲染。
+   状态色沿用通用版 二-3 的四态配色：成功 = 绿、失败 = 红、待处理 = 橙、更正册 = 青（另一类件，不是失败）。 */
+.scan-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 8px;
   margin-top: 10px;
 }
 
-/* 页级行：一页一行；失败页整行淡红底 + 左侧红条 */
-.scan-page-row {
-  display: grid;
-  grid-template-columns: 16px 96px 1fr auto;
-  align-items: start;
-  gap: 10px;
+.scan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 10px;
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: var(--radius);
   background: #fff;
 }
 
-.scan-page-row.failed {
+.scan-card.is-ok {
+  border-left-color: var(--success);
+}
+
+.scan-card.is-review {
+  border-left-color: #f59e0b;
+  background: #fffdf7;
+}
+
+.scan-card.is-failed {
+  border-left-color: var(--danger);
   background: #fef2f2;
-  border-color: #fecaca;
 }
 
-.scan-page-row.active {
+.scan-card.is-correction {
+  border-left-color: #2e6e7e;
+  background: #f7fbfc;
+}
+
+.scan-card.active {
   border-color: var(--primary);
+  border-left-color: var(--primary);
 }
 
-.scan-page-handle {
+.scan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.scan-card-handle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 20px;
+  height: 18px;
   color: #c3cad6;
 }
 
-.scan-page-handle.draggable {
+.scan-card-handle.draggable {
   color: var(--text-2);
   cursor: grab;
 }
 
-.scan-page-thumb {
-  width: 96px;
-  height: 68px;
-  object-fit: contain;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: #fff;
-}
-
-.scan-page-thumb.empty {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-.scan-page-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.scan-card-name {
+  flex: 1;
   min-width: 0;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.scan-page-name {
   font-size: 13px;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.scan-page-meta {
+.scan-card-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #eef1f6;
   color: var(--text-2);
 }
 
-.scan-page-meta .error,
-.scan-page-stats.error {
+.scan-card.is-ok .scan-card-badge {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.scan-card.is-review .scan-card-badge {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.scan-card.is-failed .scan-card-badge {
+  background: #fee2e2;
   color: var(--danger);
 }
 
-.scan-page-meta .ok {
-  color: var(--success);
+.scan-card.is-correction .scan-card-badge {
+  background: #d7e9ee;
+  color: #2e6e7e;
 }
 
+.scan-card-stats {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.scan-card.is-failed .scan-card-stats {
+  color: var(--danger);
+}
+
+.scan-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+}
+
+/* 重传：文本按钮形态（2026-10-12 用户口径）—— 靠 label 包一个隐藏 file input 触发选择框，
+   视觉与旁边 .text 按钮一致（下划线来自 .text 的规约，这里只补内边距与光标） */
+.scan-card-rescan {
+  font-size: 12px;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.scan-card-rescan.disabled {
+  color: var(--text-2);
+  text-decoration: none;
+  cursor: default;
+}
+
+.scan-card-rescan input[type='file'] {
+  display: none;
+}
+
+/* 单页详情弹窗：136 格视图比通用弹窗宽一些 */
+.scan-sheet-modal {
+  max-width: 940px;
+}
+
+/* 页脚读不出的页：手选页序（在「看格子」弹窗里） */
 .scan-order {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-top: 8px;
   color: var(--text-2);
 }
 
@@ -858,24 +952,7 @@ label.text-file input {
   border-radius: 6px;
 }
 
-/* 定字序的结果（序列定位命中：这一页是某个全序的连续一段）与"要人工确认几格" */
-.scan-page-order {
-  color: var(--text-2);
-}
-
-.scan-page-review {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #b45309;
-}
-
-/* 格级视图：格子拼图当背景，136 个覆盖层按百分比定位（与图片分辨率无关） */
-.scan-cell-grid {
-  grid-column: 1 / -1;
-  margin-top: 6px;
-}
-
+/* 格级视图（在「看格子」弹窗里）：格子拼图当背景，136 个覆盖层按百分比定位（与图片分辨率无关） */
 .scan-grid-wrap {
   position: relative;
   width: 100%;
@@ -1382,5 +1459,34 @@ label.text-file input {
   min-width: 0;
   color: var(--text-2);
   line-height: 1.6;
+}
+
+/* ── 清理数据（2026-10-12 决策 五-11：破坏性动作标红 + 行内确认条）────────────
+   形态沿用水印「不可逆动作」的既有做法（通用版 四-4 / 项目 五-8）：不用原生 confirm、
+   点一下先在原地展开一条确认说明（写清会删掉什么），确认按钮标红。
+   为什么不用弹窗：这两个动作的对象是"本机的这一份数据"，顺手就在本页解决，不叠一层浮层。 */
+.danger-zone {
+  border-color: #f3d6d6;
+  background: #fffafa;
+}
+
+button.text.danger {
+  color: var(--danger);
+}
+
+button.text.danger:hover {
+  color: #b91c1c;
+}
+
+.inline-confirm {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #f3d6d6;
+  border-radius: var(--radius);
+  background: #fff5f5;
+}
+
+.inline-confirm .panel-actions {
+  margin-top: 8px;
 }
 
