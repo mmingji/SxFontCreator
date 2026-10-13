@@ -145,8 +145,7 @@ async function build() {
     setMessage('字体已生成：' + chars.length + ' 个字形，TTF ' + kb(built.ttf.byteLength) +
       (built.woff2 ? '、woff2 ' + kb(built.woff2.byteLength) : '（woff2 不可用，已跳过）') +
       '；用时 ' + secs + ' 秒' + checkNote +
-      (suspect ? '；这批里有 ' + suspect + ' 个可疑字形（偏淡或写得太小），可以回第 2 步的格级视图逐格看' : '') +
-      '。下面的下载区可以取走了', 'done')
+      (suspect ? '；这批里有 ' + suspect + ' 个可疑字形（偏淡或写得太小），可以回第 2 步的格级视图逐格看' : ''), 'done')
     return built
   } catch (e) {
     setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
@@ -480,7 +479,10 @@ function reloadNow() {
       <span v-for="(p, i) in plan.problems" :key="'p' + i">{{ p }} </span>
     </p>
 
-    <div class="panel-row">
+    <!-- 名称表：**生成过之后就不再出现**（2026-10-13 用户口径：点了生成字体，这一块也不要了）——
+         字体元信息此刻已经固化进产物，留着输入框只会让人误改（改了要重新生成才有意义）；
+         想改就点标题行的「重新生成」回到生成前 -->
+    <div v-if="!ready" class="panel-row">
       <div class="panel-field meta-grid">
         <label v-for="field in META_FIELDS" :key="field.key" class="meta-field">
           <span class="field-label">{{ field.label }}</span>
@@ -504,6 +506,11 @@ function reloadNow() {
       <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
     </div>
     <p v-if="message" class="panel-message" :class="messageType" data-role="build-message">{{ message }}</p>
+    <!-- 字节不在内存里时的提示（2026-10-13 用户口径：**放在"字体已生成：…"那条消息的位置**，
+         且只在后者不显示时才出现）—— 刚生成完内存里有字节，不提示；刷新过页面才提示 -->
+    <p v-if="ready && !hasMemoryBuild" class="panel-hint" data-role="bytes-rebuild-note">
+      字体字节在刷新后不在内存里了 —— 下载时会在打包步骤自动重建一次（约 30 秒），不用重扫。
+    </p>
 
     <!-- 生成过之后：「重新生成」挂在步骤标题行右侧（与第 1 步「更新预览」同一个位置）——
          点它回到"点了生成字体之前"的状态（清产物、留名称表与字形）。
@@ -531,10 +538,6 @@ function reloadNow() {
         收录 <strong>{{ font.coverage.total }}</strong> 个字<span v-if="font.coverage.fromCorrection">，其中 {{ font.coverage.fromCorrection }} 个来自更正册</span>；
         跳过 {{ font.skipped }} 个<span v-if="font.missing">、缺原料 {{ font.missing }} 个</span>
       </p>
-      <p v-if="!hasMemoryBuild" class="panel-hint">
-        字体字节在刷新后不在内存里了 —— 下载时会在打包步骤自动重建一次（约 30 秒），不用重扫。
-      </p>
-
       <p class="panel-hint" data-role="install-how">
         <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」；macOS 双击 → 「安装字体」；
         <strong>装完请重启 Word / PS</strong>。
@@ -553,18 +556,9 @@ function reloadNow() {
         <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
       </div>
 
-      <p class="panel-hint" data-role="zip-content">
-        <strong>zip 内容</strong>：<strong>{{ font.fileName }}.ttf / .woff / .woff2</strong>、<strong>font.css</strong>、
-        <strong>使用说明.txt</strong>、<strong>preview.html</strong>（双击看样张）；族名 <strong>{{ font.familyName }}</strong>。
-      </p>
-      <p class="panel-hint">
-        <strong>字形总览图</strong>：把收录的 {{ font.coverage.total }} 个字排成一张 PNG（约 {{ Math.ceil(font.coverage.total / 25) }} 行），
-        标注族名、版本、收录字数与生成时间，可用作<strong>版权登记</strong>材料。
-      </p>
-
-      <!-- 网页字体预览（决策 四-8）：用刚生成的字节当场注册，先看效果再下载 -->
+      <!-- 网页字体预览（决策 四-8）：用刚生成的字节当场注册，先看效果再下载。
+           标题与"收录情况"那一行由组件自己渲染（2026-10-13 用户口径：收录情况紧跟"字体预览"四个字） -->
       <div class="card nested">
-        <h3>字体预览</h3>
         <FontPreview
           :bytes="previewBytes"
           :covered-chars="font.coverage ? font.coverage.chars : []"
@@ -582,8 +576,8 @@ function reloadNow() {
          2026-10-12（决策 八-16 ⑥）：整块**默认收起**，只显示一行摘要，点开才看清单 -->
     <div v-if="checkup" class="card nested" data-role="glyph-checkup">
       <div class="panel-head">
-        <h3>字形体检</h3>
-        <span class="panel-hint">只提示、不改字形 —— 字形大小与笔画粗细取决于你的书写</span>
+        <!-- 说明紧跟"字形体检"四个字（2026-10-13 用户口径：不要被推到行尾去） -->
+        <h3>字形体检 <span class="panel-hint">只提示、不改字形 —— 字形大小与笔画粗细取决于你的书写</span></h3>
       </div>
       <!-- 摘要那一行：收起时也能一眼看到"有没有要处理的"。
            2026-10-13 用户口径：「看清单」按钮**放在摘要文字前面**、默认用主题色（原来在右上角、要悬停才变蓝） -->

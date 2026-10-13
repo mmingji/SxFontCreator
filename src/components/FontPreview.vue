@@ -110,19 +110,21 @@ function clearText() {
 
 <template>
   <div class="font-preview">
-    <p class="panel-hint">
-      预览里未收录的字会回退成系统字体；装进 Word 后，这些字可能显示成方框。
-    </p>
+    <!-- 标题行（2026-10-13 用户口径：标题从父组件挪进来 —— "收录情况"要**紧跟"字体预览"四个字**） -->
+    <div class="panel-head">
+      <h3>字体预览 <span v-if="bytes && !fontNote" class="panel-hint" data-role="preview-coverage">
+        收录情况：这套字体共收录 <strong>{{ coveredChars.length }}</strong> 个字，当前预览里未收录 <strong>{{ analysis.missingCount }}</strong> 个。
+      </span></h3>
+    </div>
 
     <div v-if="!bytes" class="panel-actions">
-      <button type="button" class="primary" :disabled="loading" @click="emit('request-bytes')">加载预览</button>
+      <button type="button" class="text accent" :disabled="loading" @click="emit('request-bytes')">加载预览</button>
       <span class="panel-hint">
         {{ loading ? loadingText : '内存里没有字体字节（刷新过页面了）：点这里会用已落盘的笔迹掩膜重建一次，全量约 30 秒。' }}
       </span>
     </div>
 
     <template v-else>
-      <label class="field-label" for="font-preview-text">预览文本（输入什么就实时显示什么）</label>
       <textarea
         id="font-preview-text"
         v-model="text"
@@ -159,10 +161,8 @@ function clearText() {
         <p v-if="!analysis.total" class="panel-hint">上面输入框里还没有文字。</p>
       </div>
 
-      <p class="panel-hint">
-        收录情况：这套字体共收录 <strong>{{ coveredChars.length }}</strong> 个字；
-        上面这段文字里命中 <strong>{{ analysis.coveredCount }}</strong> 个、未收录 <strong>{{ analysis.missingCount }}</strong> 个{{ analysis.missing.length ? '（去重后 ' + analysis.missing.length + ' 个）' : '' }}。
-      </p>
+      <!-- 2026-10-13 用户口径：原来这里还有一段"收录情况：…"——已挪到标题行（紧跟"字体预览"），
+           这里只留"未收录的字"的清单（哪些字没收录才是要看的） -->
       <p v-if="analysis.missing.length" class="font-preview-missing">
         未收录的字：
         <span v-for="ch in analysis.missing" :key="ch" class="font-preview-char missing">{{ ch }}</span>
