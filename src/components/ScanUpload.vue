@@ -682,6 +682,17 @@ function onDragStart(page) {
   if (!needsManualOrder(page)) return
   dragFrom.value = page.fileIndex
 }
+/**
+ * 拖到卡片上时判断"这里能不能放下"（2026-10-13 修）：**只有页脚读不出的页是合法目标**。
+ * 浏览器只在 `dragover` 被 preventDefault 时才允许放置 —— 非法的目标不拦，光标会是"禁止"，
+ * 用户一看就知道那张卡片不能换。原来 `@dragover.prevent` 挂在 12×18 的手柄上，卡片本体不是合法目标，
+ * 于是"把卡片拖到另一张卡片上松手"毫无反应（子代理实测：卡片本体 false、手柄 true）。
+ */
+function onDragOver(page, event) {
+  if (dragFrom.value === null) return
+  if (!needsManualOrder(page)) return
+  event.preventDefault()
+}
 function onDropPage(target) {
   const from = dragFrom.value
   dragFrom.value = null
@@ -1012,17 +1023,21 @@ const zoomIsMarkedLabel = computed(() => {
         :data-status="cardStatusLabel(page)"
         :data-role="'scan-card'"
         :title="cardTitle(page)"
+        @dragover="onDragOver(page, $event)"
+        @drop="onDropPage(page)"
       >
         <div class="scan-card-head">
-          <!-- 拖动改页序：只有页脚读不出的页可以拖（页脚读出的页序是权威的，决策 二-7） -->
+          <!-- 拖动改页序：只有页脚读不出的页可以拖（页脚读出的页序是权威的，决策 二-7）。
+               2026-10-13 修：**放置区是整张卡片**，不再只绑在这个小手柄上 —— 原来 @dragover / @drop
+               都挂在这里，而手柄只有 12×18 像素（卡片 359×83，面积比 138:1）：用户按直觉把卡片拖到
+               另一张卡片上松手，浏览器判"这里不是放置目标"→ 毫无反应（子代理实测：dragover 是否
+               preventDefault —— 卡片本体 false、手柄 true）。手柄只管"从这里开始拖" -->
           <span
             class="scan-card-handle"
             :class="{ draggable: needsManualOrder(page) }"
             :draggable="needsManualOrder(page)"
-            title="页脚读不出版号的页可以拖到另一张卡片上交换页序"
+            title="拖动这个手柄，放到另一张卡片上即可交换两页的页序（只有页脚读不出版号的页能拖）"
             @dragstart="onDragStart(page)"
-            @dragover.prevent
-            @drop="onDropPage(page)"
           >
             <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
               <path d="M6 3h4M6 8h4M6 13h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />

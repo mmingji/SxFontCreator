@@ -144,6 +144,7 @@ export function evaluateScanGate(input = {}) {
   let usablePages = 0
   let needsConfirm = false
   let batchMismatch = 0
+  let footerlessFailed = 0 // 页脚读不出、且整页失败的页数（见下面失败分支的注释）
 
   // 判据优先用 summarizeBatch 的 rows，但**只在行数与页数对得上时**才信它 ——
   // 汇总可能来自上一轮（或还没重算），那时 rows 与 pages 描述的不是同一批件，
@@ -175,18 +176,26 @@ export function evaluateScanGate(input = {}) {
     if (!row.ok || !page.ok) {
       // 单页失败：跳过并标红（决策 二-6：明确失败、提示重扫那一页）
       skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: page.reason || '这一页没能识别' })
-      if (!row.footerOk) needsConfirm = true
+      // 2026-10-13 修（子代理实测发现的真缺陷）：**失败的页不再计入"需要手选页序"** ——
+      //   它没有「手选页序」入口（`needsManualOrder` 要求整页成功），原来这里也置 needsConfirm，
+      //   于是提示让用户"在它的结果卡片上点「手选页序」"，而那张卡片上根本没有那个按钮。
+      //   这类页（页脚读不出 → 方向判据不成立 → 整页失败）单独数出来，下面给一条说清出路的提示。
+      if (!row.footerOk) footerlessFailed++
       continue
     }
     if (!row.footerOk) {
       // 页脚读不出：新模型下不再要求"显式确认批次" —— 字序优先由纸面参考字定位得到（决策 五-9）；
       // 定位不出来的页才需要手选页序（手选本身即确认）
-      needsConfirm = true
       if (page.pageNumber) {
         if (isCorrection) correctionPages++
         else usablePages++
-        notes.push(label + ' 的页序是手选的：请确认它确实是第 ' + page.pageNumber + ' 页')
+        // 页号的来源要说准（2026-10-13）：序列定位定出来的页号不是"手选"，说成手选会让人以为要他去确认
+        notes.push(label + ' 的页脚读不出：页序按' +
+          (page.pageNumberSource === 'sequence' ? '纸面参考字序定位得到' : '手选定为') +
+          '第 ' + page.pageNumber + ' 页')
       } else {
+        // 真的需要用户定页序：这时卡片上才有「手选页序」入口（与 needsManualOrder 同一判据）
+        needsConfirm = true
         skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: '页脚读不出、也还没手选页序' })
       }
       continue
@@ -215,9 +224,18 @@ export function evaluateScanGate(input = {}) {
   // 页脚的码仍照常解、照常显示（自校验用）；作废的批次也不再拦（字序由纸面参考字定位得到）。
   if (needsConfirm) {
     // 2026-10-13 用户口径：提示得说清**操作在哪**（原来只说"在结果里手选页序"，用户找了半天）——
-    // 卡片上现在直接有「手选页序」入口（点了打开这一页的格子弹窗，底部就是填页号的框）
+    // 卡片上现在直接有「手选页序」入口（点了打开这一页的格子弹窗，底部就是填页号的框）。
+    // 2026-10-13 再改：这句只在**真的需要用户定页序**时出现（needsConfirm 的置真条件已收窄），
+    //   所以它说的入口一定存在 —— 整页失败的页另有下面那条说明。
     notes.push('有扫描件的页脚没读出：字序会优先从纸面参考字定位得到；定位不出来的那一页，' +
       '在它的结果卡片上点「手选页序」填上第几页（也可以把卡片拖到另一张上交换）')
+  }
+  if (footerlessFailed > 0) {
+    // 2026-10-13（子代理真件实测发现的真缺陷）：页脚读不出 → **方向纠正的判据也不成立** → 整页失败，
+    //   这种页没有「手选页序」入口（那要求整页成功）。原来提示把用户指向一个不存在的按钮，
+    //   这里改成说清它为什么没得选、以及出路是什么。
+    notes.push('有 ' + footerlessFailed + ' 页的页脚没读出来、方向也就认不准：整页没能识别 —— ' +
+      '把纸按横向放正重拍或重扫这一页（这几页没法在结果里指定页序）')
   }
   for (const m of summary.problems || []) {
     if (m.level === 'warn') notes.push(m.text)

@@ -919,7 +919,10 @@ label.text-file input {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 18px;
+  /* 命中区放大（2026-10-13）：原来可拖区域就是 12×18 的图标本身，鼠标很难稳稳按上去。
+     图标尺寸不变，用 padding 把它撑到约 24×32，负外边距抵消对布局的影响 */
+  padding: 7px 6px;
+  margin: -7px -2px;
   color: #c3cad6;
 }
 
