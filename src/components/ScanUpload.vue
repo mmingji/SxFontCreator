@@ -842,24 +842,13 @@ const zoomIsMarkedLabel = computed(() => {
 
 <template>
   <div class="step-body">
-    <!-- ① 识别方式：指定一个文件夹（说明已收进下面的提示行与《使用说明》，这里不再重复一遍） -->
-    <!-- 2026-10-11（决策 二-18 / 一-18）：不再手动挑图片、也不再选批次 ——
-         给一个文件夹，程序读里面的图片与 字序.json；没有字序文件时才靠"认纸面参考字"定字序。
-         批次在界面上彻底消失（进这一步时程序自动复用最近一个，一个都没有就顺手建一个） -->
-    <div class="panel-row">
-      <div class="panel-field">
-        <span class="field-label">识别方式</span>
-        <!-- 选目录的两句要点并进这一行（2026-10-13 用户口径：原来单独一段太长、与这一行说的是一件事）：
-             ① 字序从哪来；② 系统文件夹对话框为什么看起来是空的（Windows 只列子文件夹），不写清用户会以为没选上 -->
-        <span class="panel-hint" data-role="scan-mode">
-          选一个文件夹即可：程序读里面的图片，字序优先按第 1 步压缩包里的 <strong>字序.json</strong> 定，没有就用纸面上的参考字。<template
-            v-if="canPickDirectory"
-          >对话框只列子文件夹、不列文件，<strong>列表是空的也没关系</strong> —— 底部「文件夹」框里显示的就是你选中的那一层，直接确认即可。</template><template
-            v-else
-          >这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样；想要系统对话框请用 Chrome 或 Edge（86+）。</template>
-        </span>
-      </div>
-    </div>
+    <!-- ① 识别方式：指定一个文件夹。
+         2026-10-13 用户口径：**整行说明去掉**（"选一个文件夹即可…直接确认即可"那一整段）——
+            它说的与这一步的说明、按钮本身重复，界面上每多一段长文，真正的操作就更难找。
+         仍保留的只有一条：**这台浏览器没有系统文件夹对话框**（Firefox / Safari 走退路）——
+            "不静默降级"是决策 六-13 的要求，所以那句挪到下面按钮行里，只在缺这个接口时出现。
+         2026-10-11（决策 二-18 / 一-18）：不再手动挑图片、也不再选批次 ——
+            给一个文件夹，程序读里面的图片与 字序.json；没有字序文件时才靠"认纸面参考字"定字序 -->
 
     <!-- ② 文件夹与进度 -->
     <div class="panel-row">
@@ -868,7 +857,7 @@ const zoomIsMarkedLabel = computed(() => {
              2026-10-13 用户口径：只留一个按钮 —— 去掉「换一个文件夹」，「重读上次的文件夹」改成
              「重新选择文件夹」，点它就重新弹对话框（不再有"直接重读上次那个目录"这条捷径）。
              退路：这台浏览器没有这个接口（Firefox / Safari）时改用 <input webkitdirectory>，
-             那句说明已并进上面的「识别方式」里（不静默降级） -->
+             那句说明跟在按钮后面（只在缺这个接口时出现，不静默降级） -->
         <template v-if="canPickDirectory">
           <button
             class="primary"
@@ -900,6 +889,10 @@ const zoomIsMarkedLabel = computed(() => {
         >开始识别</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
         <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
+        <!-- 只有缺 showDirectoryPicker 的浏览器才说这一句（Firefox / Safari 走 <input webkitdirectory> 退路） -->
+        <span v-if="!canPickDirectory" class="panel-hint" data-role="no-dir-picker">
+          这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样；想要系统对话框请用 Chrome 或 Edge（86+）。
+        </span>
       </div>
     </div>
     <!-- ③ 扫描识别的状态与结果（2026-10-13 用户口径：把原来散在三处的信息合成一块）：
