@@ -396,16 +396,11 @@ export const useProjectStore = defineStore('project', {
       this.scan.chars = typeof chars === 'string' ? chars : ''
       this.scan.lastRunAt = null
       this.scan.source = source || null
-      // 2026-10-13 修（真缺陷）：**重新识别要作废上一次的字体产物元信息** ——
-      //   原来这里只清 scan 段，于是第 3 步会把"这次新算出来的字形计划"与"上次那份产物的收录统计"
-      //   并排显示，自相矛盾（用户真机看到"字形计划：更正册覆盖 4 个"与"产物：其中 0 个来自更正册"同屏；
-      //   子代理用真件复现：重新识别带更正册之后再看不重新生成，产物统计还停在上一轮）。
-      //   与单页重传（replaceScanPage）同一口径：清 built、把体检快照标成过期（不清 coverage —— 那由重建覆盖）。
-      if (this.font.built) {
-        this.font.built = false
-        this.font.builtAt = null
-      }
-      if (this.font.checkup) this.font.checkupStale = true
+      // 2026-10-13 用户口径：**重新识别要把第 3 步的信息一并清掉**（"回到生成前"）——
+      //   整批重新识别会产出全新的字形与产物，旧的尺寸 / 覆盖率 / 体检清单都没意义了，所以直接 `clearFont()`。
+      //   （中途版本只置 `built=false` + 把体检快照标成过期，于是第 3 步还挂着上一份体检清单；
+      //    与「单页重传」的区别保留在 `replaceScanPage`：那是局部更新，仍保留旧清单、只标"过期"。）
+      this.clearFont()
       this.markDirty()
       schedulePersist(this)
     },

@@ -1609,6 +1609,16 @@ button.text.accent:hover {
   line-height: 1.6;
 }
 
-/* 2026-10-13：`.danger-zone` / `.inline-confirm` / `button.text.danger` 三条样式随第 3 步的
-   「清理数据」模块一起去掉了（那一块已按用户口径删除；清空识别结果在第 2 步有「清空结果」入口）。 */
+/* 破坏性动作的文本按钮（2026-10-13：随第 3 步标题行的「清空全部数据」回来 ——
+   入口按钮本身是默认文本样式，弹窗里的"确认清空"用红色标出） */
+button.text.danger {
+  color: var(--danger);
+}
+
+button.text.danger:hover {
+  color: #b91c1c;
+}
+
+/* 2026-10-13：`.danger-zone` / `.inline-confirm` 两条样式随第 3 步的「清理数据」模块一起去掉了
+   （那一块已按用户口径删除；清空识别结果在第 2 步有「清空结果」入口，清空全部数据改到标题行）。 */
 

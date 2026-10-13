@@ -409,10 +409,17 @@ onMounted(() => {
   }
 })
 
-async function start() {
+async function start(options = {}) {
   if (running.value) return
   if (!files.value.length) {
     setMessage('还没有可识别的图片：先点上面的「选择文件夹」，指向扫描件所在的那一层', 'error')
+    return
+  }
+  // 2026-10-13 用户口径：**第 3 步已经有生成信息时，重新识别要先问一句** ——
+  //   整批重新识别会把那份字体产物与体检清单一起清掉（`store.beginScanRun` 里 clearFont()）。
+  //   用户点「继续识别」才真的开始（skipConfirm 由弹窗传进来）。
+  if (!options.skipConfirm && (store.font.built || store.font.checkup)) {
+    restartOpen.value = true
     return
   }
   // 批次是内部容器：再取一次（复用最近一个仍有效的，或自动补一个）—— 界面上已经无处可选它。
@@ -544,6 +551,15 @@ function stop() {
   // 表现与旧口径完全一致："当前这一页处理完就停"（不打断正在跑的那一页）
   cancelTask()
   setMessage('已请求中止：当前这一页处理完就停（已识别的页会保留）', 'info')
+}
+
+// ── 重新识别前的确认（2026-10-13 用户口径）──────────────────────────────────
+// 第 3 步已经有生成信息（字体产物 / 体检清单）时，点「开始识别」先弹一句：
+// 整批重新识别会把那些信息一起清掉（这是用户要的"同步清空"，但得先让他知道）。
+const restartOpen = ref(false)
+function confirmRestart() {
+  restartOpen.value = false
+  start({ skipConfirm: true })
 }
 
 function clearAll() {
@@ -933,7 +949,7 @@ const zoomIsMarkedLabel = computed(() => {
           data-role="scan-start"
           :disabled="running || readingDir || !files.length"
           :title="files.length ? '' : '先点左边的「选择文件夹」，指向扫描件所在的那一层'"
-          @click="start"
+          @click="start()"
         >开始识别</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
         <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
@@ -1285,5 +1301,27 @@ const zoomIsMarkedLabel = computed(() => {
     <!-- 更正核对（原独立的第 2 步，2026-10-11 并入本页 —— 决策 八-15 ④）：
          它是识别结果的下一步处理，不该另占一步；有识别结果时就挂在这里 -->
     <CorrectionConfirm v-if="showResult && !running" />
+
+    <!-- 重新识别前的确认（2026-10-13 用户口径）：第 3 步已经有生成信息时先说一句，
+         因为整批重新识别会把那份字体产物与体检清单一起清掉 -->
+    <div v-if="restartOpen" class="backup-overlay" @click.self="restartOpen = false">
+      <div class="backup-modal" role="dialog" aria-label="重新识别会清掉第 3 步的字体" data-role="restart-modal">
+        <div class="backup-head">
+          <h3>第 3 步已经生成过字体</h3>
+          <button class="text" type="button" data-role="restart-close" @click="restartOpen = false">关闭</button>
+        </div>
+        <p class="panel-hint">
+          重新识别会把第 3 步的<strong>字体产物与字形体检清单一起清掉</strong>（识别结果与字形本来就是这一批的原料，
+          会按这次扫描件重算）—— 已经下载的压缩包、以及装进系统的字体不受影响。
+        </p>
+        <p class="step-note">
+          只想换掉某一页的话，用那张结果卡片上的「<strong>重传</strong>」就够了：它不动其它页，也不会清掉字体产物之外的记录。
+        </p>
+        <div class="panel-actions">
+          <button class="primary" type="button" data-role="restart-confirm" @click="confirmRestart">继续识别</button>
+          <button class="text" type="button" data-role="restart-cancel" @click="restartOpen = false">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

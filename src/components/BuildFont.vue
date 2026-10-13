@@ -421,6 +421,49 @@ function resetBuild() {
   store.clearFont()
   setMessage('已回到生成前的状态：名称表与字形都留着，改完再点「生成字体」即可', 'info')
 }
+
+// ── 「清空全部数据」（2026-10-13 用户口径）────────────────────────────────────
+// 入口放第 3 步标题行、在「重新生成」**左边**（重新生成没出现时它自己也在），用默认的文本按钮样式；
+// 点它先弹窗二次确认：写清后果 + **要求手输「清空」两个字**（沿用 五-8 ④ 的形态，只是从行内确认条改成弹窗 ——
+// 入口在标题行，那里没有展开确认条的地方）。删完提示刷新一次（读数见 store.clearAllData 的注释）。
+const CLEAR_WORD = '清空' // 需要手输的确认词
+const clearAllOpen = ref(false)
+const clearAllWord = ref('')
+const clearAllBusy = ref(false)
+const clearAllDone = ref(false)
+const clearAllReady = computed(() => clearAllWord.value.trim() === CLEAR_WORD)
+
+function openClearAll() {
+  clearAllWord.value = ''
+  clearAllDone.value = false
+  clearAllOpen.value = true
+  setMessage('', 'info')
+}
+
+async function doClearAll() {
+  if (!clearAllReady.value || clearAllBusy.value || clearAllDone.value) return
+  clearAllBusy.value = true
+  try {
+    const res = await store.clearAllData()
+    // 只活在内存里的那些也要释放：预览字体、已构建的字节（页面缩略图与掩膜缓存随组件一起走）
+    releaseAllPreviewFonts()
+    clearLastBuild()
+    syncPreviewBytes()
+    if (res.ok) {
+      clearAllDone.value = true
+      setMessage('已清空全部数据，回到刚打开软件的状态。请刷新一次页面（刷新后就是全新的空项目）。', 'done')
+    } else {
+      setMessage('清空全部数据失败：' + (res.error || '未知原因') + '。数据可能仍在盘上，请刷新后再试一次。', 'error')
+    }
+  } finally {
+    clearAllBusy.value = false
+  }
+}
+
+// 清空之后：界面里的 store 已被 $reset、盘上那一份也删了，刷新即回到全新状态
+function reloadNow() {
+  window.location.reload()
+}
 </script>
 
 <template>
@@ -463,8 +506,13 @@ function resetBuild() {
     <p v-if="message" class="panel-message" :class="messageType" data-role="build-message">{{ message }}</p>
 
     <!-- 生成过之后：「重新生成」挂在步骤标题行右侧（与第 1 步「更新预览」同一个位置）——
-         点它回到"点了生成字体之前"的状态（清产物、留名称表与字形） -->
+         点它回到"点了生成字体之前"的状态（清产物、留名称表与字形）。
+         2026-10-13 用户口径：「清空全部数据」放在它**左边**（重新生成没出现时它自己也在），
+         默认的文本按钮样式；点它先弹窗二次确认（要手输「清空」两个字） -->
     <Teleport to="#step-head-actions">
+      <button class="text" type="button" data-role="clear-all-open" :disabled="busy" @click="openClearAll">
+        清空全部数据
+      </button>
       <button v-if="ready" class="text" type="button" data-role="rebuild-reset" :disabled="busy" @click="resetBuild">
         重新生成
       </button>
@@ -646,8 +694,48 @@ function resetBuild() {
       </template>
     </div>
 
-     <!-- 2026-10-13 用户口径：原来这里还有一块「清理数据」（清空识别结果 / 清空全部数据，决策 五-11）——
-          整块去掉：清空识别结果在第 2 步有「清空结果」那个入口（同一件事），
-          而"回到刚打开软件"用浏览器自己的"清除站点数据"就行（这套数据本来只在本机浏览器里）。 -->
+     <!-- 2026-10-13 用户口径：原来这里那一块「清理数据」（清空识别结果 / 清空全部数据）整块去掉了 ——
+          清空识别结果在第 2 步有「清空结果」入口（同一件事）；「清空全部数据」改到步骤标题行，
+          点它开下面这个弹窗做二次确认（要手输「清空」两个字）。 -->
+
+    <!-- 「清空全部数据」的二次确认弹窗：写清后果 + 手输确认词（沿用 五-8 ④ 的形态，
+         只是从行内确认条改成弹窗 —— 入口在标题行，那里没有展开确认条的地方） -->
+    <div v-if="clearAllOpen" class="backup-overlay" @click.self="clearAllOpen = false">
+      <div class="backup-modal" role="dialog" aria-label="清空全部数据" data-role="clear-all-modal">
+        <div class="backup-head">
+          <h3>清空全部数据</h3>
+          <button class="text" type="button" data-role="clear-all-close" @click="clearAllOpen = false">关闭</button>
+        </div>
+        <p class="panel-hint">
+          会删掉：识别结果、落盘的字形、更正配对、体检与筛选记录、<strong>模板记录、名称表与选字</strong> ——
+          等于回到刚打开软件的状态。本机浏览器里的这一份数据会被删除，<strong>不能撤销</strong>。
+        </p>
+        <p class="step-note">
+          删完请<strong>刷新一次页面</strong>（刷新后就是全新的空项目）。已经下载的字体压缩包、以及装进系统的字体
+          不受影响；扫描件原图本来就不在程序里（要重做就重新走一遍第 1 步）。
+        </p>
+        <label class="meta-field">
+          <span class="field-label">请输入「{{ CLEAR_WORD }}」两个字确认</span>
+          <input
+            type="text"
+            data-role="clear-all-input"
+            :value="clearAllWord"
+            :disabled="clearAllBusy || clearAllDone"
+            @input="clearAllWord = $event.target.value"
+          />
+        </label>
+        <div class="panel-actions">
+          <button
+            class="text danger"
+            type="button"
+            data-role="clear-all-confirm"
+            :disabled="!clearAllReady || clearAllBusy || clearAllDone"
+            @click="doClearAll"
+          >{{ clearAllBusy ? '正在清空…' : '确认清空全部数据' }}</button>
+          <button class="text" type="button" data-role="clear-all-cancel" @click="clearAllOpen = false">取消</button>
+          <button v-if="clearAllDone" class="primary" type="button" data-role="reload-now" @click="reloadNow">立即刷新</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
