@@ -422,34 +422,8 @@ export function collectPathCommands(svg) {
   return all
 }
 
-// 把"已映射到 em 方格坐标的命令"裁进 0~1000（**只裁不放大**，决策 四-2、四-4）。
-// 用途：越界笔画（长撇长捺伸出书写格）映射到字体坐标后会超出 0~1000，TTF 里坐标越界会让字形异常；
-//   参考项目的实战结论是"裁入 0~1000 框内（只收缩平移，绝不放大）"。
-// 返回 { changed, scaleX, scaleY, offsetX, offsetY, bbox }：调用方把这四个参数**叠加**到自己那次变换上
-//   （本函数不改动 cmds，省掉一次字符串往返；等比收缩时 scaleX === scaleY === k）。
-export function clampToBox(cmds, { min = 0, max = 1000, tolerance = 0.5 } = {}) {
-  const bb = pathBBox(cmds)
-  const identity = { changed: false, scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0, bbox: bb }
-  if (!isFinite(bb.minX) || !isFinite(bb.minY)) return identity
-  if (bb.minX >= min - tolerance && bb.minY >= min - tolerance &&
-      bb.maxX <= max + tolerance && bb.maxY <= max + tolerance) {
-    return identity
-  }
-  const w = bb.maxX - bb.minX
-  const h = bb.maxY - bb.minY
-  if (!(w > 0) || !(h > 0)) return identity
-  const box = max - min
-  // k ≤ 1：图比框大时才收缩，绝不放大；再平移回框内（先左/上贴边，越界则整体推回来）
-  const k = Math.min(1, box / Math.max(w, box), box / Math.max(h, box))
-  const x0 = bb.minX * k
-  const x1 = bb.maxX * k
-  const y0 = bb.minY * k
-  const y1 = bb.maxY * k
-  let ox = 0
-  let oy = 0
-  if (x0 < min) ox = min - x0
-  if (x1 + ox > max) ox = max - x1
-  if (y0 < min) oy = min - y0
-  if (y1 + oy > max) oy = max - y1
-  return { changed: true, scaleX: k, scaleY: k, offsetX: ox, offsetY: oy, bbox: bb }
-}
+// 2026-10-13：这里原来还有一个 `clampToBox()`（把映射后的命令裁进 0~1000、"只裁不放大"）——
+// 它全库零引用，而且**判据也过时了**：决策 四-4 定的越界判据是"书写格映射出来的**设计框**
+// （横向 0~1000、竖向 −100~900）"，不是一个 0~1000 的正方形。真实实现在
+// `glyphGeometry.mapBBoxToDesignBox`（几何与阈值同源）+ `glyphBuilder` 里那次等比收缩与平移。
+// 留着它比没有更糟 —— 下一个人照它写就会发现与产物对不上。需要时从 git 历史取回。

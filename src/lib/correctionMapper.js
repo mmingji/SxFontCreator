@@ -22,7 +22,7 @@ export function continuousIndex(pageNumber, cellIndex, perPage = LAYOUT.perPage)
  * 把 1.6 的提取结果整理成配对用的格清单（按连续格号升序）。
  * @param {Array} cells extractPage 产出的 cells（带 index / pageNumber / verdict / inkPixels）
  * @param {{perPage?:number, fallbackPage?:number}} [options] fallbackPage 用于页脚读不出（pageNumber 为 0）时
- *   按上传顺序顶替 —— 页码读不出时上层要显式确认批次，这里只做机械顶替，不猜
+ *   按上传顺序顶替 —— 页码读不出时由界面手选页序（决策 二-7），这里只做机械顶替，不猜
  */
 export function buildCorrectionCells(cells, options = {}) {
   const perPage = options.perPage || LAYOUT.perPage

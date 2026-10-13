@@ -4,6 +4,11 @@
 //   预处理 → 切格（含方向自动纠正）→ 认参考字与定字序 → 红圈识别 → 字形提取 → 缩略图 PNG，
 //   把页记录与掩膜发回主线程。**界面因此在几十页连跑时保持可滚动**（原来这些都跑在主线程上）。
 //
+// 与主线程的分工（**只有编排一行不重复**）：一页的完整计算只有 `lib/scanFlow.recognizePage` 一份；
+//   逐页串行、可中止、整批汇总也只有 `lib/scanFlow.recognizeBatch` 一份 —— 本文件只负责
+//   "把消息翻译成调用、把结果与掩膜发回去"。因此两条跑法（主线程 / Worker）跑的**是同一份编排代码**，
+//   差别只在计算发生在哪个线程（决策 六-15 ⑨ 的口径）。
+//
 // 为什么整条链路都搬进来，而不是只搬预处理：四段里任何一段留在主线程，那一秒的卡顿就还在；
 //   而且它们之间的中间产物（灰度图 / 定位矩阵 / 掩膜）本来就不该跨线程搬来搬去（单页彩色 8MB 级）。
 //
@@ -16,7 +21,7 @@
 //   实测 file:// 下同目录的 worker 脚本文件会被 `origin 'null'` 拦下（module 形态的 Blob worker 也不行），
 //   只有经典（非 module）Blob URL worker 能起来 —— 这个文件本身没有 module 语法（只有 import/export，
 //   由构建期打包成经典脚本），因此能在 file:// 的真实交付物里跑起来。
-import { recognizePage, summarizeBatch } from '../lib/scanFlow.js'
+import { recognizeBatch, recognizePage } from '../lib/scanFlow.js'
 import { buildLibrary } from '../lib/referenceCharReader.js'
 
 // 参考字候选库：模块级常驻（一个 Worker 会话只建一次）
@@ -103,45 +108,40 @@ async function handlePage(msg) {
   }
 }
 
-/** 整批识别：逐页串行（决策 二-1）、每页发一次、可中止 */
+/**
+ * 整批识别：逐页串行（决策 二-1）、每页发一次、可中止。
+ * **逐页循环复用 `scanFlow.recognizeBatch`**（2026-10-13 改）：原来这里自己写了一遍同样的循环，
+ *   与主线程那份是同一段逻辑的两份实现 —— 改一处漏一处只是时间问题。现在：
+ *   · 循环、串行、中止、整批汇总（`summarizeBatch`）全部由 `recognizeBatch` 负责；
+ *   · 这里只做"翻译"：把它的回调转成给主线程的消息、把每页的掩膜 transfer 过去。
+ *   Worker 与主线程跑的因此是**同一份编排代码**，只有计算所在的线程不同（决策 六-15 ⑨ 的口径）。
+ */
 async function handleBatch(msg) {
   const { rid } = msg
   const files = msg.files || []
-  const pages = []
   try {
     if (msg.fontBytes) fontBytes = msg.fontBytes
     await ensureLibrary(rid)
     const lib = library
-    for (let i = 0; i < files.length; i++) {
-      if (cancelled) {
-        post({ type: 'stopped', rid })
-        break
-      }
-      const f = files[i]
-      post({ type: 'pageStart', rid, pageNo: i + 1, total: files.length })
-      const { record, cache } = await recognizePage(toFile(f.bytes, f.name, f.type), {
-        chars: msg.chars,
-        library: lib,
-        orderChars: msg.orderChars,
-        orderPages: msg.orderPages,
-        expectedBatchCode: typeof msg.expectedBatchCode === 'number' ? msg.expectedBatchCode : null,
-        fileIndex: i,
-        onStage: (text) => post({ type: 'stage', rid, text })
-      })
-      pages.push(record)
-      post({ type: 'page', rid, index: i, record, cache: toMessage(cache) }, transferablesOf(cache))
-      if (cancelled) {
-        post({ type: 'stopped', rid })
-        break
-      }
-    }
-    // 整批汇总在主线程算会更方便，但它是纯函数、放这里也一样；放这里能少一次全量页记录回传。
-    // **注意**：主线程仍会用同一份 summarizeBatch 复核（页记录它也有），两处结果必须一致。
-    const summary = summarizeBatch(pages, {
+    const res = await recognizeBatch(files.map((f) => toFile(f.bytes, f.name, f.type)), {
+      chars: msg.chars,
+      library: lib,
+      orderChars: msg.orderChars,
+      orderPages: msg.orderPages,
       expectedBatchCode: typeof msg.expectedBatchCode === 'number' ? msg.expectedBatchCode : null,
-      sheetPages: typeof msg.orderPages === 'number' ? msg.orderPages : msg.sheetPages
+      sheetPages: typeof msg.sheetPages === 'number' ? msg.sheetPages : undefined,
+      // 中止：`recognizeBatch` 在每页开始前问一次 —— 与"当前这一页处理完就停"的口径一致
+      shouldStop: () => cancelled,
+      onPageStart: (pageNo, total) => post({ type: 'pageStart', rid, pageNo, total }),
+      onStage: (text) => post({ type: 'stage', rid, text }),
+      onPage: (record, index, total, cache) => {
+        post({ type: 'page', rid, index, record, cache: toMessage(cache) }, transferablesOf(cache))
+      }
     })
-    post({ type: 'done', rid, summary, count: pages.length, stopped: cancelled })
+    // 主线程**直接用这一份汇总**（它自己的页记录也一样，但两处各算一遍只会多一处可能不一致的地方）。
+    // 中止过就单独发一条 stopped，让客户端知道"是停下来而不是跑完了"
+    if (res.stopped) post({ type: 'stopped', rid })
+    post({ type: 'done', rid, summary: res.summary, count: res.pages.length, stopped: res.stopped })
   } catch (e) {
     post({ type: 'error', rid, message: e && e.message ? e.message : String(e) })
   }

@@ -1,18 +1,13 @@
 // 出模板的"档位 → 字序"唯一出口（决策 八-2 / 八-3、一-3）
 //
-// 职责：把"写哪些字"的三个预置档位 × 两种排列方式，解析成**确定的一份字序**，供两处共用 ——
-//   ① 第 1 步出模板（components/TemplatePreview.vue）；
-//   ② "纸还在、库没了"时凭档位重建批次（lib/restoreBatch.js，入口在顶栏「项目备份」）。
-// 为什么必须共用一份：两处各写一遍的话，档位口径一改（比如「常用 6500 字」的范围变了）就会出现
-//   "恢复出来的批次与实际打印的纸不是同一套字序" —— 这种错在识别阶段表现为"校验码不符"、
-//   在成字阶段表现为"字全对不上"，事后很难查。
+// 职责：把"写哪些字"的三个预置档位 × 两种排列方式，解析成**确定的一份字序**，供界面共用 ——
+//   第 1 步出模板（components/TemplatePreview.vue）与第 1 步的档位说明都从这里取。
+// 为什么必须共用一份：档位口径一改（比如「常用 6500 字」的范围变了），
+//   出纸的字序与界面上说的范围必须同时变 —— 各写一遍就会出现"纸上排的与界面说的不是一套"。
 //
-// 零依赖（只用字表 / 频序 / 分级 / 版面 + 批次校验码哈希），可在 Node 侧直接断言。
+// 零依赖（只用字表 / 频序 / 分级 / 版面），可在 Node 侧直接断言。
 import { LAYOUT } from './layout.js'
-import { getAllChars } from './charset.js'
-import { getRankOrder, sortByRank } from './charRank.js'
 import { getLevelChars } from './frequency.js'
-import { computeBatchCode } from './batchCode.js'
 
 // 排列方式（与第 1 步界面上的两个选项一一对应）
 export const ORDER_MODES = [
@@ -45,65 +40,16 @@ export function orderModeLabel(key) {
   return o ? o.label : key
 }
 
-/**
- * 某个预置档位在某种排列方式下的完整字序。
- * 口径与第 1 步界面的「写哪些字」严格一致：
- *   - single：先把**全序**排好（频序或笔画序），再取前 136 字 —— 所以频序下就是"最常用的 136 字"；
- *   - common：一级 + 二级 + 基础字符（按字表顺序拼接），再按排列方式排序；
- *   - full  ：全量 8274 字，再按排列方式排序。
- * @param {'single'|'common'|'full'} scopeKey
- * @param {'rank'|'charset'} [orderMode]
- * @returns {string[]} 字序数组（副本；调用方可以安全地改动它）
- */
-export function charsForPreset(scopeKey, orderMode = 'rank') {
-  const wantRank = orderMode === 'rank'
-  if (scopeKey === 'single') {
-    const base = wantRank ? getRankOrder() : getAllChars()
-    return base.slice(0, LAYOUT.perPage)
-  }
-  if (scopeKey === 'common') {
-    const picked = [...getLevelChars('l1'), ...getLevelChars('l2'), ...getLevelChars('base')]
-    return wantRank ? sortByRank(picked) : picked
-  }
-  if (scopeKey === 'full') {
-    const base = getAllChars()
-    return wantRank ? sortByRank(base) : base
-  }
-  return []
-}
+// 2026-10-13：`charsForPreset()` 也一并删了 —— 它本来只被上面的 `presetPlan()` 调用，而后者已随
+//   "凭纸恢复批次"那条未接线的路一起删除；现在"档位 → 字序"的计算在 `TemplatePreview.vue` 里
+//   按界面当前选择现算（那里的 `charsForScope()` 是唯一实现，本模块只提供档位与排列方式的**标签口径**）。
+//   顺带把这个模块的依赖收干净：只剩版面常量与分级计数，不必再引字表 / 频序 / 校验码哈希。
 
-/**
- * 一个"候选批次"的完整描述 —— 恢复批次时拿它与纸面对比（校验码）或直接落库。
- * @returns {{scope:string, order:string, label:string, chars:string[], charsText:string,
- *            charCount:number, pageCount:number, batchCode:number}}
- */
-export function presetPlan(scopeKey, orderMode = 'rank') {
-  const chars = charsForPreset(scopeKey, orderMode)
-  return {
-    scope: scopeKey,
-    order: orderMode,
-    label: scopeLabel(scopeKey) + ' · ' + orderModeLabel(orderMode),
-    chars,
-    charsText: chars.join(''),
-    charCount: chars.length,
-    pageCount: Math.max(1, Math.ceil(chars.length / LAYOUT.perPage)),
-    batchCode: computeBatchCode(chars)
-  }
-}
-
-// 6 种候选（3 档 × 2 排列）只算一次：算一遍要把八千多字排序，恢复流程里会反复比对同一批候选。
-// 字表与频序在运行期不变，缓存安全。
-let plansCache = null
-export function presetPlans() {
-  if (!plansCache) {
-    plansCache = []
-    for (const s of SCOPE_PRESETS) for (const o of ORDER_MODES) plansCache.push(presetPlan(s.key, o.key))
-  }
-  return plansCache
-}
-
-/** 拿纸面读到的 12 位校验码去认"这是哪一档"；命中返回该候选，否则 null */
-export function findPresetByBatchCode(batchCode) {
-  if (batchCode === null || batchCode === undefined) return null
-  return presetPlans().find((p) => p.batchCode === (batchCode | 0)) || null
-}
+// 2026-10-13：原来这里还有一组"候选批次"的推导（`presetPlan()` / `presetPlans()` /
+// `findPresetByBatchCode()`）—— 它们是给"凭纸恢复批次"服务的：拿纸面读到的校验码去认这是哪一档。
+// 那个功能从未接线（`lib/restoreBatch.js` 与 `components/RestoreBatch.vue` 都不存在，
+// 入口「项目备份」也已随决策 五-10 删除），三个导出因此**全库零引用**（`presetPlans` 只被
+// `findPresetByBatchCode` 调用、后者无人调用），一并删除。需要时从 git 历史取回。
+//
+// 现在这个模块的用途只剩一条、也是它真正的价值：**第 1 步"档位 × 排列方式 → 一份确定字序"的唯一出口**
+// —— 界面上的档位说明、界面文案与将来的任何调用方都从这里取，避免"两处各写一遍档位口径"。

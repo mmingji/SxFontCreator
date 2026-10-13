@@ -40,8 +40,8 @@ const pageCount = ref(0)
 const status = ref('idle') // idle | rendering | ready | error
 const errorText = ref('')
 
-// pdf.js 的模块加载与 worker 落位抽在 lib/pdfjsLoader.js —— 与「凭纸恢复批次」（RestoreBatch.vue
-// 读模板 PDF 的文字层）共用一处，免得 file:// 下的 worker 落位这种不显然的坑写两遍、迟早分叉
+// pdf.js 的模块加载与 worker 落位抽在 lib/pdfjsLoader.js —— 那里是"pdf.js 怎么用"的唯一出处
+// （file:// 下 worker 只能走 Blob URL、必须用 legacy 构建、销毁要走加载任务这三条坑都记在它的文件头）
 
 const docRef = shallowRef(null) // shallowRef：pdf.js 的文档对象很大，不要被 Vue 递归代理
 let loadingTask = null // getDocument 返回的加载任务（销毁走它，见文件头 ①）

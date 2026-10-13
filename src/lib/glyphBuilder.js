@@ -127,7 +127,9 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
   })
   if (traced.empty) return { empty: true, d: '', advanceWidth, clamped: false, bbox: null }
 
-  // ① 按书写格线性映射：书写格（118 像素见方）→ 占位框（1000×1000 = 1em，字面率 100%），y 轴同时翻转（图像向下 → 字体向上）。
+  // ① 按书写格线性映射：书写格（118 像素见方）→ **设计框**（横向 0~1000、竖向 −100~900；决策 四-2 / 四-4），
+  //    y 轴同时翻转（图像向下 → 字体向上）。**不是**映射到 0~1000 的正方形 —— 越界判据、缩放与平移
+  //    都按设计框算（见 glyphGeometry.mapBBoxToDesignBox 与本文件下面的收缩逻辑）。
   //    注意要**合并 potrace 自己的 transform**：它的 path 坐标是"像素 × 10"且 y 反向（见 traceImage 的说明），
   //    所以像素坐标 = (c·x + a, d·y + b)。漏掉这一步会让坐标差 10 倍、上下颠倒（实测踩到）。
   //    ⚠ 半角字形的推导（决策 四-3）在这里由 glyphMapping 统一实现：

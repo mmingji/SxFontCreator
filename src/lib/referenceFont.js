@@ -18,7 +18,9 @@ export const BUILTIN_FONT_LABEL = '内置楷体（霞鹜文楷子集）'
 // 与参考字的楷体是两回事 —— 参考字要端正易辨认，示范字要像"人手写出来的样子"。
 // 选型依据（覆盖字表 8274 字全中）与其余候选的对比见《提交历史》第 59 条；子集体积见《决策记录》一-14。
 export const HANDWRITING_FONT_URL = './fonts/yozai-subset.ttf'
-export const HANDWRITING_FONT_LABEL = '悠哉字体（手写体子集）'
+// 2026-10-13：原来这里还有一个 `HANDWRITING_FONT_LABEL`（'悠哉字体（手写体子集）'）——
+// 它全库零引用（界面上的写法已经在 PdfPreview 的标题里写死为"按悠哉字体示意书写格式"），已删。
+// 保留 `BUILTIN_FONT_LABEL`：它的名字确实上了界面（第 1 步「参考字体」那一行的说明）。
 
 // 两条内置字体各自对应的内联资源名（构建期约定，见 vite.config.js 的 INLINE_ASSETS）
 const INLINE_BY_URL = {

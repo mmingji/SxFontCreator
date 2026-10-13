@@ -18,31 +18,10 @@ export function clearPageCache() {
   pages.clear()
 }
 
-export function cacheSize() {
-  return pages.size
-}
-
-/**
- * 汇总所有页的"有笔迹掩膜"（字体合成用）。
- * @returns {Array<{index:number, fileIndex:number, char:string, mask:Uint8Array, width:number, height:number, boxInSlice:object}>}
- */
-export function glyphMasks() {
-  const out = []
-  for (const [fileIndex, cache] of pages) {
-    for (const item of cache.masks || []) {
-      if (item.char) out.push({ ...item, fileIndex })
-    }
-  }
-  return out
-}
-
-// 统计（界面提示用）：多少页有缓存、共多少张掩膜、图占多少字节（dataURL 长度的近似值）
-export function cacheStats() {
-  let masks = 0
-  let bytes = 0
-  for (const cache of pages.values()) {
-    masks += (cache.masks || []).length
-    bytes += (cache.thumb ? cache.thumb.length : 0) + (cache.sheet ? cache.sheet.length : 0)
-  }
-  return { pages: pages.size, masks, imageBytes: bytes }
-}
+// 2026-10-13：原来这里还有三个导出 —— `cacheSize()`（缓存了几页）、`glyphMasks()`（把各页的笔迹掩膜
+// 汇总给字体合成用）、`cacheStats()`（页数 / 掩膜数 / 图占多少字节）。三者**全库零引用**，一并删除：
+//   · 字体合成实际走的是 `buildFont.collectGlyphInputs` —— 它按页 `getPageCache(fileIndex)` 取掩膜，
+//     取不到再退回 `glyphStore` 的落盘分片（决策 二-16），不需要"先汇总成一个大数组"；
+//   · 界面上的"字形已落盘 N 页 / M 个字 / X MB"用的是 `glyphStore.glyphStoreStats()`（落盘口径），
+//     与内存缓存无关。
+// 也就是"缓存里有几页"这个数从来没有上过界面。需要时从 git 历史取回。

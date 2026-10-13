@@ -9,6 +9,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
 import { getPageCache } from '../lib/scanCache.js'
+import { continuousIndex } from '../lib/correctionMapper.js'
 import { LAYOUT } from '../lib/layout.js'
 
 const store = useProjectStore()
@@ -29,7 +30,9 @@ const correctionCellMap = computed(() => {
   for (const p of correctionPages.value) pageIndex.set(p.pageNumber, p.fileIndex)
   for (const p of correctionPages.value) {
     for (const c of p.cells || []) {
-      const contiguous = (p.pageNumber - 1) * LAYOUT.perPage + c.index + 1 // 与 correctionMapper.continuousIndex 同口径（1 起）
+      // 连续格号（1 起）**调用权威实现**，不在这里手写一遍公式 —— 更正册的格号跨页连续
+      // （第 2 页从 137 起），这个口径只有 correctionMapper.continuousIndex 一处（决策 一-7 的第 k 格）
+      const contiguous = continuousIndex(p.pageNumber, c.index)
       map.set(contiguous, { contiguous, pageNumber: p.pageNumber, cellIndex: c.index, fileIndex: p.fileIndex, verdict: c.verdict })
     }
   }

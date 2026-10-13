@@ -76,7 +76,7 @@ export const REQUIRED_FEATURES = [
   {
     key: 'blobDownload',
     label: 'Blob 下载（a[download]）',
-    impact: '模板、字体与项目包都下载不了',
+    impact: '模板、字体都下载不了',
     test: (env) => {
       try {
         return !!(env.document && 'download' in env.document.createElement('a'))

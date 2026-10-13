@@ -5,10 +5,11 @@
 //   追踪参数不变时追出来的轮廓与"当场追"逐点相同，画质没有区别；但**留着掩膜就能换参数重追**
 //   （阶段三 3.1 的逐字字面框规整、3.2 的字形体检都可能要改口径），不必让用户重新手写扫描一遍。
 //
-// 为什么分片键而不是塞进项目对象（决策 二-16 ①）：全量约 6900 格掩膜、PNG 后约 7~14MB，
-//   而 persist 每次改动都会重写整份项目对象 —— 塞进去会让"改一个族名"也写十几 MB。
+// 为什么分片键而不是塞进项目对象（决策 二-16 ①）：全量 8274 字 = 61 页 × 136 格 ≈ 8300 格掩膜、
+//   PNG 后约 7~14MB，而 persist 每次改动都会重写整份项目对象 —— 塞进去会让"改一个族名"也写十几 MB。
 //   分片后：元信息仍走 `sxfont.project.v1`，字形走 `sxfont.glyphs.v1.<批次>.<页序>`，
-//   重新识别某一页只覆盖那一页的键。
+//   重新识别某一页只覆盖那一页的键。（这条论证的权威处就是这里，另外两处只指向它：
+//   lib/persist.js 的分片键注释、lib/scanCache.js 的"为什么不落盘"。）
 import { openProjectDb } from './persist.js'
 
 const PREFIX = 'sxfont.glyphs.v1.'
@@ -183,51 +184,10 @@ export async function loadGlyphs({ batchId = null } = {}) {
   return out
 }
 
-// ── 按原键读写单条分片（项目包导入 / 导出用，决策 五-6）────────────────────
-// 为什么要这一对：项目包里的分片**照搬落盘格式**，导入时按包里的 key 原样写回即可；
-// 键的拼法（前缀 / 补零位数）只留在本模块一处，导入侧不需要知道，也就不会拼错。
-/** 按存储键读一条分片（原样返回记录，不解码 PNG —— 导出要的是记录本身） */
-export async function readGlyphShard(key) {
-  try {
-    const { db, store } = await openProjectDb()
-    return await new Promise((resolve) => {
-      const tx = db.transaction(store, 'readonly')
-      const req = tx.objectStore(store).get(key)
-      req.onsuccess = () => resolve(req.result || null)
-      req.onerror = () => resolve(null)
-    })
-  } catch {
-    return null
-  }
-}
-
-/**
- * 按存储键写回一条分片（导入用）。
- * **必须先 JSON 往返一次**再写：项目包导入那条路上，记录来自 Vue 的响应式对象（`ref` 里的数组），
- *   而 IndexedDB 的结构化克隆不接受 Proxy —— 实测报 "could not be cloned"（踩过一次：
- *   导入第 1 个分片就失败）。JSON 往返与 lib/persist.js 的做法一致，也顺带排掉 undefined/函数字段。
- * @param {string} key 完整存储键（以 `sxfont.glyphs.` 开头，本模块的前缀约定）
- * @param {object} record `{ batchId, fileIndex, pageNumber, savedAt, glyphs }`
- */
-export async function writeGlyphShard(key, record) {
-  try {
-    if (typeof key !== 'string' || !key.startsWith(PREFIX)) {
-      return { ok: false, error: '分片键不是本程序的字形键' }
-    }
-    const clean = JSON.parse(JSON.stringify(record))
-    const { db, store } = await openProjectDb()
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(store, 'readwrite')
-      tx.objectStore(store).put(clean, key)
-      tx.oncomplete = () => resolve()
-      tx.onerror = () => reject(tx.error || new Error('字形写入失败'))
-      tx.onabort = () => reject(tx.error || new Error('字形写入被中止'))
-    })
-    return { ok: true, count: (clean.glyphs ? clean.glyphs.length : 0) }
-  } catch (e) {
-    return { ok: false, error: e && e.message ? e.message : String(e) }
-  }
-}
+// 2026-10-13：原来这里还有一对按原键读写单条分片的函数（`readGlyphShard` / `writeGlyphShard`，
+// 为「项目包导入 / 导出」服务）—— 项目包功能已随决策 五-10 作废，这两个导出**全库零引用**，一并删除。
+// 需要时从 git 历史取回（那一版里还留着一条实测教训：写入前必须先 JSON 往返一次，
+// 否则结构化克隆碰到 Vue 的响应式代理会报 "could not be cloned"）。
 
 // 统计（界面提示用）：多少页、多少字、占多少字节
 export async function glyphStoreStats() {

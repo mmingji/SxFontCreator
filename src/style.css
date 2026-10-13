@@ -279,38 +279,6 @@ small {
   color: var(--text-2);
 }
 
-.checklist {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.checklist li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 0;
-  border-bottom: 1px dashed var(--border);
-  font-size: 13px;
-}
-
-.checklist li:last-child {
-  border-bottom: none;
-}
-
-.check-name {
-  color: var(--text-2);
-}
-
-.check-value.ok {
-  color: var(--success);
-}
-
-.check-value.warn {
-  color: var(--danger);
-}
-
 /* ── 异常提示条（仅在保存失败 / 从快照恢复时出现）───────────────────── */
 
 .notice {
@@ -607,17 +575,13 @@ label.text-file input {
   color: var(--primary);
 }
 
-.guide-link-note {
-  color: var(--text-2);
-}
-
 .step-number {
   margin-right: 6px;
   font-weight: 400;
   color: var(--text-2);
 }
 
-/* 步骤说明条：只在需要解释"这一步为什么进不去 / 还没接入"时出现 */
+/* 步骤说明条：需要解释"这一步现在能做什么 / 还缺什么"时出现（如第 3 步没料时的那句提示） */
 .step-note {
   margin: 0 0 10px;
   padding: 8px 10px;
@@ -626,14 +590,6 @@ label.text-file input {
   color: var(--primary-dark);
   font-size: 12px;
   line-height: 1.7;
-}
-
-/* 步骤正文里的编号清单（手写与扫描那一步的操作要点） */
-.plain-list {
-  margin: 0 0 8px;
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.9;
 }
 
 /* 下级卡片：选字面板嵌在「选字与出模板」这一步里（两级结构里的下级），

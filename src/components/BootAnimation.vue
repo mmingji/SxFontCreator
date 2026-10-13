@@ -8,6 +8,9 @@
 // **两份实现要保持一致**：真正首屏加载时用的是 index.html 里内联的 #boot（必须内联 ——
 //   它要在 JS 下载执行之前就显示，否则用户看到的还是白屏）；本组件是 Vue 版。
 //   改这里的视觉时记得同步 index.html 的 #boot（网格为四条横线 + 五条竖线，闭合的 3 行 × 4 列）。
+// **样式是组件内联的**（本文件底部的 <style>）：`style.css` 里没有 .boot-anim* 规则，
+//   这是有意的 —— 它不参与主样式表，也不会因为主样式表清理而被误删；
+//   文件名 `boot-anim` / `boot-mark` 与 index.html 的那份**同名同形**，便于对照同步。
 const props = defineProps({
   progress: { type: Number, default: null } // null = 循环演示；0~100 = 按进度推进
 })

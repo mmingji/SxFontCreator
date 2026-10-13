@@ -703,49 +703,9 @@ export const useProjectStore = defineStore('project', {
     // 模板排列方式（决策 八-11）：界面选择，不进落盘数据 —— 已建批次各自的 order 字段已经留痕
     setOrderMode(mode) {
       this.ui.orderMode = mode === 'charset' ? 'charset' : 'rank'
-    },
-
-    /**
-     * 导入项目包：把读出来并校验过的数据整份替换进来（决策 五-6）。
-     * 只在这里改 store 的状态，**落盘由调用方先做完**（字形分片 + 项目数据）—— 顺序反了会出现
-     * "界面显示新项目、落盘里还是旧项目"，下次启动又变回去。
-     */
-    applyImportedProject(data) {
-      this.rev = Number(data.rev) || this.rev
-      this.meta = { ...this.meta, ...(data.meta || {}) }
-      this.template = data.template && typeof data.template === 'object' ? data.template : {}
-      this.selection = { chars: data.selection && typeof data.selection.chars === 'string' ? data.selection.chars : '' }
-      this.batches = Array.isArray(data.batches) ? data.batches : []
-      this.excluded = data.excluded && typeof data.excluded === 'object' && !Array.isArray(data.excluded)
-        ? data.excluded
-        : {}
-      // 待重写清单（八-8 扩充）：包是旧版本导出的就没有这个字段，缺省为空
-      this.rewrite = data.rewrite && typeof data.rewrite === 'object' && !Array.isArray(data.rewrite)
-        ? data.rewrite
-        : {}
-      this.scan = {
-        batchId: null, pages: [],
-        orderOverrides: {}, chars: '', summary: null, lastRunAt: null,
-        ...(data.scan || {})
-      }
-      this.correction = {
-        pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
-        circled: [], overrides: {}, confirmed: false, updatedAt: null,
-        ...(data.correction || {})
-      }
-      // 字体字节不在包里（决策 五-5：只存元信息、字节按需重建），所以"已构建"标记一律清掉 ——
-      // 否则界面会显示上一次的产物信息，而内存里根本没有那份字节。
-      // 注意 `built: false` 必须写在展开**之后**：写在前面会被包里的 true 覆盖（这是个真实踩点）
-      this.font = {
-        built: false, fileName: null, familyName: null, sizes: null, stats: null,
-        coverage: null, skipped: 0, missing: 0, builtAt: null, checkup: null,
-        ...(data.font || {}),
-        built: false
-      }
-      this.glyphs = {}
-      // 刚导入的这一份就是盘上的真相，不该再被当成"有未落盘改动"（否则关页兜底会写一份多余的快照）
-      this.dirty = false
-      this.loadSource = 'idb'
     }
+
+    // 2026-10-13：原来这里还有一个 applyImportedProject（导入项目包时整份替换 store 状态）——
+    // 项目包功能已随决策 五-10 作废，它**全库零引用**，一并删除。需要时从 git 历史取回。
   }
 })

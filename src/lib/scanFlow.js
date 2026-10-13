@@ -59,7 +59,8 @@ export const SCAN_DEFAULTS = {
   pageThumbWidth: 300
 }
 
-// ── 缩略图（浏览器端画布；只在这些函数里碰画布，别的都是纯计算）──────────────
+// ── 缩略图（**离屏画布**：主线程与 Worker 里都能跑；只在这些函数里碰画布，别的都是纯计算）──────
+// 识别链路现在主跑在 Web Worker 里（决策 六-15），所以这里一律用 OffscreenCanvas —— Worker 里没有 document。
 // 把设计坐标灰度图降采样成一张小图（页级缩略图）
 function grayThumb(gray, targetWidth) {
   const factor = Math.max(1, Math.round(gray.width / targetWidth))
@@ -445,13 +446,19 @@ export async function recognizePage(file, options = {}) {
 }
 
 /**
- * 批量识别：串行逐页处理（决策 二-1），每页处理完立刻回调（界面可以边跑边显示），
+ * 批量识别（**主线程跑法**）：串行逐页处理（决策 二-1），每页处理完立刻回调（界面可以边跑边显示），
  * 全部结束后按 summarizeBatch 给出"这一批能不能继续"的判定。
+ * **两种跑法的关系**（决策 六-15 ⑨）：界面上跑的是 Worker 那条路（`lib/scanWorkerClient`），
+ *   它内部在 Worker 里也串行逐页调同一个 `recognizePage`；本函数是**主线程那条跑法**，
+ *   由 `test:scanflow` 直接调用 —— 它存在的意义就是证明"纯计算部分两种方式都能跑"。
+ *   两处的逐页循环结构一致，改动其中一处时**另一处要跟着看**（真正的计算只有 recognizePage 一份）。
  * @param {File[]} files
  * @param {object} options 见 recognizePage，另加：
- * @param {Function} [options.onPage] (record, index, total) => void —— 每页处理完回调
- * @param {Function} [options.onStage] (text) => void —— 阶段文案（预处理 / 切格 / 提取）
- * @param {object} [options.batch] 所选批次（用于字序与校验码）
+ * @param {Function} [options.onPage] (record, index, total, cache) => void —— 每页处理完回调
+ * @param {Function} [options.onPageStart] (pageNo, total) => void —— 开始处理某一页
+ * @param {Function} [options.shouldStop] () => boolean —— 返回 true 就在这一页处理完后停下（已处理的页保留）
+ * @param {object} [options.batch] 批次（内部容器）：只用来取**字序兜底**与**页数口径**；
+ *   校验码不再由它决定 —— 要么走 `expectedBatchCode` 显式传，要么在 recognizePage 里做页脚自校验
  */
 export async function recognizeBatch(files, options = {}) {
   const opt = { ...SCAN_DEFAULTS, ...options }
@@ -462,14 +469,15 @@ export async function recognizeBatch(files, options = {}) {
   // 新模型（决策 五-9）：**批次校验码不再当闸门** —— 字序由纸面参考字定位决定，而批次是自动建的容器
   // （`store.ensureScanBatch()`），两者的码本来就可能不同，拿它拦批会误伤。页脚码改用**自校验**：
   // recognizePage 把"识别出的字序算出的码"与"纸面读出的码"对一下（footerSelfCheck），对不上只提示复核。
-  // 要旧口径（校验码不符即整批拦下）可显式传 expectedBatchCode。
+  // 这里把调用方显式给的 expectedBatchCode **原样转下去**（用于页面级比对提示），没有就不传。
   const expectedBatchCode = typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
   const pages = []
   const caches = new Map()
+  let stopped = false
   for (let i = 0; i < files.length; i++) {
-    // 可中止：长任务（51 页约 85 秒）要能让用户停下来；中止后已处理完的页仍然保留（界面照常显示）
+    // 可中止：长任务（全量 61 页约 100 秒）要能让用户停下来；中止后已处理完的页仍然保留（界面照常显示）
     if (opt.shouldStop && opt.shouldStop()) {
-      opt.stopped = true
+      stopped = true
       break
     }
     // onPageStart 报"开始处理第几页"，页内的细阶段由 recognizePage 的 onStage 报（同一个回调透传下去）：
@@ -484,7 +492,7 @@ export async function recognizeBatch(files, options = {}) {
     pages.push(record)
     caches.set(i, cache)
     // onPage 带上该页的内存缓存（缩略图 / 格子拼图 / 掩膜）：界面要**边跑边显示**，
-    // 不能等整批结束才拿到（51 页要等 85 秒，期间什么都看不到）。
+    // 不能等整批结束才拿到（全量 61 页要等约 100 秒，期间什么都看不到）。
     // **要 await**：回调里要落盘字形（一页一次写），不等它就没有确定的完成顺序
     if (opt.onPage) await opt.onPage(record, i, files.length, cache)
   }
@@ -493,7 +501,7 @@ export async function recognizeBatch(files, options = {}) {
     // 页数口径：有字序文件时以**文件声明的页数**为准（自检页的判据就靠它：页号超出字表页数即自检页）
     sheetPages: typeof opt.orderPages === 'number' ? opt.orderPages : (batch ? batch.pageCount : undefined)
   })
-  return { pages, caches, summary, chars, stopped: !!opt.stopped }
+  return { pages, caches, summary, chars, stopped }
 }
 
 /**

@@ -4,7 +4,7 @@
 //   ① **把 File 读成字节再 transfer**（零拷贝）：File 直接 postMessage 会被结构化克隆整份复制，
 //      而单页彩色 8MB、几十页就是几百 MB 的复制 —— 读成 ArrayBuffer 后 transfer，Worker 那边零成本收下；
 //   ② **按需把楷体字体字节传给 Worker**（只在 Worker 里还没建过候选库时传一次，4MB 级）；
-//   ③ 把 Worker 的进度消息翻译成界面要的四个回调（`onStage` / `onPageStart` / `onPage` / `onPageIndex`）；
+//   ③ 把 Worker 的进度消息翻译成界面要的三个回调（`onStage` / `onPageStart` / `onPageIndex`）；
 //   ④ **一次只跑一个任务**：Worker 是单例、内部循环是串行的，并发发起两个任务只会互相插队
 //      （整批识别与单页重传本来也互斥：界面在两处都做了 `running` 判断）。
 //
@@ -13,7 +13,6 @@
 //   所以真正的装载做成"默认实现 + 可替换"，测试里换成同一个 worker 文件的模块形态即可。
 // 装载方式的硬约束见 workers/scanRecognition.worker.js 的头注释：file:// 下只有内联 worker 可用。
 import { loadBuiltinFont } from '../lib/referenceFont.js'
-import { LAYOUT } from '../lib/layout.js'
 
 // 默认装载：构建期内联的经典 worker（Vite 的 `?worker&inline`，见 vite.config.js 的 worker.format）
 let createWorker = () => {
@@ -21,9 +20,18 @@ let createWorker = () => {
   return import('../workers/scanRecognition.worker.js?worker&inline').then((mod) => new mod.default())
 }
 
-/** 测试/特殊环境替换装载方式（传 null 恢复默认） */
+/**
+ * 替换 Worker 的装载方式（**测试与降级用的注入口**）。
+ * 用途有两条：
+ *   ① 测试：在浏览器里直接跑源码模块时没有打包器，`?worker&inline` 用不了 —— 换成
+ *      `new Worker(new URL('…/scanRecognition.worker.js', location.href), { type: 'module' })`；
+ *   ② 降级：万一内联 worker 在真实交付物上出问题（清单 三-14 挂着的未实测项），
+ *      把装载方式换成"主线程直接跑"的空实现即可退回旧路子 —— 识别计算代码一行不用改。
+ * 传非函数时忽略（恢复默认要用 `resetWorker()` 之后的下一次装载）。
+ */
 export function setWorkerFactory(factory) {
-  createWorker = typeof factory === 'function' ? factory : createWorker
+  if (typeof factory !== 'function') return
+  createWorker = factory
   // 换装载方式必须丢掉旧实例与旧状态，否则会连到上一个 worker 上
   resetWorker()
 }
@@ -66,6 +74,11 @@ export function resetWorker() {
   fontSent = false
 }
 
+/**
+ * Worker 是否已经装载（**调试与测试用的探针**）。
+ * 生产路径不需要它：`recognizeBatchInWorker` / `recognizePageInWorker` 自己会按需装载；
+ * 留着是为了排查"到底有没有起后台线程"（清单 三-14 那条未实测项就是要人在真机上确认这件事）。
+ */
 export function isWorkerReady() {
   return !!worker
 }
@@ -213,7 +226,8 @@ function runTask(payload, hooks = {}) {
  * 整批识别（界面的主路径）。
  * @param {File[]} files 扫描件（按文件名自然序，由调用方排好）
  * @param {object} options 与 lib/scanFlow.recognizeBatch 同名同义（chars / orderChars / orderPages /
- *   expectedBatchCode / sheetPages），另加四个回调：onStage / onPageStart / onPage / onPageIndex
+ *   expectedBatchCode / sheetPages），另加三个回调：`onStage`（阶段中文文案）、
+ *   `onPageStart(pageNo, total)`、`onPageIndex(record, index, cache)`（每页完成，可 async —— 客户端会等它）
  * @returns {Promise<{pages:Array, caches:Map, summary:object|null, stopped:boolean}>}
  *   pages 是按文件顺序的页记录；caches 是 fileIndex → { thumb, sheet, masks }
  */
@@ -266,6 +280,6 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', () => resetWorker())
 }
 
-// 单页重传时界面上算出的"这份纸一共几页"仍取 LAYOUT.perPage 折算的字序文件页数 —— 这里显式引用一次，
-// 让"页内格数只有一处权威"这条口径在这个文件里也看得见（决策 六-9）
-export const PAGE_CELLS_IN_WORKER = LAYOUT.perPage
+// 2026-10-13：这里原来还有一个 `PAGE_CELLS_IN_WORKER = LAYOUT.perPage`（本想当"页内格数只有一处权威"
+// 的口径锚点），但它全库零引用、还让本文件多背一个 LAYOUT import —— 已删。
+// 页内格数的权威处本来就只有 layout.js 的 LAYOUT.perPage（决策 六-9），不必在每个文件里再声明一次。

@@ -141,7 +141,9 @@ const recoverDismissed = ref(false)
       <!-- 三张步骤卡片（2026-10-12 决策 八-16 ①）：样式一致、都能直接点进 ——
            没有"已完成 / 当前 / 进不去"的区别，也没有"制作流程"标题与"已完成 X / 3 步"那行汇总。
            每张卡片底部的进度条说明"这一步做到哪儿了"（数据来自 lib/flow.js 的 stepCardList）。
-           卡片本体用 li + role="button"：里面要放进度条（button 的内容模型不允许块级元素） -->
+           卡片本体用 li + role="button"：里面要放进度条（button 的内容模型不允许块级元素）。
+           `wizard-card` 这个类名**没有对应样式**（样式在 .step-cards / .step-card-nav 上）：
+           它只是"导航容器"的结构钩子与冒烟的定位锚点，删之前先改 test/smoke-app.mjs 的 4 处选择器 -->
       <nav class="card wizard-card" aria-label="制作流程">
         <ol class="step-cards">
           <li
