@@ -4,11 +4,14 @@
 // 为什么必须有这一步：红圈识别与顺序配对都只是初值 —— 配对错一个字，整套字体就有一个字对错人。
 //   界面确认是最后一道闸（决策 一-7）。
 // 数据来源：识别页记录在 store.scan.pages；配对初值由 lib/scanFlow.pairCorrections 算（纯逻辑、有测试）；
-//   字形缩略图从 lib/scanCache 的"格子拼图"里按格裁（与第 2 步同一套精灵图做法，不额外占内存）。
+//   字形缩略图从 lib/scanCache 的"格子拼图"里按格裁（与第 2 步同一套精灵图做法，不额外占内存）；
+//   **内存里没有时从落盘的字形分片重建**（lib/pageSheet.js）—— 刷新、关浏览器、分两次识别之后，
+//   这一页仍然要能看到"这一格写的到底是什么"（2026-10-13 用户口径）。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
+import { SCAN_DEFAULTS, buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
 import { getPageCache } from '../lib/scanCache.js'
+import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { continuousIndex } from '../lib/correctionMapper.js'
 import { LAYOUT } from '../lib/layout.js'
 
@@ -17,9 +20,14 @@ const images = ref({}) // fileIndex → { sheet }
 const message = ref('')
 const messageType = ref('info')
 const initialStats = ref(null) // 配对初值的统计（用于提示"改动过没有"）
+// 并排核对表**默认收起**（2026-10-13 用户口径）：它一屏放不下，而"有多少个字要更正、更正册覆盖了几个"
+// 这两句在描述行里已经说清了 —— 想逐行核对再点开
+const tableOpen = ref(false)
+// 按需重建缩略图的进度与失败原因（重建要解码这一页的掩膜，几十到几百毫秒）
+const rebuilding = ref({})
+const sheetError = ref({})
 
 const pages = computed(() => store.scan.pages)
-const mainPages = computed(() => pages.value.filter((p) => p.ok && p.kind !== 'correction'))
 const correctionPages = computed(() => pages.value.filter((p) => p.ok && p.kind === 'correction'))
 const hasCorrectionBook = computed(() => correctionPages.value.length > 0)
 
@@ -40,12 +48,17 @@ const correctionCellMap = computed(() => {
 })
 const inkedCells = computed(() => [...correctionCellMap.value.values()].filter((c) => c.verdict !== 'empty'))
 
-// 主区页的 fileIndex 反查（缩略图要用）
-const mainFileIndex = computed(() => {
-  const map = new Map()
-  for (const p of mainPages.value) map.set(p.pageNumber, p.fileIndex)
-  return map
-})
+/**
+ * 被圈字所在的主区页的 fileIndex（缩略图按它取）。
+ * 优先用**被圈清单里自带的那一个**（scanMeta.buildCorrectionInputs 写入）—— 以前这里按"页号 → fileIndex"
+ * 反查，多页同号（页脚读不出又没有序列定位）时会串到别的页上，表现出来就是"主区缩略图是空的"。
+ * 清单里没有这个字段时（旧版本落盘的数据）才退回按页号反查一次。
+ */
+function mainPageFileIndex(item) {
+  if (item.fileIndex !== undefined && item.fileIndex !== null) return item.fileIndex
+  const page = pages.value.find((p) => p.ok && p.kind !== 'correction' && p.pageNumber === item.pageNumber)
+  return page ? page.fileIndex : null
+}
 
 // 生效清单：被圈字逐行 + 初值配对 + 用户调整（overrides）
 const rows = computed(() => {
@@ -64,6 +77,9 @@ const rows = computed(() => {
       mainChar: item.char,
       mainCellIndex: item.mainCellIndex,
       mainPageNumber: item.pageNumber,
+      // 主区那一格的**文件序号**：被圈清单里本来就带着它（scanMeta.buildCorrectionInputs 写的），
+      // 取不到时退回按页号反查（见 mainPageFileIndex 的注释）
+      mainFileIndex: mainPageFileIndex(item),
       assigned: assigned === undefined ? null : assigned,
       source: hasOverride ? (assigned === null ? 'removed' : 'manual') : (base ? base.source : 'blank'),
       cell
@@ -126,15 +142,64 @@ function restoreImages() {
   const restored = {}
   for (const page of pages.value) {
     const cache = getPageCache(page.fileIndex)
-    if (cache) restored[page.fileIndex] = { sheet: cache.sheet }
+    if (cache && cache.sheet) restored[page.fileIndex] = { sheet: cache.sheet }
   }
   images.value = restored
+  // 上一轮重建失败的原因跟着作废（重新识别之后可能就有数据了）
+  sheetError.value = {}
+}
+
+// ── 缩略图的落盘兜底（2026-10-13）──────────────────────────────────────────
+// 背景：格子拼图只放内存（清单 四-27 的口径），刷新页面 / 关掉浏览器 / 分两次识别之后就没有了；
+//   而**字形掩膜是落盘**的，所以这里按需从分片重画一张 —— 用户看到的是缩略图，不是"不可用"。
+// 需要缩略图的是两类页：被圈字所在的主区页、以及配对到的更正册页。
+const neededFileIndexes = computed(() => {
+  const set = new Set()
+  for (const r of rows.value.list) {
+    if (r.mainFileIndex !== null && r.mainFileIndex !== undefined) set.add(r.mainFileIndex)
+    if (r.cell && r.cell.fileIndex !== undefined) set.add(r.cell.fileIndex)
+  }
+  return [...set]
+})
+
+/** 缺哪一页就补哪一页；已经在重建的不重复发起（解码一页的掩膜要几十到几百毫秒） */
+async function ensureMissingSheets() {
+  for (const fileIndex of neededFileIndexes.value) {
+    const has = images.value[fileIndex] && images.value[fileIndex].sheet
+    if (has || rebuilding.value[fileIndex]) continue
+    rebuilding.value = { ...rebuilding.value, [fileIndex]: true }
+    try {
+      const page = pages.value.find((p) => p.fileIndex === fileIndex)
+      const res = await buildPageSheetFromStore({
+        batchId: store.scan.batchId,
+        fileIndex,
+        cellThumbSize: SCAN_DEFAULTS.cellThumbSize,
+        // 红框（被红笔圈掉）不进掩膜，得从页记录取；否则重建的图会丢掉这个记号
+        markedCells: ((page && page.cells) || []).filter((c) => c.marked).map((c) => c.index)
+      })
+      if (res.ok) images.value = { ...images.value, [fileIndex]: { sheet: res.sheet } }
+      else sheetError.value = { ...sheetError.value, [fileIndex]: res.reason }
+    } finally {
+      const next = { ...rebuilding.value }
+      delete next[fileIndex]
+      rebuilding.value = next
+    }
+  }
+}
+
+/** 缩略图位置的那句提示（挂在 title 上）：重建中 / 重建不了 / 正常 */
+function thumbNote(fileIndex) {
+  if (rebuilding.value[fileIndex]) return '这一页的缩略图正在从落盘的字形重建…'
+  if (sheetError.value[fileIndex]) return '缩略图没能重建（' + sheetError.value[fileIndex] + '）'
+  if (!(images.value[fileIndex] && images.value[fileIndex].sheet)) return '这一页没有可用的缩略图'
+  return ''
 }
 
 onMounted(() => {
   restoreImages()
   if (store.scan.pages.length) ensurePairing(false)
   else setMessage('还没有识别结果：先在上面选好文件夹并完成识别', 'error')
+  ensureMissingSheets()
 })
 
 // 2026-10-11：更正核对并入「识别」这一步之后，本组件挂在识别页里、**不会再被重新挂载** ——
@@ -146,6 +211,8 @@ const scanSignature = computed(() => pages.value
 watch(scanSignature, () => {
   restoreImages()
   if (pages.value.length) ensurePairing(false)
+  // 重新识别 / 重传某一页之后，缺缩略图的页要重新发起重建（内存缓存已经换了）
+  ensureMissingSheets()
 })
 
 function applyOverride(order, value) {
@@ -223,8 +290,24 @@ function cellThumbStyle(fileIndex, cellIndex) {
         <li v-for="(m, i) in store.correction.messages" :key="i" :class="m.level === 'warn' ? 'warn' : 'info'">{{ m.text }}</li>
       </ul>
 
-      <!-- 并排核对表 -->
-      <div v-if="rows.list.length" class="corr-table">
+      <!-- 字形计划这一行**提到描述信息这一块**（2026-10-13 用户口径）：核对表收起来之后，
+           "这次一共出多少个字形、其中几个来自更正册、哪几个被圈的字没用上更正册"仍要一眼看得到 ——
+           它本来就是结论，不是表格的附属信息 -->
+      <p class="panel-hint" data-role="correction-plan">
+        字形计划：主区 <strong>{{ plan.items.length }}</strong> 个字形，其中 <strong>{{ plan.replaced }}</strong> 个来自更正册。
+        <span v-for="(p, i) in plan.problems" :key="'p' + i">{{ p }}</span>
+      </p>
+
+      <!-- 并排核对表：**默认收起**（2026-10-13 用户口径），点这个按钮才铺开逐行看 / 逐行改 -->
+      <div v-if="rows.list.length" class="corr-toggle">
+        <button class="text" type="button" data-role="correction-table-toggle" @click="tableOpen = !tableOpen">
+          {{ tableOpen ? '收起核对表' : '看核对表（' + rows.list.length + ' 对）' }}
+        </button>
+        <span v-if="!tableOpen" class="panel-hint">每一对是「主区写错的字 ↔ 更正册重写的格」；改派 / 删除都在表里</span>
+      </div>
+      <p v-else class="panel-hint">主区没有检测到被红笔圈掉的字：这份更正册暂时没有可对应的对象。</p>
+
+      <div v-if="rows.list.length && tableOpen" class="corr-table" data-role="correction-table">
         <div class="corr-head">
           <span>#</span><span>主区（写错的字）</span><span>更正册（重写的字）</span><span>操作</span>
         </div>
@@ -239,17 +322,27 @@ function cellThumbStyle(fileIndex, cellIndex) {
         >
           <span class="corr-index">{{ row.order + 1 }}</span>
           <span class="corr-side">
-            <span class="corr-thumb" :style="cellThumbStyle(mainFileIndex.get(row.mainPageNumber), row.mainCellIndex)"></span>
+            <span
+              class="corr-thumb"
+              :class="{ pending: !!thumbNote(row.mainFileIndex) }"
+              :style="cellThumbStyle(row.mainFileIndex, row.mainCellIndex)"
+              :title="thumbNote(row.mainFileIndex)"
+            ></span>
             <span class="corr-text">
               「{{ row.mainChar }}」<br />
-              第 {{ row.mainPageNumber }} 页 · 第 {{ row.mainCellIndex }} 格
+              第 {{ row.mainPageNumber }} 页 · 第 {{ row.mainCellIndex + 1 }} 格
             </span>
           </span>
           <span class="corr-side">
             <template v-if="row.assigned !== null && row.cell && row.cell.verdict !== 'empty'">
-              <span class="corr-thumb" :style="cellThumbStyle(row.cell.fileIndex, row.cell.cellIndex)"></span>
+              <span
+                class="corr-thumb"
+                :class="{ pending: !!thumbNote(row.cell.fileIndex) }"
+                :style="cellThumbStyle(row.cell.fileIndex, row.cell.cellIndex)"
+                :title="thumbNote(row.cell.fileIndex)"
+              ></span>
               <span class="corr-text">
-                第 {{ row.assigned }} 格（第 {{ row.cell.pageNumber }} 页 · 第 {{ row.cell.cellIndex }} 格）<br />
+                第 {{ row.assigned }} 格（第 {{ row.cell.pageNumber }} 页 · 第 {{ row.cell.cellIndex + 1 }} 格）<br />
                 <span class="corr-tag">{{ row.source === 'replacement' ? '补写' : (row.source === 'manual' ? '手动指定' : '顺序配对') }}</span>
               </span>
             </template>
@@ -280,16 +373,10 @@ function cellThumbStyle(fileIndex, cellIndex) {
           </span>
         </div>
       </div>
-      <p v-else class="panel-hint">主区没有检测到被红笔圈掉的字：这份更正册暂时没有可对应的对象。</p>
 
-      <p v-if="extraCells.length" class="panel-hint">
+      <p v-if="tableOpen && extraCells.length" class="panel-hint">
         更正册上还有 {{ extraCells.length }} 个多写的格没配上（{{ extraCells.map((c) => '第 ' + c.contiguous + ' 格').join('、') }}）——
         可以把上面的某一对改派到这些格，或确认是写多了。
-      </p>
-
-      <p class="panel-hint">
-        字形计划：主区 <strong>{{ plan.items.length }}</strong> 个字形，其中 <strong>{{ plan.replaced }}</strong> 个来自更正册。
-        <span v-for="(p, i) in plan.problems" :key="'p' + i">{{ p }}</span>
       </p>
 
       <div class="panel-actions">

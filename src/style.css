@@ -705,6 +705,105 @@ label.text-file input {
 
 /* ── 上传识别（第 2 步）────────────────────────────────────────────────── */
 
+/* 文件夹回执 + 识别汇总 + 这一轮的操作（2026-10-13 用户口径：三件事合成一处）：
+   左边一句"选了哪个文件夹、跑出什么结果"，右边是能做的动作（看文件清单 / 看跳过的页 / 清空结果）。 */
+.folder-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fafbfd;
+}
+
+.folder-line .panel-hint {
+  margin: 0;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.folder-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.folder-actions button.text {
+  font-size: 12px;
+}
+
+/* 「看文件清单」弹窗里的清单：一行一个文件，右侧是"去掉 / 放回"。
+   清单本身限高可滚 —— 整批 61 页时不该把弹窗拉到屏幕外。 */
+.file-group {
+  margin-top: 12px;
+}
+
+.file-group-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 220px;
+  overflow: auto;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.file-list li:first-child {
+  border-top: none;
+}
+
+.file-index {
+  flex: none;
+  min-width: 28px;
+  color: var(--text-2);
+  text-align: right;
+}
+
+.file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: var(--primary-dark);
+}
+
+.file-tag.muted {
+  background: #f4f5f8;
+  color: var(--text-2);
+}
+
+.file-note {
+  color: var(--text-2);
+}
+
 /* 批次判定与收批闸门：error 是"整批拦下"，warn 是"跳过某页"，info 是提醒 */
 .scan-summary {
   margin: 10px 0;
@@ -1103,6 +1202,19 @@ label.text-file input {
 
 /* ── 更正核对（第 2 步）：并排核对表 ───────────────────────────────────── */
 
+/* 核对表收起状态下那一行：左边是「看核对表（N 对）」，右边一句说明这个表是什么 */
+.corr-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 4px;
+}
+
+.corr-toggle .panel-hint {
+  margin: 0;
+}
+
 .corr-table {
   margin: 10px 0;
   border: 1px solid var(--border);
@@ -1162,6 +1274,12 @@ label.text-file input {
 
 .corr-thumb.empty {
   background: #f4f5f8;
+}
+
+/* 缩略图还没到位（正在从落盘的字形重建 / 重建不了）：换成中性底纹，
+   别让它看起来跟"这一格本来就没有笔迹"一样（两者对用户意味着完全不同的事） */
+.corr-thumb.pending {
+  background-color: #f4f5f8;
 }
 
 .corr-text {

@@ -80,7 +80,11 @@ export async function savePageGlyphs({ batchId, fileIndex, pageNumber = null, gl
     const { db, store } = await openProjectDb()
     const encoded = []
     for (const g of glyphs) {
-      if (!g.mask || !g.char) continue
+      // **只跳过没有掩膜的条目**（2026-10-13 修正）：以前这里还要求 `g.char` 非空，于是更正册里
+      // "逐格认字认不出来"的格不落盘 —— 可那些格一旦被配对用上（决策 一-7 的"这个字改用更正册的字形"），
+      // 刷新后取原料就取不到，**字体里会少几个字**（冒烟实测：136 个字形只收录了 128 个）。
+      // 掩膜才是原料，char 只是附带信息；它代表哪个字由配对（主区那个被圈的字）决定，不靠这一格认出来的字。
+      if (!g.mask) continue
       encoded.push({
         char: g.char,
         // 格号字段名兜底：提取模块（1.6）的格子叫 `index`，这里对外叫 `cellIndex` ——
@@ -147,6 +151,35 @@ export async function listGlyphPages() {
     return out
   } catch {
     return []
+  }
+}
+
+/**
+ * 只读**某一页**的字形分片（不传批次就用 `default` 分片键那一条）。
+ * 为什么要单独一个按页读的入口：`loadGlyphs()` 会把所有页的掩膜全部解码（全量 8274 格要好几秒），
+ *   而"刷新后重建某一页的格子拼图"只需要这一页 —— 见 lib/pageSheet.js。
+ * 返回的是**未解码的 PNG**（dataURL）：调用方按需解码，避免为一个页头把 136 张掩膜全解出来。
+ * @returns {Promise<{batchId:string, fileIndex:number, pageNumber:number|null, savedAt:string, glyphs:Array}|null>}
+ */
+export async function loadGlyphPage({ batchId = null, fileIndex = 0 } = {}) {
+  try {
+    const { db, store } = await openProjectDb()
+    const record = await new Promise((resolve) => {
+      const tx = db.transaction(store, 'readonly')
+      const req = tx.objectStore(store).get(pageKey(batchId, fileIndex))
+      req.onsuccess = () => resolve(req.result || null)
+      req.onerror = () => resolve(null)
+    })
+    if (!record) return null
+    return {
+      batchId: record.batchId,
+      fileIndex: record.fileIndex,
+      pageNumber: record.pageNumber,
+      savedAt: record.savedAt,
+      glyphs: record.glyphs || []
+    }
+  } catch {
+    return null
   }
 }
 

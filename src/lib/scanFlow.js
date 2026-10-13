@@ -9,6 +9,8 @@
 //   · 每页一张**格子缩略图**（136 格拼成一张 PNG）+ 一张**整页缩略图** + 每格的笔迹掩膜 —— 只放内存缓存
 //     （掩膜是后续字体合成（B3）的原料；两张图是"识别结果可视化"的原料。都不落盘：
 //      落盘会把整份项目对象撑到几 MB，每次改族名都要重写一遍，得不偿失 —— 见清单 四-27）
+//     **丢了的代价不一样**：格子缩略图能从落盘的字形掩膜按需重画（lib/pageSheet.js，2026-10-13 起
+//     更正核对与「看格子」都走这条兜底）；整页缩略图没有第二份来源，刷新后就是没有了（它只是"看一眼这页长什么样"）。
 import { preprocessFile } from './scanPreprocessor.js'
 import { analyzePage, summarizeBatch, DESIGN } from './gridDetector.js'
 import { attachRedMarks, defaultCellRects } from './markRecognizer.js'
@@ -17,6 +19,8 @@ import { LAYOUT } from './layout.js'
 import { getAllChars } from './charset.js'
 import { charAtCell, reorderPages, resolveBatchChars } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
+// 格子拼图与 blob→dataURL 的画法在 lib/pageSheet.js 里（刷新后从落盘字形重建时也用它，两处必须同一种画法）
+import { blobToDataUrl, cellSheet } from './pageSheet.js'
 
 // 纯逻辑（页内格号 → 字、页序重排、字形统计）在 scanMeta.js 里，这里再导出一次，
 // 让调用方只记一个入口（组件里 `import { … } from '../lib/scanFlow.js'` 就够）
@@ -61,6 +65,7 @@ export const SCAN_DEFAULTS = {
 
 // ── 缩略图（**离屏画布**：主线程与 Worker 里都能跑；只在这些函数里碰画布，别的都是纯计算）──────
 // 识别链路现在主跑在 Web Worker 里（决策 六-15），所以这里一律用 OffscreenCanvas —— Worker 里没有 document。
+// 注意**格子拼图**不在这里（它要能从落盘的字形重建，画法在 lib/pageSheet.js），这里只留页级缩略图。
 // 把设计坐标灰度图降采样成一张小图（页级缩略图）
 function grayThumb(gray, targetWidth) {
   const factor = Math.max(1, Math.round(gray.width / targetWidth))
@@ -80,67 +85,6 @@ function grayThumb(gray, targetWidth) {
   }
   ctx.putImageData(img, 0, 0)
   return canvas.convertToBlob({ type: 'image/png' })
-}
-
-// 把一页 136 格的笔迹掩膜拼成一张图（格级视图的背景图）：
-// 一页只做一次 toDataURL，比"每格一个 dataURL"快两个数量级（136 次编码 vs 1 次），体积也小得多
-function cellSheet(cells, size) {
-  const cols = LAYOUT.cols
-  const rows = LAYOUT.rows
-  const gap = 2
-  const canvas = new OffscreenCanvas(cols * size, rows * size)
-  const ctx = canvas.getContext('2d')
-  ctx.fillStyle = '#f4f5f8'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  const cellCanvas = new OffscreenCanvas(size, size)
-  const cellCtx = cellCanvas.getContext('2d')
-  for (const cell of cells) {
-    const col = cell.index % cols
-    const row = Math.floor(cell.index / cols)
-    const ox = col * size
-    const oy = row * size
-    cellCtx.fillStyle = cell.marked ? '#fff5f5' : '#ffffff'
-    cellCtx.fillRect(0, 0, size, size)
-    const mask = cell.mask
-    if (mask) {
-      // 掩膜按最近邻放大（保持笔画形状，不糊）
-      const mw = cell.width
-      const mh = cell.height
-      const box = cell.boxInSlice
-      const img = cellCtx.createImageData(size, size)
-      for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
-          // 只画书写格那一块（切片含 14 像素外扩，缩略图里不需要）
-          const sx = box.x + Math.floor(((x / size) * box.width))
-          const sy = box.y + Math.floor(((y / size) * box.height))
-          const inside = sx >= 0 && sy >= 0 && sx < mw && sy < mh
-          const v = inside && mask[sy * mw + sx] ? 0 : 255
-          const o = (y * size + x) * 4
-          img.data[o] = img.data[o + 1] = img.data[o + 2] = v
-          img.data[o + 3] = 255
-        }
-      }
-      cellCtx.putImageData(img, 0, 0)
-    }
-    ctx.drawImage(cellCanvas, ox + gap / 2, oy + gap / 2, size - gap, size - gap)
-    // 格号：小字标在左上角（缩略图大小有限，只标每页第 1、17、… 这类不进；这里标格号便于核对）
-    if (cell.marked) {
-      ctx.strokeStyle = '#e0483c'
-      ctx.lineWidth = 2
-      ctx.strokeRect(ox + 1, oy + 1, size - 2, size - 2)
-    }
-  }
-  return canvas.convertToBlob({ type: 'image/png' })
-}
-
-// Blob → dataURL（界面 <img> 直接用；ObjectURL 需要生命周期管理，dataURL 更省心）
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(new Error('缩略图编码失败'))
-    reader.readAsDataURL(blob)
-  })
 }
 
 /**

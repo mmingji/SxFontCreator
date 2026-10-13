@@ -11,12 +11,13 @@
 //   产物缓存（缩略图 / 掩膜）在 lib/scanCache.js，轻量页记录落盘在 store.scan —— 口径见 二-15 / 五-9。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { applyPageOrder, evaluateRescanAccept, evaluateScanGate, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
+import { SCAN_DEFAULTS, applyPageOrder, evaluateRescanAccept, evaluateScanGate, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
 import { cancelTask, recognizeBatchInWorker, recognizePageInWorker } from '../lib/scanWorkerClient.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { describeOrderFile } from '../lib/orderFile.js'
-import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, pickScanInputs } from '../lib/scanInput.js'
+import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, naturalCompare, pickScanInputs } from '../lib/scanInput.js'
+import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { LAYOUT } from '../lib/layout.js'
 import CharReview from './CharReview.vue'
 import CorrectionConfirm from './CorrectionConfirm.vue'
@@ -44,16 +45,41 @@ const scanInput = ref(null) // pickScanInputs 的产物：{ images, orderCandida
 const orderFile = ref(null) // 读到的字序文件：{ ok, fileName, file, reason }
 const readingDir = ref(false)
 const folderName = ref('') // 这一轮选的文件夹名（句柄那条路直接有；webkitdirectory 从相对路径里取）
-// 选完文件夹之后的**常驻回执**（2026-10-13 用户要求"选完要有明确回显"）：
-// 对话框里那一片空白（Windows 的文件夹对话框只列子文件夹）容易让人以为没选上，
-// 所以选完必须在界面上明确写出"选的是哪个文件夹、里面有多少张可用图片"。空串 = 还没选。
-const dirNote = ref('')
 // 这台浏览器有没有系统文件夹对话框（Firefox / Safari 没有）—— 界面据此决定按钮形态与那句提示
 const canPickDirectory = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
-// 上一次选中的目录句柄（只在本次会话里留着）：ref 而不是普通变量 —— 按钮文案"重读上次的文件夹"要跟着变
-const dirHandle = ref(null)
 // 这一轮用的图片（File 数组，按文件名自然序）
 const files = computed(() => (scanInput.value ? scanInput.value.images : []))
+// 2026-10-13（用户口径）：手动去掉的图片单独存一份 —— 回执里要说清"N 张里有几张是自己去掉的"，
+// 否则用户看到张数变少会以为程序漏读了；这些文件在「看文件清单」里可以一键放回。
+const removedList = ref([])
+// 选完文件夹之后的**常驻回执**（2026-10-13 用户要求"选完要有明确回显"）：
+// 对话框里那一片空白（Windows 的文件夹对话框只列子文件夹）容易让人以为没选上，
+// 所以选完必须明确写出"选的是哪个文件夹、里面有多少张可用图片"。空串 = 还没选。
+// 写成 computed 而不是在各处赋值：手动去掉几张之后这一行要**自己**跟着变（原来的写法会显示旧张数）。
+const dirNote = computed(() => {
+  if (!scanInput.value) return ''
+  const name = scanInput.value.folderName || folderName.value || '（未命名文件夹）'
+  const n = files.value.length
+  if (!n) return '已选文件夹「' + name + '」· 没有可用的图片'
+  return '已选文件夹「' + name + '」· ' + n + ' 张图片' +
+    (removedList.value.length ? '（已手动去掉 ' + removedList.value.length + ' 张）' : '')
+})
+// 字序文件候选与"正在用的那一份"：正在用的不可移除（移掉它这一轮就退化成"认纸面参考字"定字序）
+const orderCandidates = computed(() => (scanInput.value ? scanInput.value.orderCandidates : []))
+const activeOrderName = computed(() => (orderFile.value && orderFile.value.ok ? orderFile.value.fileName : ''))
+// 可移除的候选：**只有两个及以上候选时才谈得上"多余的"**，且正在用的那一份永远不在其中
+const removableOrderFiles = computed(() => orderCandidates.value.length < 2
+  ? []
+  : orderCandidates.value.filter((f) => f.name !== activeOrderName.value))
+// 「看文件清单」弹窗：列出这一轮挑中的图片与字序文件，图片可以逐张移除
+const fileListOpen = ref(false)
+// 「看跳过的页」弹窗：识别时被跳过的那几十页，原因往往一模一样（比如整批都不是本程序的纸），
+// 常驻在页面上会把这一页撑得很长 —— 收进弹窗，页面上只留一个带数量的入口。
+const skippedOpen = ref(false)
+// 正在按需重建的页（缩略图只在内存里活一次会话，刷新后要按需从落盘字形重画）：fileIndex 集合
+const rebuilding = ref({})
+// 重建失败的页与原因（例如这一页的字形已被"清空识别结果"删掉）：界面据此给中文说明，而不是空一块白
+const sheetError = ref({})
 const running = ref(false)
 const stage = ref('')
 // 进度（决策 二-18 ④ 要显示四件事）：当前动作、页进度、还剩几步、预计剩余时间
@@ -100,6 +126,26 @@ const gate = computed(() => evaluateScanGate({
   summary: store.scan.summary || { problems: [] },
   pages: pages.value
 }))
+
+// 这一轮的识别汇总（2026-10-13 用户口径）：原来"识别完成：N 页，用时 X 秒"与"这批共 N 页：可用…"
+// 各占一行、还分处两块，现在并成一句，跟在「已选文件夹「X」· N 张图片」后面 —— 一眼看完"选了什么、跑出什么"。
+// 放在内存里（runInfo）而不是落盘：刷新之后"用时"本来就没有意义，剩下的统计仍由 store 里的页记录给出。
+const runInfo = ref(null) // { stopped:boolean, pages:number, seconds:string }
+const runSummary = computed(() => {
+  const g = gate.value
+  const parts = []
+  if (runInfo.value) {
+    parts.push((runInfo.value.stopped ? '已中止：' : '识别完成：') + runInfo.value.pages + ' 页，用时 ' + runInfo.value.seconds + ' 秒')
+  }
+  if (pages.value.length) {
+    parts.push('可用 ' + g.usablePages + ' 页' + (g.skipped.length ? '、跳过 ' + g.skipped.length + ' 页' : '') +
+      '；写出 ' + stats.value.written + ' 格（可疑 ' + stats.value.suspect + '），被红笔圈 ' + stats.value.marked +
+      ' 个，去重后 ' + stats.value.uniqueChars + ' 个字')
+    // 整批被拦下时给一句结论；**原因不留在这里**，它常驻在下面（拦下的原因必须一眼看到，不跟着详情进弹窗）
+    if (g.blockers.length) parts.push('这一批被拦下（原因见下）')
+  }
+  return parts.join(' · ')
+})
 
 // ── 页级结果里的"新模型"信息（定位到的字序 / 还要确认几格）──────────────────
 // 序列标签：与 lib/referenceCharReader.js 的两份全序一一对应（页记录里只留了 key）
@@ -180,7 +226,6 @@ watch(() => store.scan.batchId, (id) => {
 // 默认实现就是真实调用：拿目录句柄 → 读根层文件（lib/scanInput.js 的 collectDirectoryFiles）。
 let pickDirectoryImpl = async () => {
   const handle = await window.showDirectoryPicker({ mode: 'read' })
-  dirHandle.value = handle
   return await collectDirectoryFiles(handle)
 }
 
@@ -191,8 +236,6 @@ async function onPickDirClick() {
   try {
     const res = await pickDirectoryImpl()
     if (!res) return // 用户取消（AbortError 由下面接住，这里兜住"返回空"的实现）
-    // dirHandle 在默认实现里已经存好；注入的假实现没有句柄，就保持原来那个
-    if (res.handle) dirHandle.value = res.handle
     applyDirFiles(res.files || [], res.folderName || '', res.subdirFiles || 0)
   } catch (e) {
     // 用户点了取消：不是错误，什么都不做（静默返回，界面不弹红字）
@@ -224,9 +267,10 @@ function onPickDirInput(event) {
 async function applyDirFiles(picked, folder, subdirFiles) {
   orderFile.value = null
   folderName.value = folder || ''
+  removedList.value = [] // 换了一个文件夹：上一轮手动去掉的那几张与这一轮无关
+  runInfo.value = null // 上一轮的识别汇总也跟着作废（下面的统计由新清单重新算）
   if (!picked.length) {
     scanInput.value = null
-    dirNote.value = ''
     setMessage(folder ? '文件夹「' + folder + '」里没有文件' : '这个文件夹里没有文件', 'error')
     return
   }
@@ -238,12 +282,9 @@ async function applyDirFiles(picked, folder, subdirFiles) {
     // 字序文件：固定名「字序.json」优先，读不了再试目录里别的 .json（决策 一-18 ② 的容错）
     const found = await findOrderFile(input.orderCandidates, { perPage: LAYOUT.perPage })
     orderFile.value = found
-    // ① 状态栏那行**常驻读出"选了哪个文件夹"**（2026-10-13 用户要求：选完要有明确回执）
-    const name = input.folderName || '（未命名文件夹）'
-    dirNote.value = input.images.length
-      ? '已选文件夹「' + name + '」· ' + input.images.length + ' 张图片'
-      : '已选文件夹「' + name + '」· 没有可用的图片'
+    // ① 回执行由 dirNote（computed）常驻给出："选了哪个文件夹、几张图片"
     // ② 下面这段是一次性的说明：忽略了什么、字序从哪来
+    const name = input.folderName || '（未命名文件夹）'
     const parts = ['文件夹「' + name + '」：找到 ' + input.images.length + ' 张图片']
     const ignored = input.ignoredSubdir || subdirFiles
     if (ignored) parts.push('忽略了子文件夹里的 ' + ignored + ' 个文件')
@@ -264,30 +305,51 @@ async function applyDirFiles(picked, folder, subdirFiles) {
   }
 }
 
+// ── 「看文件清单」弹窗：这一轮到底挑了哪些文件，不要的可以去掉（2026-10-13 用户口径）──────
 /**
- * 再次点按钮时的行为：已经有目录句柄就直接重读同一个目录，**不再弹一次对话框**。
- * 为什么要这样：`showDirectoryPicker` 每次点击都会弹窗，而 `getFile()` 需要"用户激活"还没过期 ——
- *   直接沿用同一个句柄重读既省一次点击，也绕开了激活窗口过期导致的读取失败。
- * 传 force=true 时才重新弹（用户想换一个文件夹）。
+ * 去掉一张图片：这一轮就不识别它了（**只动本轮的清单，磁盘上的文件一个不动**）。
+ * 为什么要能做：目录里常混着上一次的废纸、预览图、别的扫描件；一张坏页会把整批的字序对错，
+ *   而"重新选一个干净的文件夹"对用户来说成本更高。
  */
-async function reopenDir() {
-  if (!dirHandle.value || running.value || readingDir.value) return
-  readingDir.value = true
-  try {
-    const res = await collectDirectoryFiles(dirHandle.value)
-    applyDirFiles(res.files || [], res.folderName || '', res.subdirFiles || 0)
-  } catch (e) {
-    dirHandle.value = null // 句柄失效（目录被删 / 权限收回）：下一次点击重新弹对话框
-    setMessage('重新读取上次的文件夹失败（' + (e && e.message ? e.message : e) + '），请再点一次「选择文件夹」重选', 'warn')
-  } finally {
-    readingDir.value = false
-  }
+function removeImage(file) {
+  if (!scanInput.value || running.value) return
+  const rest = scanInput.value.images.filter((f) => f !== file)
+  if (rest.length === scanInput.value.images.length) return
+  removedList.value = [...removedList.value, file]
+  scanInput.value = { ...scanInput.value, images: rest }
+  setMessage(rest.length
+    ? '已从这一轮里去掉「' + (file.name || '（无名文件）') + '」，还剩 ' + rest.length + ' 张'
+    : '已去掉「' + (file.name || '（无名文件）') + '」，这一轮没有可识别的图片了：放回它，或重新选一个文件夹', rest.length ? 'info' : 'warn')
 }
 
+/** 把去掉的图片放回来（按文件名自然序插回原位） */
+function restoreImage(file) {
+  if (!scanInput.value) return
+  removedList.value = removedList.value.filter((f) => f !== file)
+  const merged = [...scanInput.value.images, file].sort((a, b) => naturalCompare(a.name, b.name))
+  scanInput.value = { ...scanInput.value, images: merged }
+  setMessage('已把「' + (file.name || '（无名文件）') + '」放回这一轮（共 ' + merged.length + ' 张）', 'info')
+}
+
+/**
+ * 去掉一个**多余的字序文件候选**（用户 2026-10-13 口径）：
+ *   · 正在用的那一份**不给移除入口** —— 移掉它这一轮就退化成"认纸面参考字"定字序，
+ *     那是会影响整批结果的开关，不该混在"清理多余文件"里；
+ *   · 目录里只有一份 json 时也不给移除（没有"多余的"可言）；
+ *   · 两份及以上时才列出其余候选，供清掉"另存一份 / 拷贝过来的旧字序"。
+ */
+function removeOrderCandidate(file) {
+  if (!scanInput.value || running.value) return
+  scanInput.value = { ...scanInput.value, orderCandidates: scanInput.value.orderCandidates.filter((f) => f !== file) }
+  setMessage('已去掉字序文件候选「' + file.name + '」；这一轮用的仍是「' + (activeOrderName.value || '（没有可用的字序文件）') + '」', 'info')
+}
+
+// 按钮只有一个（2026-10-13 用户口径：去掉「换一个文件夹」，把「重读上次的文件夹」改成「重新选择文件夹」）：
+// 语义就是"再选一次" —— 每次点都重新弹系统对话框，不再区分"重读上次那个目录"这条捷径。
 const pickLabel = computed(() => {
   if (readingDir.value) return '正在读取…'
   if (!files.value.length) return '选择文件夹'
-  return dirHandle.value ? '重读上次的文件夹' : '重新选择文件夹'
+  return '重新选择文件夹'
 })
 
 onMounted(() => {
@@ -297,7 +359,6 @@ onMounted(() => {
     reset() {
       pickDirectoryImpl = async () => {
         const handle = await window.showDirectoryPicker({ mode: 'read' })
-        dirHandle.value = handle
         return await collectDirectoryFiles(handle)
       }
     }
@@ -324,6 +385,8 @@ async function start() {
   zoomIndex.value = null
   closeReview()
   images.value = {}
+  sheetError.value = {} // 新一轮识别会重新生成拼图，上一轮的"重建失败"不该留着
+  rebuilding.value = {}
   progress.value = { done: 0, total: files.value.length, currentPage: 0, stageIndex: 0, etaMs: null }
   runStartedAt = performance.now()
   const t0 = runStartedAt
@@ -394,11 +457,10 @@ async function start() {
     })
     store.finishScanRun({ summary: res.summary })
     const secs = ((performance.now() - t0) / 1000).toFixed(1)
-    setMessage(
-      (res.stopped ? '已中止：' : '识别完成：') + res.pages.length + ' 页，用时 ' + secs + ' 秒；' +
-        (res.summary && res.summary.ok ? '这一批可以继续' : '这一批被拦下（见下面的原因）'),
-      res.summary && res.summary.ok ? 'done' : 'error'
-    )
+    // 这一轮的结论并进「已选文件夹…」那一行（2026-10-13 用户口径），这里不再各报一遍；
+    // 但**识别过程中的错误**（字形落盘失败等）要留着，不能被清掉
+    runInfo.value = { stopped: !!res.stopped, pages: res.pages.length, seconds: secs }
+    if (messageType.value !== 'error') setMessage('', 'info')
   } catch (e) {
     setMessage('识别失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
@@ -417,10 +479,13 @@ function stop() {
 
 function clearAll() {
   if (running.value) return
-  // 只清"结果"：选好的文件夹留着 —— 用户点"清空结果"多半是想重跑一遍，不是想重新选目录
+  // 只清"结果"：选好的文件夹与手动去掉的清单都留着 —— 用户点"清空结果"多半是想重跑一遍，不是想重新选目录
   images.value = {}
   openIndex.value = null
   zoomIndex.value = null
+  runInfo.value = null
+  sheetError.value = {}
+  rebuilding.value = {}
   clearPageCache()
   // 字形是落盘的：清结果要连分片键一起清，否则下次识别会与旧字形混在一起
   clearGlyphs({ batchId: store.scan.batchId }).then((r) => {
@@ -624,6 +689,41 @@ function togglePage(page) {
   if (!page.ok) return
   openIndex.value = openIndex.value === page.fileIndex ? null : page.fileIndex
   zoomIndex.value = null
+  if (openIndex.value !== null) ensureSheet(page)
+}
+
+/**
+ * 按需把这一页的格子拼图补上（2026-10-13 用户口径：刷新 / 重进之后也要能看字）。
+ * 为什么需要：拼图只在内存缓存里活一次会话（清单 四-27 的口径），而**字形掩膜是落盘的** ——
+ * 刷新过页面就直接从落盘分片重画一张，而不是告诉用户"缩略图不可用"。
+ * 已经有的不再重画；同一页正在重建时不重复发起。
+ */
+async function ensureSheet(page) {
+  if (!page || !page.ok) return
+  const has = images.value[page.fileIndex] && images.value[page.fileIndex].sheet
+  if (has || rebuilding.value[page.fileIndex]) return
+  rebuilding.value = { ...rebuilding.value, [page.fileIndex]: true }
+  try {
+    const res = await buildPageSheetFromStore({
+      batchId: store.scan.batchId,
+      fileIndex: page.fileIndex,
+      cellThumbSize: SCAN_DEFAULTS.cellThumbSize,
+      // 被红笔圈掉的格：落盘的掩膜里没有这个信息，从页记录取（否则重建的图会丢掉红框）
+      markedCells: (page.cells || []).filter((c) => c.marked).map((c) => c.index)
+    })
+    if (res.ok) {
+      images.value = {
+        ...images.value,
+        [page.fileIndex]: { ...(images.value[page.fileIndex] || {}), sheet: res.sheet }
+      }
+    } else {
+      sheetError.value = { ...sheetError.value, [page.fileIndex]: res.reason }
+    }
+  } finally {
+    const next = { ...rebuilding.value }
+    delete next[page.fileIndex]
+    rebuilding.value = next
+  }
 }
 const COLS = LAYOUT.cols
 const ROWS = LAYOUT.rows
@@ -644,7 +744,9 @@ function cellClass(cell) {
   ]
 }
 function cellTitle(cell) {
-  return '第 ' + cell.index + ' 格' + (cell.char ? '「' + cell.char + '」' : '') +
+  // 格号一律**1 起**显示（内部 cell.index 是 0 起）：用户数格子是从 1 数起的，
+  // 而"第 0 格"这种说法在界面上只会让人怀疑是不是少了一格
+  return '第 ' + (cell.index + 1) + ' 格' + (cell.char ? '「' + cell.char + '」' : '') +
     '：' + (cell.verdict === 'empty' ? '没写' : (cell.verdict === 'suspect' ? '可疑（偏淡或太小）' : '有笔迹')) +
     '，墨迹 ' + cell.inkPixels + ' 像素' +
     (cell.marked ? '，被红笔圈掉' : '') +
@@ -694,8 +796,14 @@ const zoomIsMarkedLabel = computed(() => {
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">识别方式</span>
+        <!-- 选目录的两句要点并进这一行（2026-10-13 用户口径：原来单独一段太长、与这一行说的是一件事）：
+             ① 字序从哪来；② 系统文件夹对话框为什么看起来是空的（Windows 只列子文件夹），不写清用户会以为没选上 -->
         <span class="panel-hint" data-role="scan-mode">
-          选一个文件夹即可：程序读里面的图片，字序优先按第 1 步压缩包里的 <strong>字序.json</strong> 定，没有就用纸面上的参考字。
+          选一个文件夹即可：程序读里面的图片，字序优先按第 1 步压缩包里的 <strong>字序.json</strong> 定，没有就用纸面上的参考字。<template
+            v-if="canPickDirectory"
+          >对话框只列子文件夹、不列文件，<strong>列表是空的也没关系</strong> —— 底部「文件夹」框里显示的就是你选中的那一层，直接确认即可。</template><template
+            v-else
+          >这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样；想要系统对话框请用 Chrome 或 Edge（86+）。</template>
         </span>
       </div>
     </div>
@@ -703,28 +811,20 @@ const zoomIsMarkedLabel = computed(() => {
     <!-- ② 文件夹与进度 -->
     <div class="panel-row">
       <div class="panel-field">
-        <!-- 主路：系统文件夹对话框（showDirectoryPicker）；已有句柄时按钮变成"重读上次的文件夹"。
+        <!-- 主路：系统文件夹对话框（showDirectoryPicker）。
+             2026-10-13 用户口径：只留一个按钮 —— 去掉「换一个文件夹」，「重读上次的文件夹」改成
+             「重新选择文件夹」，点它就重新弹对话框（不再有"直接重读上次那个目录"这条捷径）。
              退路：这台浏览器没有这个接口（Firefox / Safari）时改用 <input webkitdirectory>，
-             并明说一句换浏览器能得到系统对话框 —— 不静默降级（决策 六-13） -->
+             那句说明已并进上面的「识别方式」里（不静默降级） -->
         <template v-if="canPickDirectory">
           <button
             class="primary"
             type="button"
             data-role="pick-dir"
             :disabled="running || readingDir"
-            @click="dirHandle && files.length ? reopenDir() : onPickDirClick()"
-          >
-            {{ pickLabel }}
-          </button>
-          <button
-            v-if="dirHandle && files.length"
-            class="text"
-            type="button"
-            data-role="pick-dir-again"
-            :disabled="running || readingDir"
             @click="onPickDirClick"
           >
-            换一个文件夹
+            {{ pickLabel }}
           </button>
         </template>
         <label v-else class="file-button" data-role="pick-dir">
@@ -740,25 +840,39 @@ const zoomIsMarkedLabel = computed(() => {
         </label>
         <button class="primary" data-role="scan-start" :disabled="running || readingDir || !files.length" @click="start">开始识别</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
-        <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
         <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
       </div>
     </div>
-    <!-- 选完之后的回执行：明确写出"选的是哪个文件夹、里面有多少张可用图片"。
-         为什么需要它：系统文件夹对话框里那一片空白（Windows 的文件夹对话框只列子文件夹、不列文件）
-         很容易让人以为没选上 —— 选完必须在这里给出确定的结果。
-         用 .panel-hint 而不是 .panel-message：后者在冒烟里是"识别状态"的常驻位置，
-         两条都占同一个选择器时，识别完成的消息会被这一条挤掉 -->
-    <p v-if="dirNote" class="panel-hint" data-role="dir-note">
-      <strong>{{ dirNote }}</strong>
-    </p>
-    <p class="step-note" data-role="picker-note">
-      <template v-if="canPickDirectory">
-        点「选择文件夹」打开系统文件夹对话框，选中扫描件所在的那一层。
-        <strong>对话框里的列表是空的也没关系</strong> —— 它只列子文件夹、不列文件，底部「文件夹」框里显示的就是你选中的那一层，直接点「选择文件夹」即可。
-      </template>
-      <template v-else>这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样；想要系统对话框请用 Chrome 或 Edge（86+）。</template>
-    </p>
+    <!-- ③ 这一轮的文件回执 + 识别汇总 + 操作（2026-10-13 用户口径，三件事合成一处）：
+         · 回执：明确写出"选的是哪个文件夹、里面有多少张可用图片" —— 系统对话框那片空白容易让人以为没选上；
+         · 汇总：把"识别完成：N 页，用时 X 秒"与"可用 / 跳过 / 写出 / 被圈 / 去重"并成一句跟在这里，
+           原来这两行分处两块、还各说一遍页数；
+         · 操作：「看文件清单」「看跳过的 N 页」「清空结果」都挂在这一行上（清空结果原在按钮行里，
+           它作用的是"结果"，跟这一行的信息是一件事）。
+         用 .panel-hint 而不是 .panel-message：后者是"识别状态"的常驻位置，两条占同一个选择器会互相挤掉 -->
+    <!-- 没有选文件夹这一行也要在（只要有识别结果）：刷新之后本轮清单是空的，但**结果还在** ——
+         清空结果、看跳过详情这两个入口不能跟着一起消失 -->
+    <div v-if="dirNote || pages.length" class="folder-line" data-role="dir-note">
+      <p class="panel-hint">
+        <strong>{{ dirNote || '这一轮还没有选文件夹' }}</strong>
+        <span v-if="runSummary" data-role="run-summary"> · {{ runSummary }}</span>
+      </p>
+      <div class="folder-actions">
+        <button
+          class="text"
+          type="button"
+          data-role="file-list"
+          :disabled="(!files.length && !orderCandidates.length) || running"
+          @click="fileListOpen = true"
+        >
+          看文件清单
+        </button>
+        <button v-if="gate.skipped.length" class="text" type="button" data-role="skipped-open" @click="skippedOpen = true">
+          看跳过的 {{ gate.skipped.length }} 页
+        </button>
+        <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
+      </div>
+    </div>
     <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
     <p v-if="running" class="panel-hint" data-role="scan-progress">
       当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}；
@@ -771,19 +885,12 @@ const zoomIsMarkedLabel = computed(() => {
       —— 存的是笔迹掩膜（PNG 无损），<strong>刷新或关掉浏览器后不用重扫</strong>，下一步生成字体直接用它
     </p>
 
-    <!-- ③ 批次判定与收批闸门 -->
+    <!-- ④ 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
+         逐页的"跳过：第 N 个文件…"清单改成上面那个「看跳过的 N 页」按钮点开看 ——
+         它常常几十条、原因还一模一样，铺在页面上会把这一页撑得很长（2026-10-13 用户口径） -->
     <div v-if="pages.length" class="scan-summary">
-      <p class="panel-hint">
-        这批共 {{ pages.length }} 页：可用 {{ gate.usablePages }} 页<span v-if="gate.skipped.length">、跳过 {{ gate.skipped.length }} 页</span>；
-        写出 {{ stats.written }} 格（可疑 {{ stats.suspect }}），被红笔圈 {{ stats.marked }} 个，去重后 {{ stats.uniqueChars }} 个字
-      </p>
       <ul v-if="gate.blockers.length" class="scan-problems">
         <li v-for="(text, i) in gate.blockers" :key="'b' + i" class="error">拦下：{{ text }}</li>
-      </ul>
-      <ul v-if="gate.skipped.length" class="scan-problems">
-        <li v-for="item in gate.skipped" :key="'s' + item.fileIndex" class="warn">
-          跳过：第 {{ item.fileIndex + 1 }} 个文件{{ item.fileName ? '（' + item.fileName + '）' : '' }} —— {{ item.reason }}
-        </li>
       </ul>
       <ul v-if="gate.notes.length" class="scan-problems">
         <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
@@ -887,8 +994,14 @@ const zoomIsMarkedLabel = computed(() => {
         </div>
         <p class="panel-hint">{{ sheetSummary(sheetPage) }}</p>
 
-        <div v-if="!images[sheetPage.fileIndex] || !images[sheetPage.fileIndex].sheet" class="panel-hint">
-          格子缩略图不可用（刷新页面后内存缓存会清空）—— 重新点「开始识别」跑一遍就能看到
+        <!-- 拼图只在内存里活一次会话（清单 四-27 的口径），刷新之后**按需从落盘的字形重画** ——
+             所以这里不再说"缩略图不可用"，而是给"正在重建 / 重建不了（附中文原因）"两种确切状态 -->
+        <div v-if="!images[sheetPage.fileIndex] || !images[sheetPage.fileIndex].sheet" class="panel-hint" data-role="sheet-rebuild">
+          <template v-if="rebuilding[sheetPage.fileIndex]">正在从落盘的字形重建这一页的格子图…</template>
+          <template v-else-if="sheetError[sheetPage.fileIndex]">
+            这一页的格子图没能重建：{{ sheetError[sheetPage.fileIndex] }} —— 重新点「开始识别」跑一遍就能看到
+          </template>
+          <template v-else>正在读取这一页的格子图…</template>
         </div>
         <div v-else class="scan-grid-wrap">
           <img class="scan-grid-sheet" :src="images[sheetPage.fileIndex].sheet" alt="136 格缩略图" />
@@ -912,7 +1025,7 @@ const zoomIsMarkedLabel = computed(() => {
         <div v-if="zoomCell" class="scan-cell-zoom">
           <div class="scan-cell-zoom-img" :style="zoomStyle"></div>
           <div class="scan-cell-zoom-info">
-            <strong>第 {{ zoomCell.cell.index }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
+            <strong>第 {{ zoomCell.cell.index + 1 }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
           </div>
         </div>
@@ -937,6 +1050,87 @@ const zoomIsMarkedLabel = computed(() => {
       按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
       并把每页的页号来源、写出格数与可疑格报给你；认不准的格会开一个「逐格确认」让你过一眼。
     </p>
+
+    <!-- 这一轮选中的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。
+         只动本轮的清单 —— 磁盘上的文件一个都不动（浏览器本来也删不了用户的文件） -->
+    <div v-if="fileListOpen" class="backup-overlay" @click.self="fileListOpen = false">
+      <div class="backup-modal" role="dialog" aria-label="这一轮选中的文件" data-role="file-list-modal">
+        <div class="backup-head">
+          <h3>这一轮选中的文件</h3>
+          <button class="text" type="button" data-role="file-list-close" @click="fileListOpen = false">关闭</button>
+        </div>
+        <p class="panel-hint">
+          识别只读这一层里的图片与字序文件。不要的文件在这里去掉，识别时就不会读它 —— <strong>磁盘上的文件不会被删</strong>。
+        </p>
+
+        <div class="file-group">
+          <p class="file-group-title">字序文件</p>
+          <ul class="file-list" data-role="file-list-orders">
+            <li v-for="f in orderCandidates" :key="'o' + f.name">
+              <span class="file-name">{{ f.name }}</span>
+              <span v-if="f.name === activeOrderName" class="file-tag">正在使用</span>
+              <span v-else class="file-tag muted">候选</span>
+              <button
+                v-if="removableOrderFiles.indexOf(f) >= 0"
+                class="text"
+                type="button"
+                data-role="order-remove"
+                @click="removeOrderCandidate(f)"
+              >
+                去掉
+              </button>
+            </li>
+            <li v-if="!orderCandidates.length" class="file-note">
+              没有字序文件：这一轮靠认纸面参考字定字序（要求这份纸是本程序模板印的）
+            </li>
+          </ul>
+          <p v-if="orderCandidates.length > 1" class="panel-hint">
+            这个文件夹里有 {{ orderCandidates.length }} 个 json 文件：字序按"固定名优先"挑中了「{{ activeOrderName || '（都不合格式）' }}」——
+            多余的是"另存一份 / 从别处拷来的"旧字序，可以在这里去掉，免得以后挑错。
+          </p>
+          <p v-else-if="orderCandidates.length === 1 && activeOrderName" class="panel-hint">
+            只有一个字序文件，它就是这一轮要用的，不能在这里去掉（去掉它整批就改成认纸面参考字定字序了）。
+          </p>
+        </div>
+
+        <div class="file-group">
+          <p class="file-group-title">图片（{{ files.length }}）</p>
+          <ul class="file-list" data-role="file-list-images">
+            <li v-for="(f, i) in files" :key="'i' + f.name + i">
+              <span class="file-index">{{ i + 1 }}</span>
+              <span class="file-name">{{ f.name }}</span>
+              <button class="text" type="button" data-role="image-remove" @click="removeImage(f)">去掉</button>
+            </li>
+            <li v-if="!files.length" class="file-note">这一轮没有图片了：把去掉的放回来，或重新选一个文件夹</li>
+          </ul>
+        </div>
+
+        <div v-if="removedList.length" class="file-group">
+          <p class="file-group-title">已去掉的图片（{{ removedList.length }}）</p>
+          <ul class="file-list" data-role="file-list-removed">
+            <li v-for="(f, i) in removedList" :key="'r' + f.name + i">
+              <span class="file-name">{{ f.name }}</span>
+              <button class="text" type="button" data-role="image-restore" @click="restoreImage(f)">放回</button>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- 跳过的页（详情弹窗）：整批被跳过时往往几十条、原因还一模一样，收在这里看 -->
+    <div v-if="skippedOpen" class="backup-overlay" @click.self="skippedOpen = false">
+      <div class="backup-modal" role="dialog" aria-label="跳过的页" data-role="skipped-modal">
+        <div class="backup-head">
+          <h3>跳过的 {{ gate.skipped.length }} 页</h3>
+          <button class="text" type="button" data-role="skipped-close" @click="skippedOpen = false">关闭</button>
+        </div>
+        <ul class="scan-problems">
+          <li v-for="item in gate.skipped" :key="'s' + item.fileIndex" class="warn">
+            跳过：第 {{ item.fileIndex + 1 }} 个文件{{ item.fileName ? '（' + item.fileName + '）' : '' }} —— {{ item.reason }}
+          </li>
+        </ul>
+      </div>
+    </div>
 
     <!-- 逐格复核（2026-10-11 新模型）：认不出整页字序的页在这里逐格确认 / 手输 -->
     <CharReview v-if="reviewPage" :page="reviewPage" :open="reviewOpen" @close="closeReview" />
