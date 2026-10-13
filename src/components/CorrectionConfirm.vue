@@ -9,7 +9,7 @@
 //   这一页仍然要能看到"这一格写的到底是什么"（2026-10-13 用户口径）。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { SCAN_DEFAULTS, buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
+import { SCAN_DEFAULTS, pairCorrections } from '../lib/scanFlow.js'
 import { getPageCache } from '../lib/scanCache.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { continuousIndex } from '../lib/correctionMapper.js'
@@ -102,12 +102,12 @@ const effectivePairs = computed(() => rows.value.list
   })))
 
 // 字体构建的输入计划：主区字形 + 更正覆盖（决策 一-7 的"保留主区原字形"在这里体现）
-const plan = computed(() => buildFinalGlyphPlan(pages.value, {
-  pairs: effectivePairs.value,
-  circled: store.correction.circled || []
-}))
+// （2026-10-13：这一块界面不再显示"主区 X 个字形"——那是识别结果，在上面那块里说；
+//   这里只说更正册覆盖了几个字。plan 仍由第 3 步生成字体时算，不必在这里再算一遍。）
 
-const unmatchedRows = computed(() => rows.value.list.filter((r) => r.assigned === null || !r.cell || r.cell.verdict === 'empty'))
+const keptInMain = computed(() => rows.value.list.filter((r) => r.assigned === null || !r.cell || r.cell.verdict === 'empty'))
+// 有没有手动调整过（改派 / 删除）：决定「恢复默认」能不能点
+const hasOverrides = computed(() => Object.keys(store.correction.overrides || {}).length > 0)
 const extraCells = computed(() => {
   const used = new Set(rows.value.list.map((r) => r.assigned).filter((v) => v !== null))
   return inkedCells.value.filter((c) => !used.has(c.contiguous) && c.contiguous > rows.value.list.length)
@@ -154,13 +154,26 @@ function restoreImages() {
 //   而**字形掩膜是落盘**的，所以这里按需从分片重画一张 —— 用户看到的是缩略图，不是"不可用"。
 // 需要缩略图的是两类页：被圈字所在的主区页、以及配对到的更正册页。
 const neededFileIndexes = computed(() => {
-  const set = new Set()
+  // 更正册页排在最前（2026-10-13）：要看的正是"更正册上写的是什么"，而重建是逐页解码掩膜
+  // （几十到几百毫秒一页）—— 主区页多的时候，先出更正册那一列才符合用户看表的顺序
+  const correctionBook = new Set()
+  const mainSheets = new Set()
   for (const r of rows.value.list) {
-    if (r.mainFileIndex !== null && r.mainFileIndex !== undefined) set.add(r.mainFileIndex)
-    if (r.cell && r.cell.fileIndex !== undefined) set.add(r.cell.fileIndex)
+    if (r.cell && r.cell.fileIndex !== undefined) correctionBook.add(r.cell.fileIndex)
+    if (r.mainFileIndex !== null && r.mainFileIndex !== undefined) mainSheets.add(r.mainFileIndex)
   }
-  return [...set]
+  return [...correctionBook, ...mainSheets]
 })
+
+// 缩略图重建失败的页（原因在 sheetError 里）。
+// 为什么要在区块里说一遍：那原因原来只写在缩略图的 title 上 —— 触屏看不到、鼠标也要悬停，
+//   用户看到的就是"一块灰"，与"这一格本来就没有笔迹"长得一样（2026-10-13 复现确认的第二种缺陷）。
+const thumbErrorFiles = computed(() => Object.keys(sheetError.value || {}).map((k) => Number(k)))
+function thumbFailReason(fileIndex) {
+  const page = pages.value.find((p) => p.fileIndex === fileIndex)
+  const name = page && page.fileName ? page.fileName : ('第 ' + (fileIndex + 1) + ' 个文件')
+  return name + '：' + sheetError.value[fileIndex]
+}
 
 /** 缺哪一页就补哪一页；已经在重建的不重复发起（解码一页的掩膜要几十到几百毫秒） */
 async function ensureMissingSheets() {
@@ -243,10 +256,20 @@ function applyOverride(order, value) {
     : '已把「' + (next.find((r) => r.order === order) || {}).mainChar + '」改派到更正册第 ' + value + ' 格', 'info')
 }
 
-function confirmAll() {
-  store.setCorrectionConfirmed(true)
-  setMessage('已确认这份更正对应：' + effectivePairs.value.length + ' 个字用更正册字形，' +
-    ((store.correction.circled || []).length - effectivePairs.value.length) + ' 个被圈的字保留主区原字形', 'done')
+/**
+ * 恢复默认（2026-10-13 用户口径）：**清掉手动调整**，回到程序按识别结果给出的那一套配对。
+ * 为什么要有它：配对是自动的、默认就生效，用户改派 / 删除之后需要一个"退回去"的入口 ——
+ *   原来那个「按识别结果重算配对」按钮其实做不到这件事（手动调整优先于重算结果，点了看不出变化）。
+ * 实现走 ensurePairing(true)：它会重算初值并清空 overrides（store.setCorrectionResult 里做的）。
+ */
+function restoreDefaults() {
+  const n = Object.keys(store.correction.overrides || {}).length
+  if (!n) {
+    setMessage('没有手动调整过，当前就是程序按识别结果给出的配对', 'info')
+    return
+  }
+  ensurePairing(true)
+  setMessage('已恢复默认：' + n + ' 处手动调整（改派 / 删除）已清除，回到程序按识别结果给出的配对', 'done')
 }
 
 // 精灵图：从"格子拼图"里裁出某一格（与第 2 步单格放大同一套做法）
@@ -274,11 +297,13 @@ function cellThumbStyle(fileIndex, cellIndex) {
     </div>
 
     <template v-else>
-      <p class="panel-hint">
-        主区被红笔圈掉 <strong>{{ (store.correction.circled || []).length }}</strong> 个字；
-        更正册 <strong>{{ correctionPages.length }}</strong> 页<span v-if="!hasCorrectionBook">（还没上传更正册）</span>；
-        当前有 <strong>{{ effectivePairs.length }}</strong> 个字会用更正册的字形，
-        <strong>{{ (store.correction.circled || []).length - effectivePairs.length }}</strong> 个被圈的字保留主区原字形。
+      <!-- 这一块**只讲更正册**（2026-10-13 用户口径）：与上面「扫描识别的状态与结果」重复的
+           （主区被圈几个字、主区一共几个字形）都去掉了 —— 那些在上面的块里已经说过一遍。
+           "更正册几页、写出几格"也属识别结果，同样在上面那块里说；这里只讲配对结论。 -->
+      <p class="scan-status-title">更正对应</p>
+      <p class="panel-hint" data-role="correction-summary">
+        更正册覆盖 <strong>{{ effectivePairs.length }}</strong> 个字<template v-if="keptInMain.length">；<strong>{{ keptInMain.length }}</strong> 个被圈的字保留主区原字形</template><template v-else>，被圈的字全部配上了更正册的格</template><span v-if="!hasCorrectionBook">（还没上传更正册）</span>。
+        改派 / 删除即时生效，生成字体直接用它 —— 没改过就是程序按识别结果配的那一套。
       </p>
 
       <p v-if="!hasCorrectionBook && (store.correction.circled || []).length" class="step-note">
@@ -290,22 +315,32 @@ function cellThumbStyle(fileIndex, cellIndex) {
         <li v-for="(m, i) in store.correction.messages" :key="i" :class="m.level === 'warn' ? 'warn' : 'info'">{{ m.text }}</li>
       </ul>
 
-      <!-- 字形计划这一行**提到描述信息这一块**（2026-10-13 用户口径）：核对表收起来之后，
-           "这次一共出多少个字形、其中几个来自更正册、哪几个被圈的字没用上更正册"仍要一眼看得到 ——
-           它本来就是结论，不是表格的附属信息 -->
-      <p class="panel-hint" data-role="correction-plan">
-        字形计划：主区 <strong>{{ plan.items.length }}</strong> 个字形，其中 <strong>{{ plan.replaced }}</strong> 个来自更正册。
-        <span v-for="(p, i) in plan.problems" :key="'p' + i">{{ p }}</span>
-      </p>
-
-      <!-- 并排核对表：**默认收起**（2026-10-13 用户口径），点这个按钮才铺开逐行看 / 逐行改 -->
+      <!-- 并排核对表：**默认收起**（2026-10-13 用户口径），点这个按钮才铺开逐行看 / 逐行改。
+           展开时这一行右侧给「恢复默认」：**清掉手动调整**、回到程序按识别结果给出的配对
+           （2026-10-13 用户口径：原来那个「按识别结果重算配对」实际做不到这件事，已去掉） -->
       <div v-if="rows.list.length" class="corr-toggle">
         <button class="text" type="button" data-role="correction-table-toggle" @click="tableOpen = !tableOpen">
           {{ tableOpen ? '收起核对表' : '看核对表（' + rows.list.length + ' 对）' }}
         </button>
         <span v-if="!tableOpen" class="panel-hint">每一对是「主区写错的字 ↔ 更正册重写的格」；改派 / 删除都在表里</span>
+        <button
+          v-if="tableOpen"
+          class="text corr-restore"
+          type="button"
+          data-role="correction-restore"
+          :disabled="!hasOverrides"
+          :title="hasOverrides ? '清掉改派 / 删除，回到程序按识别结果给出的配对' : '还没有手动调整过'"
+          @click="restoreDefaults"
+        >恢复默认</button>
       </div>
       <p v-else class="panel-hint">主区没有检测到被红笔圈掉的字：这份更正册暂时没有可对应的对象。</p>
+
+      <!-- 缩略图重建失败：把原因写到页面上（原来只在缩略图的 title 里，触屏根本看不到），并给出出路 ——
+           字形分片缺失时那一页的图补不出来，只能重传这一页或重新识别 -->
+      <p v-if="tableOpen && thumbErrorFiles.length" class="step-note" data-role="thumb-error-note">
+        有 {{ thumbErrorFiles.length }} 页的格子图没能从落盘的字形里重建（{{ thumbErrorFiles.map((i) => thumbFailReason(i)).join('；') }}）——
+        用第 2 步结果卡片上的「重传」把这一页补一次，或重新识别一遍；这几页的字形可能没有落盘。
+      </p>
 
       <div v-if="rows.list.length && tableOpen" class="corr-table" data-role="correction-table">
         <div class="corr-head">
@@ -378,14 +413,8 @@ function cellThumbStyle(fileIndex, cellIndex) {
         更正册上还有 {{ extraCells.length }} 个多写的格没配上（{{ extraCells.map((c) => '第 ' + c.contiguous + ' 格').join('、') }}）——
         可以把上面的某一对改派到这些格，或确认是写多了。
       </p>
-
-      <div class="panel-actions">
-        <button class="primary" data-role="correction-confirm" :disabled="!rows.list.length && !plan.items.length" @click="confirmAll">
-          {{ store.correction.confirmed ? '重新确认（已确认过）' : '确认这份更正对应' }}
-        </button>
-        <button class="text" type="button" @click="ensurePairing(true)">按识别结果重算配对</button>
-        <span v-if="store.correction.confirmed" class="panel-message done">已确认，可以进入下一步生成字体</span>
-      </div>
+      <!-- 原来这里还有「确认这份更正对应」与「按识别结果重算配对」两个按钮（2026-10-13 用户拍板去掉）：
+           配对默认就生效，不需要点一下确认；要退回程序给的配对，用上面核对表那一行右侧的「恢复默认」 -->
     </template>
   </div>
 </template>

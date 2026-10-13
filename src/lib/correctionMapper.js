@@ -133,18 +133,13 @@ export function mapCorrections(circledChars, correctionCells, options = {}) {
   if (!N) {
     messages.push({ level: 'info', text: '主区没有检测到被圈的字，这份更正册暂时没有可对应的对象' })
   }
+  // 2026-10-13（用户口径）：原来这里还会为"留空的格"单独出一条消息（列出主区格号），
+  //   但它与界面描述行说的"N 个被圈的字保留主区原字形"是同一件事，而且只给页内格号、跨页时看起来像重复。
+  //   留空的事实仍在返回值里（`unmatched` 的 reason='blank' 与 `stats.blank`），由界面统一说一次。
   if (discarded.length) {
     messages.push({
       level: 'info',
       text: '更正册上有 ' + discarded.length + ' 格被红笔圈掉（视为作废），已按顺序改从后面的补写格取字'
-    })
-  }
-  const blank = unmatched.filter((u) => u.reason === 'blank')
-  if (blank.length) {
-    messages.push({
-      level: 'info',
-      text: '有 ' + blank.length + ' 个被圈的字在更正册上留空（第 ' + blank.map((u) => u.mainCellIndex + 1).join('、') +
-        ' 格对应的字），这些字将保留主区原字形'
     })
   }
   const leftover = unmatched.filter((u) => u.reason === 'noReplacement')
@@ -173,7 +168,7 @@ export function mapCorrections(circledChars, correctionCells, options = {}) {
       circled: N,
       paired: pairs.length,
       replaced: pairs.filter((p) => p.source === 'replacement').length,
-      blank: blank.length,
+      blank: unmatched.filter((u) => u.reason === 'blank').length,
       noReplacement: leftover.length,
       extra: extra.length
     }

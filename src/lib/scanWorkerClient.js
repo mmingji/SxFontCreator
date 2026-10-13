@@ -148,6 +148,17 @@ function runTask(payload, hooks = {}) {
         w.removeEventListener('error', onError)
         fn(value)
       }
+      // 在飞的落盘回调（每页一个，见下面 page 分支的 onPageIndex）
+      const pendingCallbacks = []
+      // 收尾：**先把还在飞的 onPageIndex 等完**再结束这次任务。
+      // 为什么必须等：done / stopped / 页数收满这三种收尾，都可能在上一条 page 消息的 onPageIndex
+      //   还没跑完时就到了（事件监听器各跑各的，互不阻塞）—— 而界面在那个回调里落盘字形，
+      //   每页要编码 136 张掩膜 PNG（约 1 秒）。不等的话"识别完成"会先上屏，用户此时刷新或关浏览器，
+      //   **最后几页的字形分片就永远没落盘**。真机表现：刷新后更正核对里更正册那一列缩略图整列空白
+      //   （更正册恰好是目录里的最后一页），而且再也补不回来，只能重新识别一次。
+      const settle = () => {
+        Promise.allSettled(pendingCallbacks).then(() => finish(resolve))
+      }
       const onMessage = async (event) => {
         const msg = event.data || {}
         // Worker 内部崩了（未捕获异常 / 未处理的 promise 拒绝）：它上报的 rid 是 null。
@@ -171,15 +182,19 @@ function runTask(payload, hooks = {}) {
             // 回调带上 cache：界面拿到页记录的同时就要把缩略图与掩膜收下（掩膜是下一步合成字体的原料）。
             // **要 await**：界面在这个回调里落盘字形与页记录 —— 不等它的话，"识别完成"这句话可能比
             //   落盘提示先出现，而用户看到的顺序就成了"说完了才写盘"（冒烟里当场抓到过这个时序）。
-            if (typeof hooks.onPageIndex === 'function') await hooks.onPageIndex(msg.record, index, cache)
-            if (singlePage || (expectedPages > 0 && pages.length >= expectedPages)) finish(resolve)
+            if (typeof hooks.onPageIndex === 'function') {
+              const p = Promise.resolve(hooks.onPageIndex(msg.record, index, cache))
+              pendingCallbacks.push(p)
+              await p
+            }
+            if (singlePage || (expectedPages > 0 && pages.length >= expectedPages)) settle()
           } else if (msg.type === 'stopped') {
             stopped = true
-            finish(resolve)
+            settle()
           } else if (msg.type === 'done') {
             summary = msg.summary || null
             stopped = !!msg.stopped
-            finish(resolve)
+            settle()
           } else if (msg.type === 'error') {
             finish(reject, new Error(msg.message || '后台线程报错'))
           }

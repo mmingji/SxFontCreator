@@ -9,7 +9,8 @@
 //   （实测冷启动白屏 3.5 秒里一大半是它），所以第 1 步用 defineAsyncComponent 懒加载。
 import { computed, defineAsyncComponent, h, ref } from 'vue'
 import { useProjectStore } from './store/project.js'
-import { stepCardList, stepIndex } from './lib/flow.js'
+import { resolveActiveStep, stepCardList, stepIndex } from './lib/flow.js'
+import { readActiveStep, saveActiveStep } from './lib/persist.js'
 import { checkBrowserSupport } from './lib/browserSupport.js'
 import GuideLink from './components/GuideLink.vue'
 
@@ -66,9 +67,6 @@ const progress = computed(() => ({
   sheetPages: sheetPageCount.value,
   glyphCount: scanStats.value.written,
   fontCoverage: store.font.built && store.font.coverage ? store.font.coverage.total : 0,
-  // 有被红笔圈掉的字时，必须先确认更正对应，才允许生成字体（决策 一-7 的最后一道闸）
-  needsCorrection: (store.correction.circled || []).length > 0,
-  correctionConfirmed: store.correction.confirmed,
   // "生成"这一步以**字体已生成**为准：产物一旦生成，下载随时可做（决策 五-7 的同一口径）
   fontBuilt: store.font.built === true
 }))
@@ -76,13 +74,18 @@ const progress = computed(() => ({
 // 不再有"完成 / 当前 / 进不去"的区别，也没有阻止理由 —— 每一步的页内自己负责说清"现在能做什么、还缺什么"
 const cardState = computed(() => stepCardList(progress.value))
 const cards = computed(() => cardState.value.cards)
-// 打开页面时落在"第一个还没做完的步骤"（用户 2026-10-04 的向导口径）；之后由用户点卡片切换
-const currentKey = ref(cardState.value.currentKey)
+// 打开页面时落在**上次离开的那一步**（2026-10-13 用户拍板）——刷新、关浏览器再打开都回到原处。
+// 为什么改：原来落在"第一个还没做完的步骤"（lib/flow.js 的 currentStepKey），于是第 1、2 步都做完之后，
+//   人在第 1 步或第 2 步刷新都会被拽到第 3 步。落点记在本机单独一个键里（lib/persist.js 的 readActiveStep）：
+//   它只是"界面停在哪一页"，做进项目数据会让每次点卡片都重写整份项目对象。
+//   取不到合法值（没记过 / 被改坏）时由 resolveActiveStep 回退到"第一个还没做完的步骤"。
+const currentKey = ref(resolveActiveStep(readActiveStep(), progress.value))
 const currentStep = computed(() => cards.value[stepIndex(currentKey.value)])
 
-// 三张卡片都能直接点进（决策 八-16 ①）
+// 三张卡片都能直接点进（决策 八-16 ①）；点进哪一步就把落点记下来（同步写，几十字节）
 function goto(key) {
   currentKey.value = key
+  saveActiveStep(key)
 }
 
 // 运行环境：这些是后续步骤真实依赖的浏览器能力（参考字字体用于模板 PDF 嵌参考字，决策 一-11；

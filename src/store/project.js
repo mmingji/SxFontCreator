@@ -65,19 +65,26 @@ export const useProjectStore = defineStore('project', {
     //   orderOverrides  —— 用户手选的页序 `{ [fileIndex]: pageNumber }`（只对页脚读不出的页有效）
     //   chars           —— 这一批的字序（识别时按它把"页内格号"映射成字）
     //   summary         —— 最近一次批次汇总判定（轻量：problems / ok / message）
+    //   source          —— **这批结果的来源**（2026-10-13 用户口径："没有轮次概念"）：识别那一刻用的是
+    //                      哪个文件夹、哪些图片（只存文件名）、字序从哪来。存名字与数量，不存 File 对象
+    //                      （浏览器拿不到磁盘路径、也存不下文件句柄）—— 刷新之后界面靠它把"这批结果
+    //                      来自哪里"照原样说清，而不是显示成"还没有选文件夹"
     scan: {
       batchId: null,
       pages: [],
       orderOverrides: {},
       chars: '',
       summary: null,
-      lastRunAt: null
+      lastRunAt: null,
+      source: null
     },
     // 更正核对（阶段一步骤 1.8 的界面产物，决策 一-7 与 二-13）
     //   pairs / unmatched / discarded / extra —— **生效清单**（已经应用过用户调整）
     //   overrides  —— `{ [order]: 连续格号 | null }`（null = 删掉这一对，该字保留主区原字形）
     //   circled    —— 被圈字清单，顺序即"从左到右、从上到下"
-    //   confirmed  —— 用户确认过；**未确认不允许进入字体构建**（界面确认是最后一道闸）
+    // 2026-10-13（用户拍板）：原来的 `confirmed` 字段与「确认这份更正对应」按钮一并去掉 ——
+    //   **程序按识别结果给出的配对默认生效**，不需要用户点一下确认；要改就在核对表里改派 / 删除，
+    //   或点「恢复默认」回到程序的配对。相应地，"未确认不许生成字体"那道闸也取消了。
     correction: {
       pairs: [],
       unmatched: [],
@@ -87,7 +94,6 @@ export const useProjectStore = defineStore('project', {
       stats: null,
       circled: [],
       overrides: {},
-      confirmed: false,
       updatedAt: null
     },
     // 人工修正（决策 八-8 的"已剔除"三态之一，2026-10-07 随 3.2 字形体检落地）：
@@ -380,13 +386,16 @@ export const useProjectStore = defineStore('project', {
     },
 
     // 开始一轮识别：清掉上一轮的结果与手选页序，记下这一批的字序（识别时按它把格号映射成字）
-    beginScanRun({ batchId, chars }) {
+    // 同时记下**这批结果的来源**（文件夹名 / 图片名清单 / 字序文件摘要，见 state 里 scan.source 的注释）：
+    // 它是"这次识别用的是哪些文件"的唯一凭据，刷新后界面靠它把来源照原样说清。
+    beginScanRun({ batchId, chars, source }) {
       if (batchId) this.scan.batchId = batchId
       this.scan.pages = []
       this.scan.summary = null
       this.scan.orderOverrides = {}
       this.scan.chars = typeof chars === 'string' ? chars : ''
       this.scan.lastRunAt = null
+      this.scan.source = source || null
       this.markDirty()
       schedulePersist(this)
     },
@@ -452,13 +461,12 @@ export const useProjectStore = defineStore('project', {
       return { ok: true, replaced: index >= 0 }
     },
 
-    // 清掉更正配对与那一次确认（**不动识别结果**）：配对依赖"被圈字清单"，
-    // 清单一变就必须重新核对 —— 决策 一-7 的界面确认是防整体错位的最后一道闸。
+    // 清掉更正配对（**不动识别结果**）：配对依赖"被圈字清单"，清单一变就必须重新核对。
     // clearScan（整批清空）与"单页重传后发现被圈字变了"共用这一处。
     resetCorrection() {
       this.correction = {
         pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
-        circled: [], overrides: {}, confirmed: false, updatedAt: null
+        circled: [], overrides: {}, updatedAt: null
       }
       this.markDirty()
       schedulePersist(this)
@@ -466,7 +474,8 @@ export const useProjectStore = defineStore('project', {
 
     // ── 更正核对（步骤 1.8 的界面）────────────────────────────────────────
     // 写入配对初值（由 lib/scanFlow.pairCorrections 从识别结果算出来）。
-    // **会把 confirmed 复位**：配对一变，之前的确认就不作数了（否则可能拿旧确认去构建字体）
+    // 同时清掉用户的手动调整：初值一重算，旧的调整就没有依据了（配对整体可能已经变了）。
+    // 2026-10-13 起这里没有"确认"这一步 —— 初值**默认生效**，用户改不改都直接用于生成字体。
     setCorrectionResult({ pairs, unmatched, discarded, extra, messages, stats, circled }) {
       this.correction.pairs = pairs || []
       this.correction.unmatched = unmatched || []
@@ -476,7 +485,6 @@ export const useProjectStore = defineStore('project', {
       this.correction.stats = stats || null
       this.correction.circled = circled || []
       this.correction.overrides = {}
-      this.correction.confirmed = false
       this.correction.updatedAt = new Date().toISOString()
       this.markDirty()
       schedulePersist(this)
@@ -487,15 +495,6 @@ export const useProjectStore = defineStore('project', {
       this.correction.overrides = overrides || {}
       if (Array.isArray(pairs)) this.correction.pairs = pairs
       if (Array.isArray(unmatched)) this.correction.unmatched = unmatched
-      this.correction.confirmed = false
-      this.markDirty()
-      schedulePersist(this)
-    },
-
-    // 确认这份更正对应（未确认不允许进入字体构建）
-    setCorrectionConfirmed(confirmed) {
-      this.correction.confirmed = !!confirmed
-      if (confirmed) this.correction.updatedAt = new Date().toISOString()
       this.markDirty()
       schedulePersist(this)
     },
@@ -503,7 +502,7 @@ export const useProjectStore = defineStore('project', {
     clearCorrection() {
       this.correction = {
         pairs: [], unmatched: [], discarded: [], extra: [], messages: [], stats: null,
-        circled: [], overrides: {}, confirmed: false, updatedAt: null
+        circled: [], overrides: {}, updatedAt: null
       }
       this.markDirty()
       schedulePersist(this)
@@ -675,6 +674,8 @@ export const useProjectStore = defineStore('project', {
       this.scan.chars = ''
       this.scan.orderOverrides = {}
       this.scan.lastRunAt = null
+      // 来源也跟着清：清空结果之后界面不该再说"这批结果来自文件夹 X"（那批结果已经不在了）
+      this.scan.source = null
       this.resetCorrection()
       this.excluded = {}
       this.rewrite = {}

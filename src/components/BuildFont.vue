@@ -35,14 +35,15 @@ const messageType = ref('info')
 
 const pages = computed(() => store.scan.pages)
 const hasResult = computed(() => pages.value.some((p) => p.ok))
-const needsCorrection = computed(() => (store.correction.circled || []).length > 0)
-const correctionPending = computed(() => needsCorrection.value && !store.correction.confirmed)
+// 主区被红笔圈掉的字有几个 —— 只用来在页内提示"更正生效到哪一步"（2026-10-13 起**不再拦人**：
+// 更正配对默认生效，不需要用户点确认；要改就在第 2 步的「更正核对」里改派 / 删除 / 恢复默认）
+const circledCount = computed(() => (store.correction.circled || []).length)
 // 字形计划（与识别页同一份纯逻辑）：主区字形 + 更正册覆盖
 const plan = computed(() => buildFinalGlyphPlan(pages.value, {
   pairs: store.correction.pairs || [],
   circled: store.correction.circled || []
 }))
-const canBuild = computed(() => hasResult.value && plan.value.items.length > 0 && !correctionPending.value)
+const canBuild = computed(() => hasResult.value && plan.value.items.length > 0)
 // 上一步的状态（顶部提示与"动作能不能点"共用这一份判断，避免两处各写一套）
 const prevStateNote = computed(() => {
   if (!hasResult.value) {
@@ -51,9 +52,9 @@ const prevStateNote = computed(() => {
   if (plan.value.items.length === 0) {
     return '识别结果里没有可用的字形：回第 2 步看看那一批的失败原因（多半是纸不是本程序模板印的，或打印时没选实际大小）。'
   }
-  if (correctionPending.value) {
-    return '主区有 ' + (store.correction.circled || []).length +
-      ' 个被红笔圈掉的字还没确认更正对应：先在第 2 步的「更正核对」里核对并确认，否则生成出来的字体里这些字仍是写错的那个。'
+  if (circledCount.value) {
+    return '主区有 ' + circledCount.value +
+      ' 个被红笔圈掉的字：更正册能对上的字用更正册的字形，其余保留主区原字形（要改就去第 2 步的「更正核对」逐行改派或删除）。'
   }
   return ''
 })

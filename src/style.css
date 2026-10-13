@@ -705,35 +705,40 @@ label.text-file input {
 
 /* ── 上传识别（第 2 步）────────────────────────────────────────────────── */
 
-/* 文件夹回执 + 识别汇总 + 这一轮的操作（2026-10-13 用户口径：三件事合成一处）：
-   左边一句"选了哪个文件夹、跑出什么结果"，右边是能做的动作（看文件清单 / 看跳过的页 / 清空结果）。 */
-.folder-line {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+/* 「扫描识别的状态与结果」这一块（2026-10-13 用户口径）：来源回执 + 识别汇总 + 更正册的识别结果
+   + 字形落盘统计 + 拦下的原因与提示 + 数据兜底说明，合成一块（原来散在三处、还各说一遍页数）。
+   容器浅底带边框，里面按"先说结果、再说原因、最后给动作"排；「清空结果」已挪到步骤标题行右侧。 */
+.scan-status {
   margin: 8px 0;
-  padding: 6px 10px;
+  padding: 8px 12px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: #fafbfd;
 }
 
-.folder-line .panel-hint {
-  margin: 0;
-  flex: 1 1 320px;
-  min-width: 0;
+.scan-status .panel-hint,
+.scan-status .step-note {
+  margin: 4px 0;
 }
 
-.folder-actions {
+.scan-status .scan-problems {
+  margin-top: 2px;
+}
+
+.scan-status-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scan-status-actions {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  flex: none;
+  gap: 8px;
+  margin-top: 6px;
 }
 
-.folder-actions button.text {
+.scan-status-actions button.text {
   font-size: 12px;
 }
 
@@ -1215,6 +1220,12 @@ label.text-file input {
   margin: 0;
 }
 
+/* 展开核对表时这一行右侧的「恢复默认」（2026-10-13 用户口径）：清掉手动调整、回到程序给的配对。
+   推到最右边，与左边的「看核对表 / 收起核对表」分开站，避免误点 */
+.corr-toggle .corr-restore {
+  margin-left: auto;
+}
+
 .corr-table {
   margin: 10px 0;
   border: 1px solid var(--border);
@@ -1272,14 +1283,18 @@ label.text-file input {
   image-rendering: pixelated;
 }
 
+/* 没有对应格（这一对不存在）：浅灰平底 + 虚线边 —— 它不是"图没出来"，是本来就没有 */
 .corr-thumb.empty {
   background: #f4f5f8;
+  border-style: dashed;
 }
 
-/* 缩略图还没到位（正在从落盘的字形重建 / 重建不了）：换成中性底纹，
-   别让它看起来跟"这一格本来就没有笔迹"一样（两者对用户意味着完全不同的事） */
+/* 缩略图还没到位（正在从落盘的字形重建 / 重建不了）：斜纹底 + 实边。
+   与上面那种"本来就没有"必须一眼分得开 —— 两者对用户意味着完全不同的事，
+   而 2026-10-13 之前两者都是 #f4f5f8（真机上分不清，用户看到的就是"更正册那一列全是空白"） */
 .corr-thumb.pending {
-  background-color: #f4f5f8;
+  background-color: #eef1f6;
+  background-image: repeating-linear-gradient(45deg, #dde3ec 0 4px, #eef1f6 4px 8px);
 }
 
 .corr-text {

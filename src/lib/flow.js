@@ -1,6 +1,6 @@
 // 制作流程的步骤定义、状态推导与卡片进度
 // 职责：把"三步流程"落成**可从项目数据推导的事实**——
-//   每步做完没有（`isStepDone`，判据表 `DONE_WHEN`）、打开该落在哪一步（`currentStepKey`）、
+//   每步做完没有（`isStepDone`，判据表 `DONE_WHEN`）、打开该落在哪一步（`resolveActiveStep`）、
 //   卡片底部那条进度显示什么（`stepProgress`）、以及每一步的相邻关系（`stepNavigation`）。
 //   界面只负责渲染，判断全在这里，因此可以在 Node 里直接断言（test/flow.mjs）。
 // **2026-10-12（决策 八-16 ①②）：这里不再有"能不能进入某一步"的判据** —— 三张步骤卡片样式一致、
@@ -50,8 +50,6 @@ export function emptyProgress() {
     sheetPages: 0, // 这份纸一共几页（来自字序文件或纸面页号；0 = 还不知道）
     glyphCount: 0, // 已提取到笔迹的字形数
     fontCoverage: 0, // 字体产物收录了多少字（第 3 步卡片的进度分子）
-    needsCorrection: false, // 主区有没有被红笔圈掉的字（有就必须先确认更正对应）
-    correctionConfirmed: false, // 更正对应是否已人工确认
     fontBuilt: false // 字体是否已生成（第 3 步的完成判据，也是"下载"能不能点的判据）
   }
 }
@@ -70,14 +68,30 @@ export function isStepDone(key, progress) {
   return fn ? fn(p) === true : false
 }
 
-// 当前该停在哪一步 = **第一个还没做完的步骤**（用户 2026-10-04 的向导口径：打开就落在该干的那一步）。
-// 三步都做完就停在最后一步（回看产物）。
+// "第一个还没做完的步骤"（用户 2026-10-04 的向导口径）。三步都做完就停在最后一步（回看产物）。
+// **2026-10-13 起它不再是界面的落点**（改由 resolveActiveStep 优先用"上次打开的那一步"），
+//   保留为两处定义：① 落点取不到合法值时的退路；② buildFlowState 的 status 推导与测试。
 export function currentStepKey(progress) {
   const p = { ...emptyProgress(), ...(progress || {}) }
   for (const step of FLOW_STEPS) {
     if (!isStepDone(step.key, p)) return step.key
   }
   return FLOW_STEPS[FLOW_STEPS.length - 1].key
+}
+
+/**
+ * 打开页面时该落在哪一步（2026-10-13 用户拍板）：**优先停在用户上次打开的那一步**。
+ * 为什么改：原来用 currentStepKey 当落点，于是第 1、2 步都做完之后，人在第 1 步或第 2 步刷新
+ *   都会被拽到第 3 步（用户真机反馈"不管在哪个页面刷新都会进入第三步，这不对"）。
+ * 三步本来就能直接点进（决策 八-16 ①），落点也就只是"回到你离开的地方"这一件事。
+ * @param {string} [savedKey] 上次打开的那一步（本机记住的落点，来自 lib/persist.js 的 readActiveStep）
+ * @param {object} [progress] 见 emptyProgress()
+ * @returns {string} 'template' | 'scan' | 'build'
+ */
+export function resolveActiveStep(savedKey, progress) {
+  if (FLOW_STEPS.some((step) => step.key === savedKey)) return savedKey
+  // 没记过、或值被改坏：回退到"第一个还没做完的步骤"（原来的口径）
+  return currentStepKey(progress)
 }
 
 // 每一步"能不能进入"：2026-10-12（决策 八-16 ①）起**三步全部无条件可进** ——

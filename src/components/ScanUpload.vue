@@ -54,15 +54,36 @@ const files = computed(() => (scanInput.value ? scanInput.value.images : []))
 const removedList = ref([])
 // 选完文件夹之后的**常驻回执**（2026-10-13 用户要求"选完要有明确回显"）：
 // 对话框里那一片空白（Windows 的文件夹对话框只列子文件夹）容易让人以为没选上，
-// 所以选完必须明确写出"选的是哪个文件夹、里面有多少张可用图片"。空串 = 还没选。
+// 所以选完必须明确写出"选的是哪个文件夹、里面有多少张可用图片"。
 // 写成 computed 而不是在各处赋值：手动去掉几张之后这一行要**自己**跟着变（原来的写法会显示旧张数）。
+//
+// 2026-10-13 再改（用户口径：**没有轮次概念**）：回执分两种来源，说的都是"这批结果来自哪里"——
+//   · 刚选过文件夹 → 内存里那份（可以逐张去掉 / 放回）；
+//   · 刷新 / 关浏览器再回来 → 内存里的 File 对象已经没了，用识别时落盘的那份（store.scan.source，只读回显）。
+//     原来这里在刷新后会显示成"还没有选文件夹"，与下面同一块里的识别汇总、字形落盘信息自相矛盾。
+const storedSource = computed(() => store.scan.source || null)
+// 清单能不能改：刷新之后不能（File 对象活不过刷新）—— 要调清单就重新选一次文件夹
+const canEditList = computed(() => !!scanInput.value)
 const dirNote = computed(() => {
-  if (!scanInput.value) return ''
-  const name = scanInput.value.folderName || folderName.value || '（未命名文件夹）'
-  const n = files.value.length
-  if (!n) return '已选文件夹「' + name + '」· 没有可用的图片'
-  return '已选文件夹「' + name + '」· ' + n + ' 张图片' +
-    (removedList.value.length ? '（已手动去掉 ' + removedList.value.length + ' 张）' : '')
+  if (scanInput.value) {
+    const name = scanInput.value.folderName || folderName.value || '（未命名文件夹）'
+    const n = files.value.length
+    if (!n) return '已选文件夹「' + name + '」· 没有可用的图片'
+    return '已选文件夹「' + name + '」· ' + n + ' 张图片' +
+      (removedList.value.length ? '（已手动去掉 ' + removedList.value.length + ' 张）' : '')
+  }
+  const s = storedSource.value
+  if (!s) return ''
+  return '文件夹「' + (s.folderName || '（未命名文件夹）') + '」· ' + (s.imageCount || 0) + ' 张图片'
+})
+// 这批结果用的图片名清单：两种来源同序（内存态取 File 的名字，落盘态直接是名字）
+const listedImages = computed(() => (scanInput.value
+  ? files.value.map((f) => f.name)
+  : ((storedSource.value && storedSource.value.images) || [])))
+const canOpenFileList = computed(() => {
+  if (running.value) return false
+  if (canEditList.value) return files.value.length > 0 || orderCandidates.value.length > 0
+  return listedImages.value.length > 0 || !!(storedSource.value && storedSource.value.orderFileName)
 })
 // 字序文件候选与"正在用的那一份"：正在用的不可移除（移掉它这一轮就退化成"认纸面参考字"定字序）
 const orderCandidates = computed(() => (scanInput.value ? scanInput.value.orderCandidates : []))
@@ -145,6 +166,15 @@ const runSummary = computed(() => {
     if (g.blockers.length) parts.push('这一批被拦下（原因见下）')
   }
   return parts.join(' · ')
+})
+// 更正册的识别结果（2026-10-13 用户口径：这一块要"包括更正册的识别结果"）——
+// 这里只说**识别事实**（更正册几页、写出几格）；"覆盖了几个被圈的字"属配对结论，在下面的更正核对里说。
+const correctionScanResult = computed(() => {
+  const list = pages.value.filter((p) => p.ok && p.kind === 'correction')
+  if (!list.length) return ''
+  let cells = 0
+  for (const p of list) for (const c of p.cells || []) if (c.verdict !== 'empty') cells++
+  return '更正册 ' + list.length + ' 页：写出 ' + cells + ' 格'
 })
 
 // ── 页级结果里的"新模型"信息（定位到的字序 / 还要确认几格）──────────────────
@@ -295,9 +325,9 @@ async function applyDirFiles(picked, folder, subdirFiles) {
     if (found.ok) {
       parts.push('字序文件：' + found.fileName + '（' + describeOrderFile(found.file) + '）—— 按它定字序')
     } else if (input.orderCandidates.length) {
-      parts.push('字序文件读不了，这一轮改用「认纸面参考字」定字序：' + found.reason)
+      parts.push('字序文件读不了，改用「认纸面参考字」定字序：' + found.reason)
     } else {
-      parts.push('文件夹里没有字序文件，这一轮改用「认纸面参考字」定字序（要求这份纸是本程序模板印的）')
+      parts.push('文件夹里没有字序文件，改用「认纸面参考字」定字序（要求这份纸是本程序模板印的）')
     }
     setMessage(parts.join('；'), input.images.length ? 'info' : 'error')
   } finally {
@@ -305,9 +335,9 @@ async function applyDirFiles(picked, folder, subdirFiles) {
   }
 }
 
-// ── 「看文件清单」弹窗：这一轮到底挑了哪些文件，不要的可以去掉（2026-10-13 用户口径）──────
+// ── 「看文件清单」弹窗：这批结果用的是哪些文件，不要的可以去掉（2026-10-13 用户口径）──────
 /**
- * 去掉一张图片：这一轮就不识别它了（**只动本轮的清单，磁盘上的文件一个不动**）。
+ * 去掉一张图片：识别时就不读它了（**只动这份清单，磁盘上的文件一个不动**）。
  * 为什么要能做：目录里常混着上一次的废纸、预览图、别的扫描件；一张坏页会把整批的字序对错，
  *   而"重新选一个干净的文件夹"对用户来说成本更高。
  */
@@ -318,8 +348,8 @@ function removeImage(file) {
   removedList.value = [...removedList.value, file]
   scanInput.value = { ...scanInput.value, images: rest }
   setMessage(rest.length
-    ? '已从这一轮里去掉「' + (file.name || '（无名文件）') + '」，还剩 ' + rest.length + ' 张'
-    : '已去掉「' + (file.name || '（无名文件）') + '」，这一轮没有可识别的图片了：放回它，或重新选一个文件夹', rest.length ? 'info' : 'warn')
+    ? '已去掉「' + (file.name || '（无名文件）') + '」，还剩 ' + rest.length + ' 张图片要识别'
+    : '已去掉「' + (file.name || '（无名文件）') + '」：没有可识别的图片了，放回它或重新选一个文件夹', rest.length ? 'info' : 'warn')
 }
 
 /** 把去掉的图片放回来（按文件名自然序插回原位） */
@@ -328,12 +358,12 @@ function restoreImage(file) {
   removedList.value = removedList.value.filter((f) => f !== file)
   const merged = [...scanInput.value.images, file].sort((a, b) => naturalCompare(a.name, b.name))
   scanInput.value = { ...scanInput.value, images: merged }
-  setMessage('已把「' + (file.name || '（无名文件）') + '」放回这一轮（共 ' + merged.length + ' 张）', 'info')
+  setMessage('已把「' + (file.name || '（无名文件）') + '」放回（共 ' + merged.length + ' 张）', 'info')
 }
 
 /**
  * 去掉一个**多余的字序文件候选**（用户 2026-10-13 口径）：
- *   · 正在用的那一份**不给移除入口** —— 移掉它这一轮就退化成"认纸面参考字"定字序，
+ *   · 正在用的那一份**不给移除入口** —— 移掉它整批就退化成"认纸面参考字"定字序，
  *     那是会影响整批结果的开关，不该混在"清理多余文件"里；
  *   · 目录里只有一份 json 时也不给移除（没有"多余的"可言）；
  *   · 两份及以上时才列出其余候选，供清掉"另存一份 / 拷贝过来的旧字序"。
@@ -341,7 +371,7 @@ function restoreImage(file) {
 function removeOrderCandidate(file) {
   if (!scanInput.value || running.value) return
   scanInput.value = { ...scanInput.value, orderCandidates: scanInput.value.orderCandidates.filter((f) => f !== file) }
-  setMessage('已去掉字序文件候选「' + file.name + '」；这一轮用的仍是「' + (activeOrderName.value || '（没有可用的字序文件）') + '」', 'info')
+  setMessage('已去掉字序文件候选「' + file.name + '」；识别时用的仍是「' + (activeOrderName.value || '（没有可用的字序文件）') + '」', 'info')
 }
 
 // 按钮只有一个（2026-10-13 用户口径：去掉「换一个文件夹」，把「重读上次的文件夹」改成「重新选择文件夹」）：
@@ -398,7 +428,20 @@ async function start() {
     // 同一批重新识别：先把这批已落盘的字形清掉，避免旧页与新页混在一起（分片键是按批次 + 页序写的）
     await clearGlyphs({ batchId: store.scan.batchId })
     savedStats.value = null
-    store.beginScanRun({ batchId: store.scan.batchId, chars: orderChars || resolveBatchChars(currentBatch) })
+    // 把"这批结果来自哪里"记下来（文件夹名 / 图片名清单 / 字序文件摘要）：刷新之后界面靠它回显来源，
+    // 而不是显示成"还没有选文件夹"（2026-10-13 用户口径：没有轮次概念，界面说的就是当前数据的状态）
+    store.beginScanRun({
+      batchId: store.scan.batchId,
+      chars: orderChars || resolveBatchChars(currentBatch),
+      source: {
+        folderName: (scanInput.value && scanInput.value.folderName) || folderName.value || '',
+        images: files.value.map((f) => f.name),
+        imageCount: files.value.length,
+        orderFileName: withOrderFile ? orderFile.value.fileName : '',
+        orderNote: withOrderFile ? describeOrderFile(orderFile.value.file) : '',
+        at: new Date().toISOString()
+      }
+    })
     setMessage(
       '正在识别 ' + files.value.length + ' 张图片（单页约 1~2 秒；中途可以点「中止」，已识别的页会保留）' +
         (withOrderFile ? '；字序按文件夹里的字序文件对应' : '；字序靠认纸面参考字定位'),
@@ -457,6 +500,16 @@ async function start() {
     })
     store.finishScanRun({ summary: res.summary })
     const secs = ((performance.now() - t0) / 1000).toFixed(1)
+    // 落盘自检（2026-10-13）：识别完成之后再核一遍"有结果的页是不是都落盘了" ——
+    //   漏落盘的后果是**刷新之后那几页的字形再也找不回来**（字体里会少几个字，更正核对里那一列图是空的）。
+    //   客户端已经会等所有落盘回调收尾（见 lib/scanWorkerClient.js 的 settle），这里只是一道兜底：
+    //   真报出来就必须让用户看见，不能让他以为"识别完成 = 一切都存好了"。
+    const okPages = res.pages.filter((p) => p.ok).length
+    savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
+    if (savedStats.value && savedStats.value.pages < okPages) {
+      setMessage('识别了 ' + okPages + ' 页，但字形只落盘了 ' + savedStats.value.pages + ' 页：请重新点一次「开始识别」，' +
+        '在落盘补齐之前别刷新页面（否则缺的那几页要重扫）', 'error')
+    }
     // 这一轮的结论并进「已选文件夹…」那一行（2026-10-13 用户口径），这里不再各报一遍；
     // 但**识别过程中的错误**（字形落盘失败等）要留着，不能被清掉
     runInfo.value = { stopped: !!res.stopped, pages: res.pages.length, seconds: secs }
@@ -838,57 +891,40 @@ const zoomIsMarkedLabel = computed(() => {
             @change="onPickDirInput"
           />
         </label>
-        <button class="primary" data-role="scan-start" :disabled="running || readingDir || !files.length" @click="start">开始识别</button>
+        <button
+          class="primary"
+          data-role="scan-start"
+          :disabled="running || readingDir || !files.length"
+          :title="files.length ? '' : '先点左边的「选择文件夹」，指向扫描件所在的那一层'"
+          @click="start"
+        >开始识别</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
         <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
       </div>
     </div>
-    <!-- ③ 这一轮的文件回执 + 识别汇总 + 操作（2026-10-13 用户口径，三件事合成一处）：
-         · 回执：明确写出"选的是哪个文件夹、里面有多少张可用图片" —— 系统对话框那片空白容易让人以为没选上；
-         · 汇总：把"识别完成：N 页，用时 X 秒"与"可用 / 跳过 / 写出 / 被圈 / 去重"并成一句跟在这里，
-           原来这两行分处两块、还各说一遍页数；
-         · 操作：「看文件清单」「看跳过的 N 页」「清空结果」都挂在这一行上（清空结果原在按钮行里，
-           它作用的是"结果"，跟这一行的信息是一件事）。
-         用 .panel-hint 而不是 .panel-message：后者是"识别状态"的常驻位置，两条占同一个选择器会互相挤掉 -->
-    <!-- 没有选文件夹这一行也要在（只要有识别结果）：刷新之后本轮清单是空的，但**结果还在** ——
-         清空结果、看跳过详情这两个入口不能跟着一起消失 -->
-    <div v-if="dirNote || pages.length" class="folder-line" data-role="dir-note">
-      <p class="panel-hint">
-        <strong>{{ dirNote || '这一轮还没有选文件夹' }}</strong>
+    <!-- ③ 扫描识别的状态与结果（2026-10-13 用户口径：把原来散在三处的信息合成一块）：
+         来源回执（哪个文件夹、多少张图）+ 识别汇总 + 更正册的识别结果 + 字形落盘统计
+         + 拦下的原因与提示 + 数据兜底说明。合并的理由是原来这三处各说一遍页数、
+         分处三块，而且刷新之后回执会显示成"还没有选文件夹"、与同一页里的结果自相矛盾。
+         **「清空结果」不在这一块里** —— 它挪到步骤标题行右侧（见下面的 Teleport），
+         与第 1 步「更新预览」同一个位置。 -->
+    <div v-if="pages.length || dirNote" class="scan-status" data-role="scan-status">
+      <p class="scan-status-title">扫描识别的状态与结果</p>
+      <!-- 来源：刷新前是内存里那份（可去掉 / 放回），刷新后是识别时落盘的那份（只读回显） -->
+      <p v-if="dirNote" class="panel-hint" data-role="dir-note">
+        <strong>{{ dirNote }}</strong>
         <span v-if="runSummary" data-role="run-summary"> · {{ runSummary }}</span>
       </p>
-      <div class="folder-actions">
-        <button
-          class="text"
-          type="button"
-          data-role="file-list"
-          :disabled="(!files.length && !orderCandidates.length) || running"
-          @click="fileListOpen = true"
-        >
-          看文件清单
-        </button>
-        <button v-if="gate.skipped.length" class="text" type="button" data-role="skipped-open" @click="skippedOpen = true">
-          看跳过的 {{ gate.skipped.length }} 页
-        </button>
-        <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
-      </div>
-    </div>
-    <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
-    <p v-if="running" class="panel-hint" data-role="scan-progress">
-      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}；
-      进度 {{ progress.done }} / {{ progress.total }} 页；
-      还剩 {{ progress.total - progress.done }} 页（约 {{ remainingSteps }} 步）<span v-if="etaLabel">，预计还要 {{ etaLabel }}</span>
-    </p>
-    <p v-if="message" class="panel-message" :class="messageType" data-role="scan-message">{{ message }}</p>
-    <p v-if="savedStats && savedStats.glyphs" class="panel-hint">
-      字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
-      —— 存的是笔迹掩膜（PNG 无损），<strong>刷新或关掉浏览器后不用重扫</strong>，下一步生成字体直接用它
-    </p>
+      <!-- 更正册的识别结果（用户口径：这一块要包括它） -->
+      <p v-if="correctionScanResult" class="panel-hint" data-role="correction-scan-result">{{ correctionScanResult }}</p>
+      <!-- 字形落盘：下一步生成字体直接用它，刷新或关浏览器都不用重扫 -->
+      <p v-if="savedStats && savedStats.glyphs" class="panel-hint" data-role="glyph-saved">
+        字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
+        —— 存的是笔迹掩膜（PNG 无损），<strong>刷新或关掉浏览器后不用重扫</strong>，下一步生成字体直接用它
+      </p>
 
-    <!-- ④ 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
-         逐页的"跳过：第 N 个文件…"清单改成上面那个「看跳过的 N 页」按钮点开看 ——
-         它常常几十条、原因还一模一样，铺在页面上会把这一页撑得很长（2026-10-13 用户口径） -->
-    <div v-if="pages.length" class="scan-summary">
+      <!-- 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
+           逐页的"跳过：第 N 个文件…"清单收进「看跳过的 N 页」弹窗 —— 它常常几十条、原因还一模一样 -->
       <ul v-if="gate.blockers.length" class="scan-problems">
         <li v-for="(text, i) in gate.blockers" :key="'b' + i" class="error">拦下：{{ text }}</li>
       </ul>
@@ -896,8 +932,7 @@ const zoomIsMarkedLabel = computed(() => {
         <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
       </ul>
       <p v-if="gate.canProceed" class="panel-message done">
-        这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里核对并确认
-          （只有被圈掉的字才需要更正册）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 2 步「生成」了</span>
+        这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里可以逐行核对与调整（不改就是程序按识别结果配的那一套，直接用于生成字体）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 3 步「生成」了</span>
       </p>
       <!-- 数据兜底的口径（决策 五-10 ②）：识别结果与字形都落在本机浏览器里，刷新与关浏览器都不丢；
            会丢的只有"清浏览器数据 / 换电脑 / 换浏览器"，那时把文件夹重指一次重跑即可 -->
@@ -905,7 +940,30 @@ const zoomIsMarkedLabel = computed(() => {
         识别结果与字形保存在<strong>本机浏览器</strong>里，刷新与关浏览器都不丢；清理浏览器数据或换电脑才会没有 —— 那时重指一次文件夹重跑即可。
         扫描件原图程序不留，请自己留一份。
       </p>
+
+      <div class="scan-status-actions">
+        <button class="text" type="button" data-role="file-list" :disabled="!canOpenFileList" @click="fileListOpen = true">
+          看文件清单
+        </button>
+        <button v-if="gate.skipped.length" class="text" type="button" data-role="skipped-open" @click="skippedOpen = true">
+          看跳过的 {{ gate.skipped.length }} 页
+        </button>
+      </div>
     </div>
+    <!-- 「清空结果」：放在步骤标题行右侧（2026-10-13 用户口径 —— 与第 1 步「更新预览」同一个位置）。
+         它作用的是"结果"，所以只要有结果就给入口；识别进行中禁点 -->
+    <Teleport to="#step-head-actions">
+      <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">
+        清空结果
+      </button>
+    </Teleport>
+    <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
+    <p v-if="running" class="panel-hint" data-role="scan-progress">
+      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}；
+      进度 {{ progress.done }} / {{ progress.total }} 页；
+      还剩 {{ progress.total - progress.done }} 页（约 {{ remainingSteps }} 步）<span v-if="etaLabel">，预计还要 {{ etaLabel }}</span>
+    </p>
+    <p v-if="message" class="panel-message" :class="messageType" data-role="scan-message">{{ message }}</p>
 
     <!-- ④ 结果总览：**一页一张小卡片**（2026-10-12 决策 八-16 ④⑤）——
          卡片只有文件名、状态、一行统计与三个操作；缩略图与 136 格视图收进「看格子」弹窗、点开才加载；
@@ -1051,61 +1109,83 @@ const zoomIsMarkedLabel = computed(() => {
       并把每页的页号来源、写出格数与可疑格报给你；认不准的格会开一个「逐格确认」让你过一眼。
     </p>
 
-    <!-- 这一轮选中的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。
-         只动本轮的清单 —— 磁盘上的文件一个都不动（浏览器本来也删不了用户的文件） -->
+    <!-- 这批结果用的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。
+         只动本轮的清单 —— 磁盘上的文件一个都不动（浏览器本来也删不了用户的文件）。
+        **刷新之后是只读回显**：图片内容不会留在浏览器里（落盘的只有文件名），
+        要调整清单就重新选一次文件夹；这一块说的始终是"这批结果的来源"，没有轮次之分 -->
     <div v-if="fileListOpen" class="backup-overlay" @click.self="fileListOpen = false">
-      <div class="backup-modal" role="dialog" aria-label="这一轮选中的文件" data-role="file-list-modal">
+      <div class="backup-modal" role="dialog" aria-label="这批结果用的文件" data-role="file-list-modal">
         <div class="backup-head">
-          <h3>这一轮选中的文件</h3>
+          <h3>这批结果用的文件</h3>
           <button class="text" type="button" data-role="file-list-close" @click="fileListOpen = false">关闭</button>
         </div>
         <p class="panel-hint">
-          识别只读这一层里的图片与字序文件。不要的文件在这里去掉，识别时就不会读它 —— <strong>磁盘上的文件不会被删</strong>。
+          识别只读这一层里的图片与字序文件。<template v-if="canEditList">不要的文件在这里去掉，识别时就不会读它 —— <strong>磁盘上的文件不会被删</strong>。</template><template v-else>这是上次识别时用的清单（<strong>只能看</strong>）：图片内容不会留在浏览器里，要调整清单请点上面的「重新选择文件夹」再识别一次。</template>
         </p>
 
         <div class="file-group">
           <p class="file-group-title">字序文件</p>
           <ul class="file-list" data-role="file-list-orders">
-            <li v-for="f in orderCandidates" :key="'o' + f.name">
-              <span class="file-name">{{ f.name }}</span>
-              <span v-if="f.name === activeOrderName" class="file-tag">正在使用</span>
-              <span v-else class="file-tag muted">候选</span>
-              <button
-                v-if="removableOrderFiles.indexOf(f) >= 0"
-                class="text"
-                type="button"
-                data-role="order-remove"
-                @click="removeOrderCandidate(f)"
-              >
-                去掉
-              </button>
-            </li>
-            <li v-if="!orderCandidates.length" class="file-note">
-              没有字序文件：这一轮靠认纸面参考字定字序（要求这份纸是本程序模板印的）
-            </li>
+            <template v-if="canEditList">
+              <li v-for="f in orderCandidates" :key="'o' + f.name">
+                <span class="file-name">{{ f.name }}</span>
+                <span v-if="f.name === activeOrderName" class="file-tag">正在使用</span>
+                <span v-else class="file-tag muted">候选</span>
+                <button
+                  v-if="removableOrderFiles.indexOf(f) >= 0"
+                  class="text"
+                  type="button"
+                  data-role="order-remove"
+                  @click="removeOrderCandidate(f)"
+                >
+                  去掉
+                </button>
+              </li>
+              <li v-if="!orderCandidates.length" class="file-note">
+                没有字序文件：识别时靠认纸面参考字定字序（要求这份纸是本程序模板印的）
+              </li>
+            </template>
+            <template v-else>
+              <li v-if="storedSource && storedSource.orderFileName">
+                <span class="file-name">{{ storedSource.orderFileName }}</span>
+                <span class="file-tag">这次识别用的</span>
+              </li>
+              <li v-else class="file-note">没有字序文件：这次识别靠认纸面参考字定的字序</li>
+            </template>
           </ul>
-          <p v-if="orderCandidates.length > 1" class="panel-hint">
+          <p v-if="canEditList && orderCandidates.length > 1" class="panel-hint">
             这个文件夹里有 {{ orderCandidates.length }} 个 json 文件：字序按"固定名优先"挑中了「{{ activeOrderName || '（都不合格式）' }}」——
             多余的是"另存一份 / 从别处拷来的"旧字序，可以在这里去掉，免得以后挑错。
           </p>
-          <p v-else-if="orderCandidates.length === 1 && activeOrderName" class="panel-hint">
-            只有一个字序文件，它就是这一轮要用的，不能在这里去掉（去掉它整批就改成认纸面参考字定字序了）。
+          <p v-else-if="canEditList && orderCandidates.length === 1 && activeOrderName" class="panel-hint">
+            只有一个字序文件，它就是识别时用的那一份，不能在这里去掉（去掉它整批就改成认纸面参考字定字序了）。
+          </p>
+          <p v-else-if="!canEditList && storedSource && storedSource.orderNote" class="panel-hint">
+            字序文件：{{ storedSource.orderNote }}
           </p>
         </div>
 
         <div class="file-group">
-          <p class="file-group-title">图片（{{ files.length }}）</p>
+          <p class="file-group-title">图片（{{ listedImages.length }}）</p>
           <ul class="file-list" data-role="file-list-images">
-            <li v-for="(f, i) in files" :key="'i' + f.name + i">
+            <li v-for="(name, i) in listedImages" :key="'i' + name + i">
               <span class="file-index">{{ i + 1 }}</span>
-              <span class="file-name">{{ f.name }}</span>
-              <button class="text" type="button" data-role="image-remove" @click="removeImage(f)">去掉</button>
+              <span class="file-name">{{ name }}</span>
+              <button
+                v-if="canEditList"
+                class="text"
+                type="button"
+                data-role="image-remove"
+                @click="removeImage(files[i])"
+              >
+                去掉
+              </button>
             </li>
-            <li v-if="!files.length" class="file-note">这一轮没有图片了：把去掉的放回来，或重新选一个文件夹</li>
+            <li v-if="!listedImages.length" class="file-note">还没有图片：点上面的「选择文件夹」，指向扫描件所在的那一层</li>
           </ul>
         </div>
 
-        <div v-if="removedList.length" class="file-group">
+        <div v-if="canEditList && removedList.length" class="file-group">
           <p class="file-group-title">已去掉的图片（{{ removedList.length }}）</p>
           <ul class="file-list" data-role="file-list-removed">
             <li v-for="(f, i) in removedList" :key="'r' + f.name + i">

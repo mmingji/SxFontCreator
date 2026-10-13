@@ -14,6 +14,12 @@
 // 数据来源与去向：数据由 store/project.js 提供；本模块不解释字段含义，只负责存取与版本对齐。
 
 const SNAPSHOT_KEY = 'sxfont.snapshot.v1'
+// 界面落点（2026-10-13 用户拍板：刷新 / 关浏览器再打开停在离开时的那一步）单独存一个键。
+// **为什么不做进项目数据**：它只是"界面停在哪一页"，与项目内容无关；做进项目数据会有两个代价 ——
+//   ① 点一下步骤卡就要重写整份项目对象（几 MB，字形虽已分片，元信息这次数也不值当）；
+//   ② 会让"整份项目数据"多一份与本机界面绑定的字段（换机器时它没有意义）。
+// 清空全部数据时一并删掉这个键（见 store.clearAllData）：那时等于回到刚打开软件，落点也该重置。
+const VIEW_KEY = 'sxfont.view.v1'
 // 旧键 'sxfont.project.v1' 是"双写时代"的第二份真相，已废弃且不再读取（当前没有真实项目数据，
 // 不做迁移；若将来发现用户机器上有旧数据需要救，再补一次性升级逻辑）
 const DB_NAME = 'sxfont-db'
@@ -203,8 +209,7 @@ export async function loadProject() {
 // 存储层现在只剩"读 / 写当前项目 + 只读快照"这条主干（决策 五-4）。
 
 // 存储状态（供界面自检展示）：两边各自的 rev，用于一眼看出是否对齐
-export async function getStorageState() {
-  const idbOk = await isIdbAvailable()
+export async function getStorageState() {  const idbOk = await isIdbAvailable()
   const idbData = idbOk ? await readFromIdb() : null
   const snap = readSnapshot()
   return {
@@ -226,6 +231,8 @@ export async function clearStorage() {
   let snapshotCleared = false
   try {
     localStorage.removeItem(SNAPSHOT_KEY)
+    // 落点跟着一起清：清空全部数据 = 回到刚打开软件，界面也不该再停在原来那一步
+    localStorage.removeItem(VIEW_KEY)
     snapshotCleared = true
   } catch (e) {
     // localStorage 不可写（隐私模式等）：继续删真相 —— 遍历顺序上真相才是权威
@@ -242,5 +249,28 @@ export async function clearStorage() {
     return { ok: true, snapshotCleared }
   } catch (e) {
     return { ok: false, snapshotCleared, error: e && e.message ? e.message : String(e) }
+  }
+}
+
+// ── 界面落点（2026-10-13 用户拍板）────────────────────────────────────────────
+// 口径：**记住最后打开的那一步**，刷新 / 关浏览器再打开都停在原处。
+// 合法性由 lib/flow.js 的 resolveActiveStep 判断（不认识的 key 一律回退）；这里只管读写，
+// 写失败（隐私模式 / 存储不可用）就静默忽略 —— 落点丢了大不了回退到"第一个还没做完的步骤"。
+
+/** 读上次打开的步骤（没记过或读不出时返回空串，由调用方回退） */
+export function readActiveStep() {
+  try {
+    return localStorage.getItem(VIEW_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+/** 记下当前打开的步骤（点三张步骤卡时调用；同步写，不做防抖 —— 它只有几十字节） */
+export function saveActiveStep(step) {
+  try {
+    if (step) localStorage.setItem(VIEW_KEY, String(step))
+  } catch {
+    /* 存储不可写：忽略 */
   }
 }
