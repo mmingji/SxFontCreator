@@ -59,12 +59,12 @@ const prevStateNote = computed(() => {
 })
 
 const META_FIELDS = [
-  { key: 'familyName', label: '字体族名', placeholder: 'SxFontCreator', hint: '在 Word / PS 的字体列表里显示的名字' },
-  { key: 'fullName', label: '全名', placeholder: '我的手写体 SxFontCreator', hint: '显示在字体详情的完整名称' },
-  { key: 'version', label: '版本', placeholder: '1.0', hint: '只写数字与点，例如 1.0' },
-  { key: 'designer', label: '设计者', placeholder: '（可留空）', hint: '会写进字体的设计者字段' },
+  { key: 'familyName', label: '字体族名', placeholder: 'SxFontCreator', hint: 'Word / PS 字体列表里的名字' },
+  { key: 'fullName', label: '全名', placeholder: '我的手写体 SxFontCreator', hint: '' },
+  { key: 'version', label: '版本', placeholder: '1.0', hint: '只写数字与点' },
+  { key: 'designer', label: '设计者', placeholder: '（可留空）', hint: '' },
   { key: 'copyright', label: '版权', placeholder: '（留空则自动生成一行）', hint: '' },
-  { key: 'licence', label: '许可', placeholder: '（可留空）', hint: '例如：仅限个人使用，请勿分发' },
+  { key: 'licence', label: '许可', placeholder: '（可留空）', hint: '例如：仅限个人使用' },
   { key: 'licenceUrl', label: '许可链接', placeholder: '（可留空）', hint: '' },
   { key: 'description', label: '说明', placeholder: '（可留空）', hint: '' }
 ]
@@ -536,8 +536,7 @@ function reloadNow() {
     <template v-if="ready">
       <p class="panel-hint">
         zip 内容：<strong>{{ font.fileName }}.ttf / .woff / .woff2</strong>、<strong>font.css</strong>、
-        <strong>使用说明.txt</strong>、<strong>preview.html</strong>（双击就能看样张）；
-        字体族名 <strong>{{ font.familyName }}</strong>，收录 {{ font.coverage.total }} 个字。
+        <strong>使用说明.txt</strong>、<strong>preview.html</strong>（双击看样张）；族名 <strong>{{ font.familyName }}</strong>。
       </p>
 
       <!-- 网页字体预览（决策 四-8）：用刚生成的字节当场注册，先看效果再下载 -->
@@ -564,20 +563,16 @@ function reloadNow() {
       </div>
 
       <p class="panel-hint">
-        <strong>字形总览图</strong>：把这一套字体<strong>收录的字</strong>排成一张 PNG（一行 25 字，
-        {{ font.coverage.total }} 字约 {{ Math.ceil(font.coverage.total / 25) }} 行），图上标注族名、版本、收录字数与生成时间，
-        可用作<strong>版权登记</strong>的材料。字体里没收录的字不会出现在图上（图下方有这句说明）。
+        <strong>字形总览图</strong>：把收录的 {{ font.coverage.total }} 个字排成一张 PNG（约 {{ Math.ceil(font.coverage.total / 25) }} 行），
+        标注族名、版本、收录字数与生成时间，可用作<strong>版权登记</strong>材料。
       </p>
 
       <p class="panel-hint">
-        <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」（或复制到 <code>C:\Windows\Fonts</code>）；
-        macOS 双击 → 「安装字体」。<strong>装完请重启 Word / PS</strong> —— 它们只在启动时读一次字体列表。
+        <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」；macOS 双击 → 「安装字体」；
+        <strong>装完请重启 Word / PS</strong>。
       </p>
       <p class="panel-hint">
-        <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录，
-        然后 <code>font-family: "{{ font.familyName }}";</code>。
-        <strong>没写的字</strong>在 Word 里会显示成方框、在 PS 与浏览器里会回退到别的字体；<strong>已写的字完全不受影响</strong> ——
-        所以不必写完也能先生成一套字体用起来，之后补写新字、重新生成即可（多批次的字形会合并进同一套字库）。
+        <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录即可。
       </p>
     </template>
 

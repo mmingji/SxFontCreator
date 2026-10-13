@@ -146,11 +146,28 @@ const popcount = (x) => {
   return (Math.imul(x, 0x01010101) >> 24) & 0xff
 }
 
-// ── ① 候选库：把字表每个字渲染成位图（浏览器侧；需要 canvas + 已注册的参考字字体）──
+// ── ① 候选库：把字表每个字渲染成位图（浏览器侧或 Web Worker 侧；需要画布 + 已注册的参考字字体）──
 
 /**
- * 建候选库。一次性成本实测约 2.3 秒（8274 字）—— 恢复是低频动作，配进度提示即可，
- * 不需要移入 Web Worker（与决策 四-10 的口径一致）。
+ * 建候选库用哪种画布：**优先 OffscreenCanvas**。
+ * 为什么必须这样写（决策 六-15 ⑥）：识别链路移进了 Web Worker，而 Worker 里**没有 document**
+ *   （探针实测：`typeof document === 'undefined'`）—— 原来这里写死 `document.createElement('canvas')`，
+ *   搬进 Worker 就会当场报错。OffscreenCanvas 在主线程与 Worker 里都能用（探针实测：
+ *   getImageData / measureText / fillText 全通），所以它是两种跑法共用的那一条。
+ */
+function createBuildCanvas(width, height) {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(width, height)
+  // 仅在"没有 OffscreenCanvas 但有 DOM"的老环境里才落到这条（能力检测会先提示用户换浏览器）
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  return canvas
+}
+
+/**
+ * 建候选库。一次性成本实测约 2.3 秒（8274 字）——
+ * **2026-10-12（决策 六-15）：它现在由 Worker 内部调用**（库约 32.6MB，留在 Worker 里既省主线程内存、
+ *   也免掉"transfer 会把主线程那份搬空"的麻烦）；主线程直接调用仍然可用（`test:refchar` 就是这么跑的）。
  * @param {{fontFamily:string, chars?:string[], onProgress?:(done:number,total:number)=>void}} options
  * @returns {Promise<{chars:string[], count:number, v32:Float32Array, sig:Uint32Array, ok:Uint8Array,
  *                    featSize:number, sigSize:number, ms:number}>}
@@ -169,7 +186,7 @@ export async function buildLibrary(options = {}) {
   const v32 = new Float32Array(chars.length * F * F)
   const sig = new Uint32Array(chars.length * (S * S / 32))
   const ok = new Uint8Array(chars.length)
-  const canvas = document.createElement('canvas')
+  const canvas = createBuildCanvas(perRow * CELL, CELL)
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   const fontPx = LAYOUT.referenceFontSize * PT_TO_PX // 14pt @300dpi ≈ 58.3px
 

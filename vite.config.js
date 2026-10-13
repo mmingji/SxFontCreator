@@ -97,6 +97,11 @@ export default defineConfig({
   base: './',
   // 程序版本注入（项目包清单里要写它；避免为读一个字符串再引一份 package.json 副本）
   define: { __APP_VERSION__: JSON.stringify(PKG.version) },
+  // 识别链路用的 Web Worker（决策 六-15）：**必须经典格式（iife）**
+  // 实测（六-15 ⑤）：file:// 下同目录的 worker 脚本被 origin 'null' 拦下，module 形态的 Blob worker 也起不来，
+  //   只有经典 Blob URL worker 可用 —— 而 `?worker&inline`（见 lib/scanWorkerClient.js）正是"经典 + 内联"这一形态。
+  // 因此这里显式指定 iife：默认的 'es' 会让内联产物带 import 语句，在 file:// 的真实交付物里必然失败。
+  worker: { format: 'iife' },
   build: {
     target: 'es2020',
     cssCodeSplit: false,

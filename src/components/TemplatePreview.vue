@@ -168,12 +168,10 @@ const orderMode = computed({
 })
 const orderHint = computed(() => {
   if (orderMode.value === 'rank') {
-    return '按使用频率：最常用的字在最前（前 2000 字覆盖语料 ' + CHAR_RANK_META.cumAt2000 + '%，约 ' +
-      Math.ceil(2000 / LAYOUT.perPage) + ' 页即可日常使用）；' + CHAR_RANK_META.missing +
-      ' 个未被字频表收录的字（' + (CHAR_RANK_META.missing - baseCount) + ' 个汉字 + 基础字符 ' + baseCount +
-      '）按官方笔画序排在最后'
+    return '最常用的字在最前（前 2000 字覆盖语料 ' + CHAR_RANK_META.cumAt2000 + '%，约 ' +
+      Math.ceil(2000 / LAYOUT.perPage) + ' 页即可日常使用）'
   }
-  return '笔画序：《通用规范汉字表》的官方字序（说明第八条：字序遵循《GB 13000.1 字符集汉字字序（笔画序）规范》）'
+  return '《通用规范汉字表》的官方字序'
 })
 
 // 实际要排的字：先按"排列方式"定全序，再按上面三选一取子集
@@ -405,7 +403,7 @@ async function generatePack() {
     <div class="panel-row">
       <div class="panel-field">
         <span class="field-label">参考字体</span>
-        <span class="panel-hint" data-role="ref-font-note">{{ BUILTIN_FONT_LABEL }}（固定用它，不可更换）—— 上传时程序靠认出纸面上印的参考字，才能判断这一页写了哪些字、该按什么字序对应；换了字体就认不出来了。</span>
+        <span class="panel-hint" data-role="ref-font-note">{{ BUILTIN_FONT_LABEL }}，固定用它 —— 识别时靠认出纸面上印的参考字，才能判断这一页写了哪些字。</span>
       </div>
     </div>
 
@@ -439,7 +437,6 @@ async function generatePack() {
     <div class="panel-actions">
       <button class="primary" data-role="generate-pack" :disabled="busy" @click="generatePack">生成并下载模板压缩包</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
-      <span v-if="!busy" class="panel-hint">包内四件：模板 PDF、空白更正册（5 页）、完整说明、字序文件</span>
     </div>
 
     <!-- data-role：给自动化测试一个稳定锚点（本步还有一条"书写示意失败"的消息，同样用 .panel-message） -->
@@ -457,14 +454,13 @@ async function generatePack() {
          2026-10-11 三步流程（决策 八-15 ②）：原「手写与扫描」不再占一步，它的要点并进这一段 ——
          它是纸面动作、本来就只有几句说明，单独占一步只会让流程看起来更长 -->
     <p class="panel-hint">
-      <strong>打印</strong>：彩色喷墨、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>（有些驱动叫「无边框」）；先打最后一页自检页、用尺子量 1cm 方框确认尺寸。<br />
-      <strong>书写</strong>：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字（如"日""一""小"）居中写小些；不描不改、一笔写成；
-      写错的字用红笔<strong>把这一格的参考字圈起来</strong>，要重写的字写到更正册上（按被圈字的顺序从第 1 格起，一格一个字）。<br />
-      <strong>扫描</strong>：平板扫描仪、<strong>彩色 300dpi、照片模式</strong>，一页一个文件、文件名随意；用手机 App 时选<strong>「智能高清」（默认档）</strong>，其它档会识别失败；
-      纸面别翘边、折叠或受潮。<br />
+      <strong>打印</strong>：彩色喷墨、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>；先打最后一页自检页量一下 1cm 方框。<br />
+      <strong>书写</strong>：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字居中写小些；不描不改；
+      写错的字用红笔<strong>把这一格的参考字圈起来</strong>，要重写的字写到更正册上。<br />
+      <strong>扫描</strong>：<strong>彩色 300dpi、照片模式</strong>，一页一个文件；手机 App 选<strong>「智能高清」（默认档）</strong>。<br />
       <!-- 「写哪些字」下面那段"没写的字会回退、不必写完也能用"按用户要求插在这个位置：
            扫描那一句之后、"完整说明见…"之前；随选择变化的"这次排哪些字、多少页"仍留在上面那一组里 -->
-      <span data-role="fallback-hint">没写的字不会进字体：在 Word 里显示成方框、在浏览器与 PS 里回退成系统字体；<strong>已写的字不受影响</strong> —— 所以不必一次写完，先写最常用的那批就能用起来，之后再补写、重新生成即可（这也是「常用 6500 字」这档的用意）。</span>
+      <span data-role="fallback-hint">没写的字不会进字体：Word 里显示成方框、浏览器与 PS 里回退成系统字体，<strong>已写的字不受影响</strong> —— 不必一次写完。</span>
     </p>
   </div>
 </template>
