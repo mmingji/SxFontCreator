@@ -15,6 +15,7 @@ import { preprocessFile } from './scanPreprocessor.js'
 import { analyzePage, summarizeBatch, DESIGN } from './gridDetector.js'
 import { attachRedMarks, defaultCellRects } from './markRecognizer.js'
 import { extractPage } from './handwritingExtractor.js'
+import { rotateQuarterTurns } from './imageOps.js'
 import { LAYOUT } from './layout.js'
 import { getAllChars } from './charset.js'
 import { charAtCell, reorderPages, resolveBatchChars } from './scanMeta.js'
@@ -88,6 +89,80 @@ function grayThumb(gray, targetWidth) {
 }
 
 /**
+ * 页脚四个方向都解不出时的**第二轮回退**（2026-10-13 用户拍板）。
+ *
+ * 为什么需要它：方向纠正的判据一直是"页脚能不能解出"（决策 二-11），可**页脚被裁掉 / 污损的纸本来还能用** ——
+ *   四角定位块与纸面参考字都好好的。真件实测（把页脚编码带涂白）：四个方向页脚全败 → 方向判错 →
+ *   按错方向切格 → 参考字覆盖率不达标 → 整页失败，用户除了重拍没有别的路。
+ * 判据换成**纸面参考字能不能认出来**（与"这是不是自家模板"同源，决策 五-9 ④）：
+ *   四个方向各跑一次「找四角 → 透视校正 → 按已知网格切格 → 认参考字」，取**序列定位命中优先、
+ *   认得出的格数其次**的那个方向；达标线 = 定位命中，或认得出的格数 ≥ 136 × 0.6（与 `readPage` 的 ready 同口径）。
+ *   **不能拿 `inkRatio` 当判据**：它只统计"格子里有没有模板的参考字"，把整页转 90°/180° 照样接近 1.0
+ *   （参考字仍在格内、只是倒着）—— 实测踩到过一次：转错 90° 的方向拿了满分，于是选中错方向、整页白跑。
+ * 代价：这一段约等于把切格 + 认字跑四遍（单页切格实测约 0.6 秒），但**只在页脚全败时才跑** ——
+ *   页脚读得出的件一次都不会走到这里（`tried` 里任何一个方向解出页脚就直接返回 null）。
+ * 口径不变的地方：页脚仍然没读出来（`footerOk` 依旧 false）→ 页序该确认的照旧确认（决策 二-7）。
+ * @returns {object|null} 救回来时返回"按选定方向重新跑过"的页结果（orientation 已覆盖成真实方向），否则 null
+ */
+function rescueOrientationByReference(gray, failedPage, options) {
+  const tried = (failedPage && failedPage.orientation && failedPage.orientation.tried) || []
+  if (!options.library) return null // 没有参考字候选库（纯几何的测试路径）就没法评分
+  if (failedPage.stage === 'marks' || failedPage.stage === 'transform') return null // 连四角都没找到
+  if (tried.length < 2 || tried.some((t) => t.footerOk)) return null // 没试过多个方向，或本来就有方向解出了页脚
+
+  let best = null
+  for (const t of tried) {
+    const input = t.turns === 0 ? gray : rotateQuarterTurns(gray, t.turns)
+    // 这一轮**不再让它自己转方向**（我们正在逐方向评分），四角 / 校正 / 切格照旧
+    const page = analyzePage(input, {
+      autoOrient: false,
+      keepDesignGray: true,
+      expectedBatchCode: options.expectedBatchCode
+    })
+    if (!page.designGray || !page.boxes || !page.boxes.length) continue
+    const read = readReferenceChars(page.designGray, options.library, {})
+    // 评分 = **序列定位有没有命中** > **认得出的格数** —— 这两个对方向敏感。
+    // 为什么不用 inkRatio（"参考字覆盖率"）：它只统计"格子里有没有模板的参考字"，
+    //   把整页转 90°/180° 它照样接近 1.0（参考字仍在格内，只是倒着）—— 实测踩到过：
+    //   转错 90° 的那个方向拿了满分，于是选中了错方向、整页白跑。
+    const score = (read.located ? 1000 : 0) + (read.sureCount || 0)
+    if (!best || score > best.score) best = { turns: t.turns, page, score, read }
+  }
+  if (!best) return null
+  // 达标判据与 readPage 的 `ready` 同一口径：序列定位命中，或认得出的格数过半
+  const okByReference = !!best.read.located || best.read.sureCount >= Math.round(LAYOUT.perPage * 0.6)
+  if (!okByReference) return null
+
+  // 选定方向的这一份结果直接采用，但 **orientation 必须换成真实值**：内部那一轮没转方向、它报的 turns 是 0，
+  // 而下游（红圈识别按 turns 把彩色像素转过来、界面显示"已自动转正/按参考字定方向"）都读这个字段
+  const page = best.page
+  // **整页可以继续**：方向已由纸面参考字定下来，四角 / 校正 / 切格都成功 —— 页脚读不出只是
+  //   "少了一个自校验来源"（决策 五-9 ⑥ 早就把页脚降为兜底与自校验），不该再按"整页失败"处理。
+  //   不置这一位的话，回退白做：下游一句 `if (!page.ok)` 就把整页丢掉了（实测踩到）。
+  page.ok = true
+  page.orientation = {
+    turns: best.turns,
+    corrected: best.turns !== 0,
+    attempts: tried.length,
+    tried,
+    rescuedByReference: true, // 方向是"按参考字"救回来的（界面据此换一句提示）
+    rescueSure: best.read.sureCount || 0,
+    rescueLocated: !!best.read.located,
+    rescueRatio: Math.round((best.read.inkRatio || 0) * 1000) / 1000
+  }
+  page.messages = [
+    ...(page.messages || []),
+    {
+      level: 'warn',
+      text: '这一页的页脚编码读不出来（可能被裁掉或污损）：已改按纸面参考字定方向（试了 ' +
+        tried.length + ' 个方向，认得出 ' + (best.read.sureCount || 0) + ' 格' +
+        (best.read.located ? '、整页字序也定位上了' : '') + '）—— 请核对这一页的页序对不对'
+    }
+  ]
+  return page
+}
+
+/**
  * 识别一页扫描件。
  * @param {File} file 图片文件
  * @param {object} options
@@ -113,11 +188,22 @@ export async function recognizePage(file, options = {}) {
 
   // ② 切格（1.5）：方向纠正 → 找四角 → 透视校正 → 页脚解码 → 按已知网格切 136 格
   stage('正在切格（找四角、透视校正、读页脚）')
-  const page = analyzePage(gray, {
+  let page = analyzePage(gray, {
     autoOrient: opt.autoOrient,
     keepDesignGray: true,
     expectedBatchCode: typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
   })
+  // 页脚四个方向都解不出 → 再按"参考字覆盖率"试一遍四个方向（2026-10-13 用户拍板，见上面那个函数的注释）。
+  // 页脚读得出的件一次都不会走到这里；只有"页脚被裁掉 / 污损"的纸才会真跑这四遍
+  if (!page.ok) {
+    stage('页脚读不出：正在按参考字试其它方向')
+    const rescued = rescueOrientationByReference(gray, page, {
+      library: opt.library,
+      minInkRatio: opt.minInkRatio,
+      expectedBatchCode: typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
+    })
+    if (rescued) page = rescued
+  }
   const record = {
     fileIndex,
     fileName: file.name,
@@ -132,7 +218,15 @@ export async function recognizePage(file, options = {}) {
     // 只给 footerOk 这些扁平字段的话，每页都会被当成"页脚读不出"（踩过：汇总里全是"页脚没读出"的警告，
     // 而页面记录明明读出了第 1 页与校验码 3362 —— 因为那种情形只产生 warn、ok 仍为 true，测试也没抓住）
     footer: null,
-    orientation: page.orientation ? { corrected: !!page.orientation.corrected, turns: page.orientation.turns, tried: page.orientation.tried } : null,
+    orientation: page.orientation ? {
+      corrected: !!page.orientation.corrected,
+      turns: page.orientation.turns,
+      tried: page.orientation.tried,
+      // 2026-10-13：方向是"按纸面参考字"救回来的（页脚读不出时）—— 界面据此换一句提示
+      rescuedByReference: !!page.orientation.rescuedByReference,
+      rescueSure: page.orientation.rescueSure || 0,
+      rescueLocated: !!page.orientation.rescueLocated
+    } : null,
     cornerMaxError: page.cornerErrors ? Math.round(page.cornerErrors.max * 10) / 10 : null,
     counts: { written: 0, empty: 0, suspect: 0, marked: 0, uncertain: 0, inkPixels: 0 },
     // 参考字识别与定字序（2026-10-11 新模型）：

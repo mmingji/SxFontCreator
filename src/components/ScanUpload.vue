@@ -743,7 +743,13 @@ function cardTitle(page) {
   if (page.footerOk && page.kind !== 'correction') {
     bits.push('校验码 ' + page.batchCode + (page.batchMatch === false ? '（与所选批次不符）' : '（与所选批次一致）'))
   }
-  if (page.orientation && page.orientation.corrected) bits.push('已自动转正 ' + page.orientation.turns * 90 + ' 度')
+  // 2026-10-13：页脚读不出、方向是按纸面参考字救回来的页，说清它是怎么定的（与"已自动转正"分开说）
+  if (page.orientation && page.orientation.rescuedByReference) {
+    bits.push('页脚读不出：方向按纸面参考字定（认得出 ' + (page.orientation.rescueSure || 0) + ' 格' +
+      (page.orientation.rescueLocated ? '、字序也定位上了' : '') + '）')
+  } else if (page.orientation && page.orientation.corrected) {
+    bits.push('已自动转正 ' + page.orientation.turns * 90 + ' 度')
+  }
   if (page.cornerMaxError !== null && page.cornerMaxError !== undefined) bits.push('四角误差 ' + page.cornerMaxError + ' 像素')
   if (bits.length) lines.push(bits.join(' · '))
   if (page.orderSource) lines.push('字序：' + orderSourceLabel(page))
