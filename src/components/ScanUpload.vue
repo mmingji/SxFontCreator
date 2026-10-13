@@ -44,6 +44,10 @@ const scanInput = ref(null) // pickScanInputs 的产物：{ images, orderCandida
 const orderFile = ref(null) // 读到的字序文件：{ ok, fileName, file, reason }
 const readingDir = ref(false)
 const folderName = ref('') // 这一轮选的文件夹名（句柄那条路直接有；webkitdirectory 从相对路径里取）
+// 选完文件夹之后的**常驻回执**（2026-10-13 用户要求"选完要有明确回显"）：
+// 对话框里那一片空白（Windows 的文件夹对话框只列子文件夹）容易让人以为没选上，
+// 所以选完必须在界面上明确写出"选的是哪个文件夹、里面有多少张可用图片"。空串 = 还没选。
+const dirNote = ref('')
 // 这台浏览器有没有系统文件夹对话框（Firefox / Safari 没有）—— 界面据此决定按钮形态与那句提示
 const canPickDirectory = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
 // 上一次选中的目录句柄（只在本次会话里留着）：ref 而不是普通变量 —— 按钮文案"重读上次的文件夹"要跟着变
@@ -222,7 +226,8 @@ async function applyDirFiles(picked, folder, subdirFiles) {
   folderName.value = folder || ''
   if (!picked.length) {
     scanInput.value = null
-    setMessage('这个文件夹里没有文件，请确认选的是扫描件所在的那一层', 'error')
+    dirNote.value = ''
+    setMessage(folder ? '文件夹「' + folder + '」里没有文件' : '这个文件夹里没有文件', 'error')
     return
   }
   readingDir.value = true
@@ -233,7 +238,13 @@ async function applyDirFiles(picked, folder, subdirFiles) {
     // 字序文件：固定名「字序.json」优先，读不了再试目录里别的 .json（决策 一-18 ② 的容错）
     const found = await findOrderFile(input.orderCandidates, { perPage: LAYOUT.perPage })
     orderFile.value = found
-    const parts = ['已选文件夹「' + (input.folderName || '（未命名）') + '」：找到 ' + input.images.length + ' 张图片']
+    // ① 状态栏那行**常驻读出"选了哪个文件夹"**（2026-10-13 用户要求：选完要有明确回执）
+    const name = input.folderName || '（未命名文件夹）'
+    dirNote.value = input.images.length
+      ? '已选文件夹「' + name + '」· ' + input.images.length + ' 张图片'
+      : '已选文件夹「' + name + '」· 没有可用的图片'
+    // ② 下面这段是一次性的说明：忽略了什么、字序从哪来
+    const parts = ['文件夹「' + name + '」：找到 ' + input.images.length + ' 张图片']
     const ignored = input.ignoredSubdir || subdirFiles
     if (ignored) parts.push('忽略了子文件夹里的 ' + ignored + ' 个文件')
     if (input.ignoredOther) parts.push('跳过了 ' + input.ignoredOther + ' 个非图片文件')
@@ -730,11 +741,22 @@ const zoomIsMarkedLabel = computed(() => {
         <button class="primary" data-role="scan-start" :disabled="running || readingDir || !files.length" @click="start">开始识别</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
         <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">清空结果</button>
-        <span class="panel-hint">{{ readingDir ? '正在读取文件夹…' : (folderName ? '文件夹「' + folderName + '」· ' : '') + files.length + ' 张图片' }}</span>
+        <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
       </div>
     </div>
+    <!-- 选完之后的回执行：明确写出"选的是哪个文件夹、里面有多少张可用图片"。
+         为什么需要它：系统文件夹对话框里那一片空白（Windows 的文件夹对话框只列子文件夹、不列文件）
+         很容易让人以为没选上 —— 选完必须在这里给出确定的结果。
+         用 .panel-hint 而不是 .panel-message：后者在冒烟里是"识别状态"的常驻位置，
+         两条都占同一个选择器时，识别完成的消息会被这一条挤掉 -->
+    <p v-if="dirNote" class="panel-hint" data-role="dir-note">
+      <strong>{{ dirNote }}</strong>
+    </p>
     <p class="step-note" data-role="picker-note">
-      <template v-if="canPickDirectory">点「选择文件夹」打开系统文件夹对话框，选中扫描件所在的那一层。</template>
+      <template v-if="canPickDirectory">
+        点「选择文件夹」打开系统文件夹对话框，选中扫描件所在的那一层。
+        <strong>对话框里的列表是空的也没关系</strong> —— 它只列子文件夹、不列文件，底部「文件夹」框里显示的就是你选中的那一层，直接点「选择文件夹」即可。
+      </template>
       <template v-else>这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样；想要系统对话框请用 Chrome 或 Edge（86+）。</template>
     </p>
     <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
