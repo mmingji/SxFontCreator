@@ -229,10 +229,11 @@ export function stepProgress(key, progress) {
       : '还没有识别结果'
     return { done: p.uploadedPages, total, ratio: clamp(p.uploadedPages, total), label }
   }
-  // build：分母是"这批纸能提供的字"；分母算不出来时退回"已收录多少字"，只报事实
-  const total = p.glyphCount > 0 ? p.glyphCount : p.fontCoverage
+  // build：**点了生成字体就跑满**（2026-10-13 用户口径：第 1、3 步的进度条没有"百分比"的意义 ——
+  //   要么还没生成、要么已生成）。文案仍如实报收录了多少字，只是不再拿"能收录多少"当分母 ——
+  //   那个分母（这批纸能提供多少字）与"生成"这件事的完成度不是一回事，看着像永远做不完。
   const label = p.fontBuilt
-    ? '已收录 ' + p.fontCoverage + ' 字' + (p.glyphCount > p.fontCoverage ? ' / 共 ' + p.glyphCount + ' 字' : '')
+    ? '已生成字体 · 收录 ' + p.fontCoverage + ' 字'
     : (p.glyphCount > 0 ? '可收录 ' + p.glyphCount + ' 字 · 还没生成' : '还没有可收录的字形')
-  return { done: p.fontCoverage, total, ratio: clamp(p.fontCoverage, total), label }
+  return { done: p.fontBuilt ? 1 : 0, total: 1, ratio: p.fontBuilt ? 1 : 0, label }
 }

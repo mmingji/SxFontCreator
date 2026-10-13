@@ -396,6 +396,16 @@ export const useProjectStore = defineStore('project', {
       this.scan.chars = typeof chars === 'string' ? chars : ''
       this.scan.lastRunAt = null
       this.scan.source = source || null
+      // 2026-10-13 修（真缺陷）：**重新识别要作废上一次的字体产物元信息** ——
+      //   原来这里只清 scan 段，于是第 3 步会把"这次新算出来的字形计划"与"上次那份产物的收录统计"
+      //   并排显示，自相矛盾（用户真机看到"字形计划：更正册覆盖 4 个"与"产物：其中 0 个来自更正册"同屏；
+      //   子代理用真件复现：重新识别带更正册之后再看不重新生成，产物统计还停在上一轮）。
+      //   与单页重传（replaceScanPage）同一口径：清 built、把体检快照标成过期（不清 coverage —— 那由重建覆盖）。
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
       this.markDirty()
       schedulePersist(this)
     },

@@ -373,10 +373,8 @@ export function buildFinalGlyphPlan(pages, correction = {}) {
     else items.push(item)
   }
 
-  const notReplaced = (correction.circled || []).filter((c) => !replacedChars.has(c.char))
-  if (notReplaced.length) {
-    problems.push('有 ' + notReplaced.length + ' 个被圈的字没有用上更正册（保留主区原字形）：' +
-      notReplaced.map((c) => c.char).join('、'))
-  }
+  // 2026-10-13 用户口径：这里原来还会追加一句"有 N 个被圈的字没有用上更正册（保留主区原字形）：力、力、叉…"——
+  //   它和第 2 步「更正核对」描述行说的是同一件事，而且按"处"数、与按"字"数的口径对不上，去掉。
+  //   留空 / 配对失败的结论由界面统一说一次（第 2 步描述行 + 第 3 步「字形计划」行，两处都按**不同的字**计）。
   return { items, problems, replaced: replacedChars.size }
 }

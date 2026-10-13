@@ -111,7 +111,6 @@ function clearText() {
 <template>
   <div class="font-preview">
     <p class="panel-hint">
-      下面这块用的是<strong>刚生成的字体字节</strong>，直接注册在网页里 —— <strong>不用先装到系统</strong>就能看效果。
       预览里未收录的字会回退成系统字体；装进 Word 后，这些字可能显示成方框。
     </p>
 

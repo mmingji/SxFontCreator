@@ -559,8 +559,11 @@ function clearAll() {
   sheetError.value = {}
   rebuilding.value = {}
   clearPageCache()
-  // 字形是落盘的：清结果要连分片键一起清，否则下次识别会与旧字形混在一起
-  clearGlyphs({ batchId: store.scan.batchId }).then((r) => {
+  // 字形是落盘的：清结果要连分片键一起清，否则下次识别会与旧字形混在一起。
+  // 2026-10-13 改：**按全量清**（不带批次），不再只清当前批次 —— 第 3 步原来那块「清理数据」已删，
+  //   这里是"清空识别结果"唯一的入口，而按批次清会留下"别的批次 / 批次 id 为空时落的 default 分片"：
+  //   它们既不属于当前批次、也没有任何入口能管（冒烟实测：清完还剩 1 份分片，刷新后仍在）。
+  clearGlyphs({}).then((r) => {
     savedStats.value = null
     setMessage('已清空识别结果、内存缓存与落盘的字形' + (r && r.removed ? '（删除 ' + r.removed + ' 页分片）' : ''), 'info')
   })

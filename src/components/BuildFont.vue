@@ -7,7 +7,8 @@
 //   ④ 网页字体预览（决策 四-8）：不装机也能先看观感，原生未收录的字标出来
 //   ⑤ 下载 zip / 单件 / 字形总览图 + 安装与使用说明
 //   ⑥ 字形体检与「剔除 / 待重写」清单（决策 四-7、八-8）；体检默认收起，只给一行摘要（八-16 ⑥）
-//   ⑦ 两级清空：清空识别结果 / 清空全部数据（决策 五-11，行内确认条 + 标红）
+//   ⑦ 「重新生成」：生成之后**回到点了生成字体之前**（2026-10-13 用户口径；原来这里还有一块
+//      「清理数据」两级清空，按用户要求去掉了 —— 清空识别结果在第 2 步有「清空结果」那个入口）
 // 与上一步的关系（用户 2026-10-11 口径：**这一步随时可点进来**，但没料时动作不可点）：
 //   本页顶部始终显示上一步的状态 —— 没有识别结果、或有被圈字还没确认更正时，"生成字体"不可点并说明原因；
 //   字体没生成时，下载区整块给出"先点上面的生成字体"的提示而不是摆一排点不动的按钮。
@@ -21,8 +22,6 @@ import { buildFontFromPlan, clearLastBuild, getLastBuild } from '../lib/buildFon
 import { buildGuideText, buildPreviewHtml, packFontZip } from '../lib/fontPack.js'
 import { downloadBytes, downloadText } from '../lib/download.js'
 import { OVERVIEW_DEFAULTS, overviewFileName, renderOverviewPng } from '../lib/glyphOverview.js'
-import { clearPageCache } from '../lib/scanCache.js'
-import { clearGlyphs } from '../lib/glyphStore.js'
 import { releaseAllPreviewFonts } from '../lib/fontPreview.js'
 import FontPreview from './FontPreview.vue'
 
@@ -35,9 +34,6 @@ const messageType = ref('info')
 
 const pages = computed(() => store.scan.pages)
 const hasResult = computed(() => pages.value.some((p) => p.ok))
-// 主区被红笔圈掉的字有几个 —— 只用来在页内提示"更正生效到哪一步"（2026-10-13 起**不再拦人**：
-// 更正配对默认生效，不需要用户点确认；要改就在第 2 步的「更正核对」里改派 / 删除 / 恢复默认）
-const circledCount = computed(() => (store.correction.circled || []).length)
 // 字形计划（与识别页同一份纯逻辑）：主区字形 + 更正册覆盖
 const plan = computed(() => buildFinalGlyphPlan(pages.value, {
   pairs: store.correction.pairs || [],
@@ -52,10 +48,8 @@ const prevStateNote = computed(() => {
   if (plan.value.items.length === 0) {
     return '识别结果里没有可用的字形：回第 2 步看看那一批的失败原因（多半是纸不是本程序模板印的，或打印时没选实际大小）。'
   }
-  if (circledCount.value) {
-    return '主区有 ' + circledCount.value +
-      ' 个被红笔圈掉的字：更正册能对上的字用更正册的字形，其余保留主区原字形（要改就去第 2 步的「更正核对」逐行改派或删除）。'
-  }
+  // 2026-10-13 用户口径：原来这里还有一句"主区有 N 个被红笔圈掉的字：更正册能对上的字用更正册的字形…
+  //   （要改就去第 2 步的「更正核对」逐行改派或删除）"—— 与下面的「字形计划」行说的是同一件事，去掉
   return ''
 })
 
@@ -123,7 +117,10 @@ async function build() {
     })
     // 覆盖清单：这一套字体到底收了哪些字（preview.html 与使用说明都要用）
     const chars = built.mapping.map((m) => m.char)
-    const fromCorrection = plan.value.items.filter((i) => i.source === 'correction').length
+    // 2026-10-13：这里改取 `plan.replaced`（**按不同的字**计数），不再用"items 里 correction 项的条数"——
+    //   后者在"同一个字被圈了多处、或有重复页"时会把同一个字算好几遍，于是第 2 步说"覆盖 9 处（4 个字）"、
+    //   这里却说别的数，界面上两个数字打架（用户真机问的正是这条）。口径统一到"不同的字"。
+    const fromCorrection = plan.value.replaced
     const suspect = store.scanGlyphStats.suspect
     store.setFontResult({
       fileName: built.fileName,
@@ -398,86 +395,31 @@ const staleAfterExclude = computed(() => !!checkup.value && store.font.checkupSt
 // 内存里还有没有刚生成的字节（没有就说明刷新过页面，下载会当场重建一次）
 const hasMemoryBuild = computed(() => !!getLastBuild())
 
-// 体检摘要那一行（收起时也看得到）：把"要处理几件"说全 —— 建议重写 / 已剔除 / 重写清单 / 只是留意
+// 体检摘要那一行（收起时也看得到）：把"要处理几件"说全。
+// 2026-10-13 用户口径：**只说一遍** —— 原来 message（"已体检 1360 个字形：42 个建议重写、18 个只是留意"）
+//   后面又接一句"建议重写 42 个；只是留意 18 个"，同一件事说了两遍；现在只补 message 里没有的那一项
+//   （重写清单是用户自己标出来的，体检摘要里不含它）
 const checkupSummaryText = computed(() => {
   const ck = checkup.value
   if (!ck) return ''
   const parts = [ck.summary ? ck.summary.message : '']
-  if (rewriteList.value.length) parts.push('建议重写 ' + rewriteList.value.length + ' 个')
   if (onRewriteList.value.length) parts.push('重写清单里 ' + onRewriteList.value.length + ' 个')
-  if (excludedList.value.length) parts.push('已剔除 ' + excludedList.value.length + ' 个')
-  if (noteList.value.length) parts.push('只是留意 ' + noteList.value.length + ' 个')
   return parts.filter(Boolean).join('；')
 })
 
-// ── 两级清空（2026-10-12 用户拍板，决策 五-11）──────────────────────────────
-// 形态：行内确认条（通用版 四-11：破坏性动作标红、原地行内确认、不用原生 confirm，
-// 确认文案要写清"删掉什么、剩什么"）—— 点一下先问一次，说清会删掉什么。
-const clearState = ref(null) // null | 'scan' | 'all'
-const afterClearAll = ref(false) // 清空全部数据之后：提示刷新一次（读数见 store.clearAllData）
-// 两个动作分别会删掉什么、删完剩什么（用户口径：说不清就别做破坏性动作）
-const clearConfirmText = computed(() => (clearState.value === 'all'
-  ? '「清空全部数据」会删掉：识别结果、字形、更正配对、体检与筛选记录、模板记录、名称表与选字 —— ' +
-    '等于回到刚打开软件的状态。本机浏览器里这一份数据会被删除，不能撤销；删完请刷新一次页面。'
-  : '「清空识别结果」会删掉：识别结果、落盘的字形、更正配对、体检快照、剔除与待重写清单 —— ' +
-    '回到"还没识别"。模板记录与名称表保留（把扫描件文件夹重指一次就能重跑识别）。不能撤销。'))
-
-function askClear(kind) {
-  afterClearAll.value = false
-  clearState.value = kind
-  setMessage('', 'info')
-}
-
-/** 释放那些"只活在内存里"的东西：页面缩略图与掩膜缓存、已构建的字体字节、注册进页面的预览字体 */
-function releaseMemory() {
+// ── 「重新生成」（2026-10-13 用户口径）────────────────────────────────────────
+/**
+ * 回到"点了生成字体之前"的状态：清掉**产物**（元信息 + 内存字节 + 注册进页面的预览字体），
+ * 名称表、识别结果、剔除与重写清单都留着（它们不是产物）。
+ * 为什么要它：生成之后「生成字体」按钮与那行产物信息就不必再占位置（结果方框已经说清），
+ *   想改名称表或剔除字形再生成一次，得先回到生成前 —— 按钮挂在步骤标题行右侧（与第 1 步「更新预览」同一个位置）。
+ */
+function resetBuild() {
   releaseAllPreviewFonts()
   clearLastBuild()
-  clearPageCache()
-}
-
-async function doClear() {
-  const kind = clearState.value
-  if (!kind || busy.value) return
-  busy.value = true
-  try {
-    if (kind === 'scan') {
-      // store.clearScan() 就是「清空识别结果」的数据层实现：页级记录 + 汇总 + 手选页序 + 更正配对，
-      // 外加体检快照、剔除与待重写清单、字体产物元信息（口径见 store.clearScanResults 的注释）
-      const removed = store.clearScanResults()
-      const glyphRes = await clearGlyphs({}) // 全部字形分片（清空之后旧批次再没有入口可管理）
-      releaseMemory()
-      syncPreviewBytes()
-      setMessage(
-        '已清空识别结果：' + removed.pages + ' 页记录' +
-        (glyphRes && glyphRes.removed ? '、' + glyphRes.removed + ' 份字形分片' : '') +
-        (removed.excluded ? '、' + removed.excluded + ' 个剔除记录' : '') +
-        (removed.rewrite ? '、' + removed.rewrite + ' 个待重写字' : '') +
-        (removed.hadFont ? '、上一次的字体产物与体检快照' : '') +
-        '。模板记录与名称表保留着 —— 到第 2 步把扫描件文件夹重指一次就能重跑识别。',
-        'done'
-      )
-    } else {
-      const res = await store.clearAllData()
-      releaseMemory()
-      syncPreviewBytes()
-      if (res.ok) {
-        afterClearAll.value = true
-        setMessage('已清空全部数据，回到刚打开软件的状态。请刷新一次页面（刷新后就是全新的空项目）。', 'done')
-      } else {
-        setMessage('清空全部数据失败：' + (res.error || '未知原因') + '。数据可能仍在盘上，请刷新后再试一次。', 'error')
-      }
-    }
-  } catch (e) {
-    setMessage('清空失败：' + (e && e.message ? e.message : e), 'error')
-  } finally {
-    busy.value = false
-    clearState.value = null
-  }
-}
-
-// 清空全部数据之后：界面里的 store 已被 $reset、盘上那一份也删了，刷新即回到全新状态
-function reloadNow() {
-  window.location.reload()
+  syncPreviewBytes()
+  store.clearFont()
+  setMessage('已回到生成前的状态：名称表与字形都留着，改完再点「生成字体」即可', 'info')
 }
 </script>
 
@@ -486,11 +428,11 @@ function reloadNow() {
     <!-- 上一步的状态（用户口径：这一步随时可进，但要提示上一步状态、对应功能不可点） -->
     <p v-if="prevStateNote" class="step-note" data-role="prev-state">{{ prevStateNote }}</p>
 
-    <!-- ① 字形计划 + 名称表 + 生成。名称表与按钮**始终在**，只是没有料时不可点 ——
-         用户口径是"对应功能不可点"，不是"整块消失"（消失会让人以为程序坏了） -->
+    <!-- ① 字形计划行：口径与第 2 步「更正核对」一致（都按**不同的字**计数）——
+         2026-10-13 用户口径："这一行的所有信息应该和上一步保持一致"（原来这里按"处"数、对上一步按"字"数，
+         同一件事会得出两个数）。原来还会罗列"哪些被圈的字没用上更正册"，与第 2 步重复，已去掉 -->
     <p v-if="hasResult" class="panel-hint" data-role="glyph-plan">
-      字形计划：<strong>{{ plan.items.length }}</strong> 个字形（主区 {{ plan.items.length - plan.replaced }} 个，
-      更正册覆盖 <strong>{{ plan.replaced }}</strong> 个）；
+      字形计划：共 <strong>{{ plan.items.length }}</strong> 个字形，其中 <strong>{{ plan.replaced }}</strong> 个来自更正册；
       这批共写出 {{ store.scanGlyphStats.written }} 格、可疑 {{ store.scanGlyphStats.suspect }} 个。
       <span v-for="(p, i) in plan.problems" :key="'p' + i">{{ p }} </span>
     </p>
@@ -511,39 +453,70 @@ function reloadNow() {
       </div>
     </div>
 
-    <div class="panel-actions">
+    <!-- 生成字体按钮：**生成过之后就不再出现**（2026-10-13 用户口径：生成完这里只需要结果方框）——
+         想再生成一次，点步骤标题行右侧的「重新生成」回到生成前，改完名称表 / 剔除字形再点它。
+         没料时按钮仍在（只是不可点）：消失会让人以为程序坏了 -->
+    <div v-if="!ready" class="panel-actions">
       <button class="primary" data-role="build-font" :disabled="busy || !canBuild" @click="build">生成字体</button>
       <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
     </div>
     <p v-if="message" class="panel-message" :class="messageType" data-role="build-message">{{ message }}</p>
 
-    <!-- ② 产物信息 -->
-    <div v-if="ready" class="scan-summary" data-role="font-result">
-      <p class="panel-hint">
-        产物：<strong>{{ font.fileName }}.ttf</strong>
-        （TTF {{ (font.sizes.ttf / 1024).toFixed(1) }}KB<span v-if="font.sizes.woff2">、woff2 {{ (font.sizes.woff2 / 1024).toFixed(1) }}KB</span>）；
-        收录 <strong>{{ font.coverage.total }}</strong> 个字，其中 {{ font.coverage.fromCorrection }} 个来自更正册；
-        跳过 {{ font.skipped }} 个<span v-if="font.missing">、缺原料 {{ font.missing }} 个</span>
-      </p>
-      <p v-if="!hasMemoryBuild" class="panel-hint">
-        字体字节在刷新后不在内存里了 —— 下载时会在打包步骤自动重建一次（约 30 秒），不用重扫。
-      </p>
-    </div>
+    <!-- 生成过之后：「重新生成」挂在步骤标题行右侧（与第 1 步「更新预览」同一个位置）——
+         点它回到"点了生成字体之前"的状态（清产物、留名称表与字形） -->
+    <Teleport to="#step-head-actions">
+      <button v-if="ready" class="text" type="button" data-role="rebuild-reset" :disabled="busy" @click="resetBuild">
+        重新生成
+      </button>
+    </Teleport>
 
-    <!-- ③ 下载区：没生成字体时给提示而不是摆一排点不动的按钮 -->
+    <!-- ③ 生成之后的结果方框（2026-10-13 用户口径的顺序）：
+         产物 → 怎么装 → 怎么用 → 下载（zip + 单件）→ zip 内容 → 字体预览 -->
     <p v-if="hasResult && !ready" class="panel-hint" data-role="download-waiting">
       还没有生成字体：点上面的「生成字体」，生成完成后这里会出现下载按钮（zip / 单件 / 字形总览图）。
     </p>
 
     <template v-if="ready">
-      <p class="panel-hint">
-        zip 内容：<strong>{{ font.fileName }}.ttf / .woff / .woff2</strong>、<strong>font.css</strong>、
+      <p class="panel-hint" data-role="font-product">
+        <strong>产物</strong>：<strong>{{ font.fileName }}.ttf</strong>
+        （TTF {{ (font.sizes.ttf / 1024).toFixed(1) }}KB<span v-if="font.sizes.woff2">、woff2 {{ (font.sizes.woff2 / 1024).toFixed(1) }}KB</span>）；
+        收录 <strong>{{ font.coverage.total }}</strong> 个字<span v-if="font.coverage.fromCorrection">，其中 {{ font.coverage.fromCorrection }} 个来自更正册</span>；
+        跳过 {{ font.skipped }} 个<span v-if="font.missing">、缺原料 {{ font.missing }} 个</span>
+      </p>
+      <p v-if="!hasMemoryBuild" class="panel-hint">
+        字体字节在刷新后不在内存里了 —— 下载时会在打包步骤自动重建一次（约 30 秒），不用重扫。
+      </p>
+
+      <p class="panel-hint" data-role="install-how">
+        <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」；macOS 双击 → 「安装字体」；
+        <strong>装完请重启 Word / PS</strong>。
+      </p>
+      <p class="panel-hint" data-role="use-how">
+        <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录即可。
+      </p>
+
+      <div class="panel-actions">
+        <button class="primary" data-role="download-zip" :disabled="busy" @click="downloadZip">下载 zip</button>
+        <button class="text" :disabled="busy" @click="downloadSingle('ttf')">只下载 TTF</button>
+        <button class="text" :disabled="busy" @click="downloadSingle('css')">只下载 font.css</button>
+        <button class="text" :disabled="busy" @click="downloadSingle('guide')">只下载使用说明.txt</button>
+        <button class="text" :disabled="busy" @click="downloadSingle('preview')">只下载 preview.html</button>
+        <button class="text" data-role="overview-export" :disabled="busy" @click="exportOverview">导出字形总览图</button>
+        <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
+      </div>
+
+      <p class="panel-hint" data-role="zip-content">
+        <strong>zip 内容</strong>：<strong>{{ font.fileName }}.ttf / .woff / .woff2</strong>、<strong>font.css</strong>、
         <strong>使用说明.txt</strong>、<strong>preview.html</strong>（双击看样张）；族名 <strong>{{ font.familyName }}</strong>。
+      </p>
+      <p class="panel-hint">
+        <strong>字形总览图</strong>：把收录的 {{ font.coverage.total }} 个字排成一张 PNG（约 {{ Math.ceil(font.coverage.total / 25) }} 行），
+        标注族名、版本、收录字数与生成时间，可用作<strong>版权登记</strong>材料。
       </p>
 
       <!-- 网页字体预览（决策 四-8）：用刚生成的字节当场注册，先看效果再下载 -->
       <div class="card nested">
-        <h3>这套字体长什么样（网页预览，不装机也能看）</h3>
+        <h3>字体预览</h3>
         <FontPreview
           :bytes="previewBytes"
           :covered-chars="font.coverage ? font.coverage.chars : []"
@@ -553,29 +526,6 @@ function reloadNow() {
           @request-bytes="loadPreview"
         />
       </div>
-
-      <div class="panel-actions">
-        <button class="primary" data-role="download-zip" :disabled="busy" @click="downloadZip">下载 zip（推荐）</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('ttf')">只下载 TTF</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('css')">只下载 font.css</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('guide')">只下载使用说明.txt</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('preview')">只下载 preview.html</button>
-        <button class="text" data-role="overview-export" :disabled="busy" @click="exportOverview">导出字形总览图</button>
-        <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
-      </div>
-
-      <p class="panel-hint">
-        <strong>字形总览图</strong>：把收录的 {{ font.coverage.total }} 个字排成一张 PNG（约 {{ Math.ceil(font.coverage.total / 25) }} 行），
-        标注族名、版本、收录字数与生成时间，可用作<strong>版权登记</strong>材料。
-      </p>
-
-      <p class="panel-hint">
-        <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」；macOS 双击 → 「安装字体」；
-        <strong>装完请重启 Word / PS</strong>。
-      </p>
-      <p class="panel-hint">
-        <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录即可。
-      </p>
     </template>
 
     <!-- ④ 字形体检（阶段三 3.2，决策 四-7）：只提示、不改字形；处置手段是"剔除"或"重写那一格"。
@@ -586,15 +536,18 @@ function reloadNow() {
       <div class="panel-head">
         <h3>字形体检</h3>
         <span class="panel-hint">只提示、不改字形 —— 字形大小与笔画粗细取决于你的书写</span>
+      </div>
+      <!-- 摘要那一行：收起时也能一眼看到"有没有要处理的"。
+           2026-10-13 用户口径：「看清单」按钮**放在摘要文字前面**、默认用主题色（原来在右上角、要悬停才变蓝） -->
+      <p class="panel-hint" data-role="checkup-summary">
         <button
           type="button"
-          class="text"
+          class="text accent"
           data-role="checkup-toggle"
           @click="checkupOpen = !checkupOpen"
         >{{ checkupOpen ? '收起清单' : '看清单' }}</button>
-      </div>
-      <!-- 摘要那一行：收起时也能一眼看到"有没有要处理的" -->
-      <p class="panel-hint" data-role="checkup-summary">{{ checkupSummaryText }}</p>
+        {{ checkupSummaryText }}
+      </p>
       <!-- 批量动作留在**摘要行上**（不只在展开的清单里）：已剔除的字要能一键恢复、
            重写清单要能一键导出 / 全部移出 —— 收起状态下也是"一眼看到 + 一步做到"，
            不必为了恢复一个字先把整张清单铺开（冒烟里当场撞到过这个别扭） -->
@@ -693,39 +646,8 @@ function reloadNow() {
       </template>
     </div>
 
-     <!-- ⑤ 清理入口（2026-10-12 用户拍板，决策 五-11）：两级清空，都在这一块里。
-          起因：去掉「项目备份」「清空项目」两个功能页之后，界面上再没有清理旧数据的入口，
-          用户真机上出现"体检信息一直留着、状态自相矛盾"。
-          形态沿用通用版 四-11 / 项目 五-8：**行内确认条**（不用原生 confirm）、按钮标红、
-          确认文案写清"删掉什么、剩什么" -->
-    <div class="card nested danger-zone" data-role="clear-zone">
-      <div class="panel-head">
-        <h3>清理数据</h3>
-        <span class="panel-hint">两个动作都<strong>不能撤销</strong>，会先问一次</span>
-      </div>
-      <div class="panel-actions">
-        <button class="text danger" type="button" data-role="clear-scan-open" :disabled="busy || clearState" @click="askClear('scan')">
-          清空识别结果
-        </button>
-        <button class="text danger" type="button" data-role="clear-all-open" :disabled="busy || clearState" @click="askClear('all')">
-          清空全部数据
-        </button>
-      </div>
-
-      <!-- 行内确认条：说清这一次会删掉什么、以及删完剩什么 -->
-      <div v-if="clearState" class="inline-confirm" data-role="clear-confirm">
-        <p class="panel-hint" data-role="clear-confirm-text">{{ clearConfirmText }}</p>
-        <div class="panel-actions">
-          <button class="text danger" type="button" data-role="clear-confirm-yes" :disabled="busy" @click="doClear">
-            {{ clearState === 'all' ? '清空全部数据' : '清空识别结果' }}
-          </button>
-          <button class="text" type="button" data-role="clear-confirm-no" :disabled="busy" @click="clearState = null">取消</button>
-        </div>
-      </div>
-      <!-- 清空全部数据之后要刷新一次才真正回到"刚打开软件"（读数见 store.clearAllData 的注释） -->
-      <div v-if="afterClearAll" class="panel-actions">
-        <button class="primary" type="button" data-role="reload-now" @click="reloadNow">立即刷新</button>
-      </div>
-    </div>
+     <!-- 2026-10-13 用户口径：原来这里还有一块「清理数据」（清空识别结果 / 清空全部数据，决策 五-11）——
+          整块去掉：清空识别结果在第 2 步有「清空结果」那个入口（同一件事），
+          而"回到刚打开软件"用浏览器自己的"清除站点数据"就行（这套数据本来只在本机浏览器里）。 -->
   </div>
 </template>

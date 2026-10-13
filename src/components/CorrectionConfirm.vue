@@ -9,7 +9,7 @@
 //   这一页仍然要能看到"这一格写的到底是什么"（2026-10-13 用户口径）。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { SCAN_DEFAULTS, pairCorrections } from '../lib/scanFlow.js'
+import { SCAN_DEFAULTS, buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
 import { getPageCache } from '../lib/scanCache.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { continuousIndex } from '../lib/correctionMapper.js'
@@ -106,6 +106,15 @@ const effectivePairs = computed(() => rows.value.list
 //   这里只说更正册覆盖了几个字。plan 仍由第 3 步生成字体时算，不必在这里再算一遍。）
 
 const keptInMain = computed(() => rows.value.list.filter((r) => r.assigned === null || !r.cell || r.cell.verdict === 'empty'))
+// 与第 3 步同源的"字形计划"：**按不同的字**统计更正册覆盖了几个字。
+// 为什么要单独算：核对表里的行数（`effectivePairs.length`）数的是**处**——同一个字在两处被圈就是两行，
+//   而字体里一个字只有一个字形，第 3 步与产物统计用的都是"不同的字"。两个数摆在一起说清，
+//   用户才不会觉得两处对不上（真机上问过"覆盖字形数目前不一致"）。
+const plan = computed(() => buildFinalGlyphPlan(pages.value, {
+  pairs: effectivePairs.value,
+  circled: store.correction.circled || []
+}))
+const coveredChars = computed(() => plan.value.replaced)
 // 有没有手动调整过（改派 / 删除）：决定「恢复默认」能不能点
 const hasOverrides = computed(() => Object.keys(store.correction.overrides || {}).length > 0)
 const extraCells = computed(() => {
@@ -299,11 +308,14 @@ function cellThumbStyle(fileIndex, cellIndex) {
     <template v-else>
       <!-- 这一块**只讲更正册**（2026-10-13 用户口径）：与上面「扫描识别的状态与结果」重复的
            （主区被圈几个字、主区一共几个字形）都去掉了 —— 那些在上面的块里已经说过一遍。
-           "更正册几页、写出几格"也属识别结果，同样在上面那块里说；这里只讲配对结论。 -->
-      <p class="scan-status-title corr-title">更正对应</p>
-      <p class="panel-hint" data-role="correction-summary">
-        更正册覆盖 <strong>{{ effectivePairs.length }}</strong> 个字<template v-if="keptInMain.length">；<strong>{{ keptInMain.length }}</strong> 个被圈的字保留主区原字形</template><template v-else>，被圈的字全部配上了更正册的格</template><span v-if="!hasCorrectionBook">（还没上传更正册）</span>。
-        改派 / 删除即时生效，生成字体直接用它 —— 没改过就是程序按识别结果配的那一套。
+           "更正册几页、写出几格"也属识别结果，同样在上面那块里说；这里只讲配对结论。
+           描述行 2026-10-13 再改：**跟在「更正对应」这四个字后面**（与第 2 步标题行的写法一致） -->
+      <p class="scan-status-title corr-title">
+        更正对应
+        <span class="panel-hint" data-role="correction-summary">
+          更正册覆盖 <strong>{{ effectivePairs.length }}</strong> 处（涉及 <strong>{{ coveredChars }}</strong> 个不同的字）<template v-if="keptInMain.length">；其余 <strong>{{ keptInMain.length }}</strong> 个被圈的字保留主区原字形</template><template v-else>，被圈的字全部配上了更正册的格</template><span v-if="!hasCorrectionBook">（还没上传更正册）</span>。
+          改派 / 删除即时生效，生成字体直接用它 —— 没改过就是程序按识别结果配的那一套。
+        </span>
       </p>
 
       <p v-if="!hasCorrectionBook && (store.correction.circled || []).length" class="step-note">

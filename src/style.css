@@ -987,12 +987,18 @@ label.text-file input {
 
 /* 重传：文本按钮形态（2026-10-12 用户口径）—— 靠 label 包一个隐藏 file input 触发选择框，
    视觉与旁边 .text 按钮一致（下划线来自 .text 的规约，这里只补内边距与光标） */
+/* 「重传」是卡片上的文本按钮：与其它文本按钮同一套默认色（2026-10-13 用户口径 ——
+   原来它单写成主色 + 下划线，看着像"推荐动作"，其实只是三个并排操作之一） */
 .scan-card-rescan {
   font-size: 12px;
-  color: var(--primary);
+  color: var(--text-2);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+.scan-card-rescan:hover {
+  color: var(--primary);
 }
 
 .scan-card-rescan.disabled {
@@ -1243,12 +1249,28 @@ label.text-file input {
 }
 
 /* 「更正对应」这个小标题（2026-10-13 用户口径）：与上面那一块拉开距离，
-   并在它上面加一条**横向贯通的浅灰虚线**把两块分开 —— 原来紧贴着上一行，看着像同一块的续行 */
+   并在它上面加一条**横向贯通的浅灰虚线**把两块分开 —— 原来紧贴着上一行，看着像同一块的续行。
+   描述行跟在标题后面（同一行，窄窗口自动换行） */
 .scan-status-title.corr-title {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   margin: 18px 0 6px;
   padding-top: 14px;
   border-top: 1px dashed #d7dbe4;
+}
+
+.corr-title .panel-hint {
+  margin: 0;
+  flex: 1 1 320px;
+  min-width: 0;
+  font-weight: 400;
+}
+
+/* 体检摘要行里的「看清单」按钮（2026-10-13 用户口径：按钮放在摘要文字前面） */
+[data-role="checkup-summary"] button.text {
+  margin-right: 6px;
 }
 
 /* 文本按钮的强调色（2026-10-13 用户口径：「看核对表」这个入口默认就用主色，别等悬停才变蓝） */
@@ -1584,32 +1606,6 @@ button.text.accent:hover {
   line-height: 1.6;
 }
 
-/* ── 清理数据（2026-10-12 决策 五-11：破坏性动作标红 + 行内确认条）────────────
-   形态沿用水印「不可逆动作」的既有做法（通用版 四-4 / 项目 五-8）：不用原生 confirm、
-   点一下先在原地展开一条确认说明（写清会删掉什么），确认按钮标红。
-   为什么不用弹窗：这两个动作的对象是"本机的这一份数据"，顺手就在本页解决，不叠一层浮层。 */
-.danger-zone {
-  border-color: #f3d6d6;
-  background: #fffafa;
-}
-
-button.text.danger {
-  color: var(--danger);
-}
-
-button.text.danger:hover {
-  color: #b91c1c;
-}
-
-.inline-confirm {
-  margin-top: 8px;
-  padding: 10px 12px;
-  border: 1px solid #f3d6d6;
-  border-radius: var(--radius);
-  background: #fff5f5;
-}
-
-.inline-confirm .panel-actions {
-  margin-top: 8px;
-}
+/* 2026-10-13：`.danger-zone` / `.inline-confirm` / `button.text.danger` 三条样式随第 3 步的
+   「清理数据」模块一起去掉了（那一块已按用户口径删除；清空识别结果在第 2 步有「清空结果」入口）。 */
 
