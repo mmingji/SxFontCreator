@@ -73,6 +73,9 @@ const dirNote = computed(() => {
       (removedList.value.length ? '（已手动去掉 ' + removedList.value.length + ' 张）' : '')
   }
   const s = storedSource.value
+  // 刚选完文件夹、但这一轮没有拿到可用图片（空目录 / 全是非图片文件）：说这一轮的情况，
+  // 不退回"上次识别的来源"（那会让用户以为结果是这个文件夹跑出来的）
+  if (pendingPick.value) return '已选文件夹「' + (folderName.value || '（未命名文件夹）') + '」· 没有可用的图片'
   if (!s) return ''
   return '文件夹「' + (s.folderName || '（未命名文件夹）') + '」· ' + (s.imageCount || 0) + ' 张图片'
 })
@@ -152,7 +155,14 @@ const gate = computed(() => evaluateScanGate({
 // 各占一行、还分处两块，现在并成一句，跟在「已选文件夹「X」· N 张图片」后面 —— 一眼看完"选了什么、跑出什么"。
 // 放在内存里（runInfo）而不是落盘：刷新之后"用时"本来就没有意义，剩下的统计仍由 store 里的页记录给出。
 const runInfo = ref(null) // { stopped:boolean, pages:number, seconds:string }
+// 2026-10-13 用户口径：**刚选完文件夹、还没识别这一批** —— 这时界面上不该再显示上一批的结论
+//   （真机反馈："还没开始识别就给出没有可用的结论，实际上点击识别又是能出结果的"）。
+// 什么时候置真：选完文件夹（applyDirFiles）；什么时候置假：开始识别（结果换成这一批的）、清空结果（回初始态）。
+const pendingPick = ref(false)
+// 当前展示的结果是不是**现在这批**的：刚选完文件夹还没点识别时为假 —— 页卡片、更正核对、汇总都跟着它走
+const showResult = computed(() => pages.value.length > 0 && !pendingPick.value)
 const runSummary = computed(() => {
+  if (!showResult.value) return ''
   const g = gate.value
   const parts = []
   if (runInfo.value) {
@@ -162,8 +172,9 @@ const runSummary = computed(() => {
     parts.push('可用 ' + g.usablePages + ' 页' + (g.skipped.length ? '、跳过 ' + g.skipped.length + ' 页' : '') +
       '；写出 ' + stats.value.written + ' 格（可疑 ' + stats.value.suspect + '），被红笔圈 ' + stats.value.marked +
       ' 个，去重后 ' + stats.value.uniqueChars + ' 个字')
-    // 整批被拦下时给一句结论；**原因不留在这里**，它常驻在下面（拦下的原因必须一眼看到，不跟着详情进弹窗）
-    if (g.blockers.length) parts.push('这一批被拦下（原因见下）')
+    // 2026-10-13 用户口径：这里不再接一句"这一批被拦下（原因见下）"——
+    //   真机上明明出了结果（可用 11 页）却因为"有 9 页重复"被拦下，容易让人以为这批白跑了；
+    //   拦下的原因仍然**常驻在下面**（真的整批失败时那条一定在），重复页已降为提示（见 lib/scanMeta.js）
   }
   return parts.join(' · ')
 })
@@ -299,6 +310,9 @@ async function applyDirFiles(picked, folder, subdirFiles) {
   folderName.value = folder || ''
   removedList.value = [] // 换了一个文件夹：上一轮手动去掉的那几张与这一轮无关
   runInfo.value = null // 上一轮的识别汇总也跟着作废（下面的统计由新清单重新算）
+  // 选完文件夹就进入"这一批还没识别"的状态：上一批的页卡片、汇总、拦下结论先收起来，
+  // 否则用户看到的是"还没开始识别就给出没有可用的结论"（2026-10-13 用户口径）
+  pendingPick.value = true
   if (!picked.length) {
     scanInput.value = null
     setMessage(folder ? '文件夹「' + folder + '」里没有文件' : '这个文件夹里没有文件', 'error')
@@ -430,6 +444,8 @@ async function start() {
     savedStats.value = null
     // 把"这批结果来自哪里"记下来（文件夹名 / 图片名清单 / 字序文件摘要）：刷新之后界面靠它回显来源，
     // 而不是显示成"还没有选文件夹"（2026-10-13 用户口径：没有轮次概念，界面说的就是当前数据的状态）
+    // 同时把"刚选完文件夹"这个状态收掉：从这一刻起，页面上显示的结果就是这一批的
+    pendingPick.value = false
     store.beginScanRun({
       batchId: store.scan.batchId,
       chars: orderChars || resolveBatchChars(currentBatch),
@@ -532,7 +548,10 @@ function stop() {
 
 function clearAll() {
   if (running.value) return
-  // 只清"结果"：选好的文件夹与手动去掉的清单都留着 —— 用户点"清空结果"多半是想重跑一遍，不是想重新选目录
+  // 只清"结果"：选好的文件夹与手动去掉的清单都留着 —— 用户点"清空结果"多半是想重跑一遍，不是想重新选目录。
+  // 但**界面回到初始状态**（2026-10-13 用户口径）：整块「扫描识别的状态与结果」跟着消失，
+  // 只留按钮行与「已选文件夹…」那条回执（回执是"选完要有明确回显"的要求，不属于识别结果）
+  pendingPick.value = false
   images.value = {}
   openIndex.value = null
   zoomIndex.value = null
@@ -895,53 +914,62 @@ const zoomIsMarkedLabel = computed(() => {
         </span>
       </div>
     </div>
-    <!-- ③ 扫描识别的状态与结果（2026-10-13 用户口径：把原来散在三处的信息合成一块）：
-         来源回执（哪个文件夹、多少张图）+ 识别汇总 + 更正册的识别结果 + 字形落盘统计
-         + 拦下的原因与提示 + 数据兜底说明。合并的理由是原来这三处各说一遍页数、
-         分处三块，而且刷新之后回执会显示成"还没有选文件夹"、与同一页里的结果自相矛盾。
+    <!-- ③ 扫描识别的状态与结果（2026-10-13 用户口径，两轮下来的定版）：
+         标题行 = 「扫描识别的状态与结果」+ 灰色的来源回执（哪个文件夹、多少张图）+ 操作按钮
+           （「看文件清单」，以及有跳过页时的「看跳过的 N 页」）—— 按钮跟着回执走，不再单独占一行；
+         下面依次三行描述：识别汇总 / 更正册的识别结果 / 字形落盘，再往下才是拦下的原因与数据兜底说明。
+         **这一块只在有识别结果、或刚选完文件夹还没识别时出现**：
+           · 点「清空结果」之后整块消失，页面回到初始状态（2026-10-13 用户口径）；
+           · 刚选完文件夹时只显示回执与下一步提示 —— 上一批的结论先收起来，
+             否则会出现"还没开始识别就给出没有可用的结论"（真机反馈）。
          **「清空结果」不在这一块里** —— 它挪到步骤标题行右侧（见下面的 Teleport），
          与第 1 步「更新预览」同一个位置。 -->
-    <div v-if="pages.length || dirNote" class="scan-status" data-role="scan-status">
-      <p class="scan-status-title">扫描识别的状态与结果</p>
-      <!-- 来源：刷新前是内存里那份（可去掉 / 放回），刷新后是识别时落盘的那份（只读回显） -->
-      <p v-if="dirNote" class="panel-hint" data-role="dir-note">
-        <strong>{{ dirNote }}</strong>
-        <span v-if="runSummary" data-role="run-summary"> · {{ runSummary }}</span>
-      </p>
-      <!-- 更正册的识别结果（用户口径：这一块要包括它） -->
-      <p v-if="correctionScanResult" class="panel-hint" data-role="correction-scan-result">{{ correctionScanResult }}</p>
-      <!-- 字形落盘：下一步生成字体直接用它，刷新或关浏览器都不用重扫 -->
-      <p v-if="savedStats && savedStats.glyphs" class="panel-hint" data-role="glyph-saved">
-        字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
-        —— 存的是笔迹掩膜（PNG 无损），<strong>刷新或关掉浏览器后不用重扫</strong>，下一步生成字体直接用它
-      </p>
-
-      <!-- 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
-           逐页的"跳过：第 N 个文件…"清单收进「看跳过的 N 页」弹窗 —— 它常常几十条、原因还一模一样 -->
-      <ul v-if="gate.blockers.length" class="scan-problems">
-        <li v-for="(text, i) in gate.blockers" :key="'b' + i" class="error">拦下：{{ text }}</li>
-      </ul>
-      <ul v-if="gate.notes.length" class="scan-problems">
-        <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
-      </ul>
-      <p v-if="gate.canProceed" class="panel-message done">
-        这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里可以逐行核对与调整（不改就是程序按识别结果配的那一套，直接用于生成字体）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 3 步「生成」了</span>
-      </p>
-      <!-- 数据兜底的口径（决策 五-10 ②）：识别结果与字形都落在本机浏览器里，刷新与关浏览器都不丢；
-           会丢的只有"清浏览器数据 / 换电脑 / 换浏览器"，那时把文件夹重指一次重跑即可 -->
-      <p class="step-note" data-role="data-note">
-        识别结果与字形保存在<strong>本机浏览器</strong>里，刷新与关浏览器都不丢；清理浏览器数据或换电脑才会没有 —— 那时重指一次文件夹重跑即可。
-        扫描件原图程序不留，请自己留一份。
-      </p>
-
-      <div class="scan-status-actions">
-        <button class="text" type="button" data-role="file-list" :disabled="!canOpenFileList" @click="fileListOpen = true">
-          看文件清单
-        </button>
-        <button v-if="gate.skipped.length" class="text" type="button" data-role="skipped-open" @click="skippedOpen = true">
-          看跳过的 {{ gate.skipped.length }} 页
-        </button>
+    <div v-if="showResult || pendingPick" class="scan-status" data-role="scan-status">
+      <div class="scan-status-head">
+        <span class="scan-status-title">扫描识别的状态与结果</span>
+        <!-- 来源：刷新前是内存里那份（可去掉 / 放回），刷新后是识别时落盘的那份（只读回显）——灰色提示，不加粗 -->
+        <span v-if="dirNote" class="panel-hint" data-role="dir-note">{{ dirNote }}</span>
+        <span class="scan-status-actions">
+          <button class="text" type="button" data-role="file-list" :disabled="!canOpenFileList" @click="fileListOpen = true">
+            看文件清单
+          </button>
+          <button v-if="showResult && gate.skipped.length" class="text" type="button" data-role="skipped-open" @click="skippedOpen = true">
+            看跳过的 {{ gate.skipped.length }} 页
+          </button>
+        </span>
       </div>
+
+      <!-- 刚选完文件夹、还没识别这一批：块里只留标题行（回执 + 按钮），
+           上一批的汇总 / 拦下结论 / 卡片都收起来 —— 下面那段"选好文件夹后点「开始识别」…"就是这一步的引导 -->
+
+      <template v-if="showResult">
+        <!-- 三行描述：识别汇总 → 更正册的识别结果 → 字形落盘 -->
+        <p v-if="runSummary" class="panel-hint" data-role="run-summary">{{ runSummary }}</p>
+        <p v-if="correctionScanResult" class="panel-hint" data-role="correction-scan-result">{{ correctionScanResult }}</p>
+        <p v-if="savedStats && savedStats.glyphs" class="panel-hint" data-role="glyph-saved">
+          字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
+          —— <strong>刷新或关掉浏览器后不用重扫</strong>
+        </p>
+
+        <!-- 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
+             逐页的"跳过：第 N 个文件…"清单收进「看跳过的 N 页」弹窗 —— 它常常几十条、原因还一模一样 -->
+        <ul v-if="gate.blockers.length" class="scan-problems">
+          <li v-for="(text, i) in gate.blockers" :key="'b' + i" class="error">拦下：{{ text }}</li>
+        </ul>
+        <ul v-if="gate.notes.length" class="scan-problems">
+          <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
+        </ul>
+        <!-- 识别进行中不给"可以继续"这类结论（2026-10-13 用户口径：还没结束，别下结论） -->
+        <p v-if="gate.canProceed && !running" class="panel-message done">
+          这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里可以逐行核对与调整（不改就是程序按识别结果配的那一套，直接用于生成字体）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 3 步「生成」了</span>
+        </p>
+        <!-- 数据兜底的口径（决策 五-10 ②）：识别结果与字形都落在本机浏览器里，刷新与关浏览器都不丢；
+             会丢的只有"清浏览器数据 / 换电脑 / 换浏览器"，那时把文件夹重指一次重跑即可 -->
+        <p v-if="!running" class="step-note" data-role="data-note">
+          识别结果与字形保存在<strong>本机浏览器</strong>里，刷新与关浏览器都不丢；清理浏览器数据或换电脑才会没有 —— 那时重指一次文件夹重跑即可。
+          扫描件原图程序不留，请自己留一份。
+        </p>
+      </template>
     </div>
     <!-- 「清空结果」：放在步骤标题行右侧（2026-10-13 用户口径 —— 与第 1 步「更新预览」同一个位置）。
          它作用的是"结果"，所以只要有结果就给入口；识别进行中禁点 -->
@@ -950,18 +978,20 @@ const zoomIsMarkedLabel = computed(() => {
         清空结果
       </button>
     </Teleport>
-    <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久 -->
-    <p v-if="running" class="panel-hint" data-role="scan-progress">
-      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}；
-      进度 {{ progress.done }} / {{ progress.total }} 页；
-      还剩 {{ progress.total - progress.done }} 页（约 {{ remainingSteps }} 步）<span v-if="etaLabel">，预计还要 {{ etaLabel }}</span>
+    <!-- 进度（决策 二-18 ④）：在做什么 / 已完几页 / 还剩几步 / 预计还要多久。
+         2026-10-13 用户口径两条：① **固定长度的信息在前、不断变化的"当前页动作"放最后** ——
+         原来"当前：第 2 / 14 页 · 正在切格（…）"在最前面，括号里的字一直在变长变短，
+         把后面的"进度 / 还剩"推来推去（真机上看着在跳）；② 用与"识别结果与字形…"同一种提示条样式 -->
+    <p v-if="running" class="step-note" data-role="scan-progress">
+      进度 {{ progress.done }} / {{ progress.total }} 页；还剩 {{ progress.total - progress.done }} 页（约 {{ remainingSteps }} 步）<span v-if="etaLabel">，预计还要 {{ etaLabel }}</span>；
+      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}
     </p>
     <p v-if="message" class="panel-message" :class="messageType" data-role="scan-message">{{ message }}</p>
 
     <!-- ④ 结果总览：**一页一张小卡片**（2026-10-12 决策 八-16 ④⑤）——
          卡片只有文件名、状态、一行统计与三个操作；缩略图与 136 格视图收进「看格子」弹窗、点开才加载；
          完整信息（页号来源 / 校验码 / 方向纠正 / 四角误差 / 字序来源 / 写出统计）在 hover 的 title 里 -->
-    <div v-if="pages.length" class="scan-cards" data-role="scan-cards">
+    <div v-if="showResult" class="scan-cards" data-role="scan-cards">
       <div
         v-for="page in pages"
         :key="page.fileIndex"
@@ -1096,7 +1126,9 @@ const zoomIsMarkedLabel = computed(() => {
       </div>
     </div>
 
-    <p v-if="!pages.length && !running" class="panel-hint">
+    <!-- 这一步怎么走（初始引导）：没有展示结果、也没在识别时出现 ——
+         刚选完文件夹（结果属于上一批）时也显示，正好补上"接下来点开始识别" -->
+    <p v-if="!showResult && !running" class="panel-hint">
       选好文件夹后点「开始识别」：程序对每张图片逐页做「预处理 → 切格（方向不对会自动转正）→
       按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
       并把每页的页号来源、写出格数与可疑格报给你；认不准的格会开一个「逐格确认」让你过一眼。
@@ -1210,6 +1242,6 @@ const zoomIsMarkedLabel = computed(() => {
 
     <!-- 更正核对（原独立的第 2 步，2026-10-11 并入本页 —— 决策 八-15 ④）：
          它是识别结果的下一步处理，不该另占一步；有识别结果时就挂在这里 -->
-    <CorrectionConfirm v-if="pages.length && !running" />
+    <CorrectionConfirm v-if="showResult && !running" />
   </div>
 </template>

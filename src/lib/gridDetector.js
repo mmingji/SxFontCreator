@@ -756,14 +756,11 @@ export function summarizeBatch(pages, options = {}) {
     })
   }
 
+  // 更正册的件数（下面的汇总文案要用）
   const correctionRows = rows.filter((r) => r.kind === 'correction')
-  if (correctionRows.length) {
-    problems.push({
-      level: 'info',
-      text: '第 ' + correctionRows.map((r) => r.file).join('、') + ' 个文件是更正册（页脚校验码 0）：' +
-        '它不参与批次校验码比对，用于覆盖被红笔圈掉的字'
-    })
-  }
+  // 2026-10-13（用户口径）：原来这里会为"哪些文件是更正册"单独出一条 info（"第 N 个文件是更正册
+  //   （页脚校验码 0）：它不参与批次校验码比对，用于覆盖被红笔圈掉的字"）——
+  //   结果卡片上已经写着「更正册」这个状态短词，再说一遍只是噪音，去掉（件数仍在汇总文案里）。
 
   if (typeof sheetPages === 'number') {
     const extra = rows.filter((r) => r.isSheetPage === false)

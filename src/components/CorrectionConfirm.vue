@@ -300,7 +300,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
       <!-- 这一块**只讲更正册**（2026-10-13 用户口径）：与上面「扫描识别的状态与结果」重复的
            （主区被圈几个字、主区一共几个字形）都去掉了 —— 那些在上面的块里已经说过一遍。
            "更正册几页、写出几格"也属识别结果，同样在上面那块里说；这里只讲配对结论。 -->
-      <p class="scan-status-title">更正对应</p>
+      <p class="scan-status-title corr-title">更正对应</p>
       <p class="panel-hint" data-role="correction-summary">
         更正册覆盖 <strong>{{ effectivePairs.length }}</strong> 个字<template v-if="keptInMain.length">；<strong>{{ keptInMain.length }}</strong> 个被圈的字保留主区原字形</template><template v-else>，被圈的字全部配上了更正册的格</template><span v-if="!hasCorrectionBook">（还没上传更正册）</span>。
         改派 / 删除即时生效，生成字体直接用它 —— 没改过就是程序按识别结果配的那一套。
@@ -319,7 +319,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
            展开时这一行右侧给「恢复默认」：**清掉手动调整**、回到程序按识别结果给出的配对
            （2026-10-13 用户口径：原来那个「按识别结果重算配对」实际做不到这件事，已去掉） -->
       <div v-if="rows.list.length" class="corr-toggle">
-        <button class="text" type="button" data-role="correction-table-toggle" @click="tableOpen = !tableOpen">
+        <button class="text accent" type="button" data-role="correction-table-toggle" @click="tableOpen = !tableOpen">
           {{ tableOpen ? '收起核对表' : '看核对表（' + rows.list.length + ' 对）' }}
         </button>
         <span v-if="!tableOpen" class="panel-hint">每一对是「主区写错的字 ↔ 更正册重写的格」；改派 / 删除都在表里</span>

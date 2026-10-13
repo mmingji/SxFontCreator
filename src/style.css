@@ -705,9 +705,8 @@ label.text-file input {
 
 /* ── 上传识别（第 2 步）────────────────────────────────────────────────── */
 
-/* 「扫描识别的状态与结果」这一块（2026-10-13 用户口径）：来源回执 + 识别汇总 + 更正册的识别结果
-   + 字形落盘统计 + 拦下的原因与提示 + 数据兜底说明，合成一块（原来散在三处、还各说一遍页数）。
-   容器浅底带边框，里面按"先说结果、再说原因、最后给动作"排；「清空结果」已挪到步骤标题行右侧。 */
+/* 「扫描识别的状态与结果」这一块（2026-10-13 用户口径，两轮下来的定版）：标题行 + 三行描述
+   （识别汇总 / 更正册的识别结果 / 字形落盘）+ 拦下的原因与数据兜底说明。「清空结果」在步骤标题行右侧。 */
 .scan-status {
   margin: 8px 0;
   padding: 8px 12px 10px;
@@ -721,21 +720,38 @@ label.text-file input {
   margin: 4px 0;
 }
 
-.scan-status .scan-problems {
-  margin-top: 2px;
+/* 标题行：标题 + 灰色的来源回执 + 操作按钮（用户口径：回执改成灰色提示、按钮跟着回执走）。
+   按钮推到最右边；窗口窄时回执与按钮各占一行（flex-wrap） */
+.scan-status-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 4px;
 }
 
 .scan-status-title {
-  margin: 0 0 6px;
+  flex: none;
   font-size: 13px;
   font-weight: 600;
+}
+
+/* 覆盖上面的 .scan-status .panel-hint 的上下外边距：标题行里的回执不占额外高度 */
+.scan-status-head .panel-hint {
+  margin: 0;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.scan-status .scan-problems {
+  margin-top: 2px;
 }
 
 .scan-status-actions {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-top: 6px;
+  flex: none;
 }
 
 .scan-status-actions button.text {
@@ -1224,6 +1240,24 @@ label.text-file input {
    推到最右边，与左边的「看核对表 / 收起核对表」分开站，避免误点 */
 .corr-toggle .corr-restore {
   margin-left: auto;
+}
+
+/* 「更正对应」这个小标题（2026-10-13 用户口径）：与上面那一块拉开距离，
+   并在它上面加一条**横向贯通的浅灰虚线**把两块分开 —— 原来紧贴着上一行，看着像同一块的续行 */
+.scan-status-title.corr-title {
+  display: block;
+  margin: 18px 0 6px;
+  padding-top: 14px;
+  border-top: 1px dashed #d7dbe4;
+}
+
+/* 文本按钮的强调色（2026-10-13 用户口径：「看核对表」这个入口默认就用主色，别等悬停才变蓝） */
+button.text.accent {
+  color: var(--primary);
+}
+
+button.text.accent:hover {
+  color: var(--primary-dark);
 }
 
 .corr-table {
