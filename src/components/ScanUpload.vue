@@ -745,7 +745,7 @@ function cardTitle(page) {
   } else {
     lines.push(page.reason || '这一页没能识别')
   }
-  if (needsManualOrder(page)) lines.push('页脚读不出页号：可在「看格子」里手选页序，或拖到另一张卡片上交换')
+  if (needsManualOrder(page)) lines.push('页脚读不出页号：点卡片上的「手选页序」填上第几页，或把卡片拖到另一张上交换')
   return lines.join('\n')
 }
 // 弹窗里的一行摘要：与 hover 同一份信息，压成一行（弹窗顶部）
@@ -762,6 +762,15 @@ function togglePage(page) {
   openIndex.value = openIndex.value === page.fileIndex ? null : page.fileIndex
   zoomIndex.value = null
   if (openIndex.value !== null) ensureSheet(page)
+}
+
+/**
+ * 卡片上的「手选页序」入口（2026-10-13 用户口径）：打开这一页的弹窗 —— 手选输入框在弹窗底部。
+ * 为什么单给一个入口：原来提示里写"在结果里手选页序"，而入口只藏在「看格子」弹窗底部，用户找不到。
+ * 已经打开的那一页不重复 toggle（否则点了反而收起）。
+ */
+function openSheetForOrder(page) {
+  if (openIndex.value !== page.fileIndex) togglePage(page)
 }
 
 /**
@@ -963,12 +972,9 @@ const zoomIsMarkedLabel = computed(() => {
         <p v-if="gate.canProceed && !running" class="panel-message done">
           这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里可以逐行核对与调整（不改就是程序按识别结果配的那一套，直接用于生成字体）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 3 步「生成」了</span>
         </p>
-        <!-- 数据兜底的口径（决策 五-10 ②）：识别结果与字形都落在本机浏览器里，刷新与关浏览器都不丢；
-             会丢的只有"清浏览器数据 / 换电脑 / 换浏览器"，那时把文件夹重指一次重跑即可 -->
-        <p v-if="!running" class="step-note" data-role="data-note">
-          识别结果与字形保存在<strong>本机浏览器</strong>里，刷新与关浏览器都不丢；清理浏览器数据或换电脑才会没有 —— 那时重指一次文件夹重跑即可。
-          扫描件原图程序不留，请自己留一份。
-        </p>
+        <!-- 2026-10-13 用户口径：原来这里还有一条"识别结果与字形保存在**本机浏览器**里，刷新与关浏览器
+             都不丢；清理浏览器数据或换电脑才会没有…扫描件原图程序不留，请自己留一份"——
+             与"字形已落盘…刷新或关掉浏览器后不用重扫"说的是同一件事，去掉（这套口径在《使用说明》里）。 -->
       </template>
     </div>
     <!-- 「清空结果」：放在步骤标题行右侧（2026-10-13 用户口径 —— 与第 1 步「更新预览」同一个位置）。
@@ -1034,6 +1040,16 @@ const zoomIsMarkedLabel = computed(() => {
           <button class="text" type="button" :disabled="!page.ok" data-role="view-cells" @click="togglePage(page)">
             {{ openIndex === page.fileIndex ? '收起格子' : '看格子' }}
           </button>
+          <!-- 页脚读不出页号的页：卡片上直接给「手选页序」入口（2026-10-13 用户口径）——
+               原来提示里写"在结果里手选页序"，而入口藏在「看格子」弹窗底部，用户找不到 -->
+          <button
+            v-if="needsManualOrder(page)"
+            class="text accent"
+            type="button"
+            data-role="manual-order"
+            title="这一页的页脚读不出页号：点这里打开它，在弹窗底部填上第几页"
+            @click="openSheetForOrder(page)"
+          >手选页序</button>
           <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来。
                2026-10-12 按用户口径由实体按钮改成文本按钮「重传」，位置紧跟「看格子」之后 -->
           <label
@@ -1111,8 +1127,9 @@ const zoomIsMarkedLabel = computed(() => {
           </div>
         </div>
 
-        <!-- 页脚读不出页号的页：在这里手选（页脚读出的页序是权威的，其余页不给这个入口） -->
-        <div v-if="needsManualOrder(sheetPage)" class="scan-order">
+        <!-- 页脚读不出页号的页：在这里手选（页脚读出的页序是权威的，其余页不给这个入口）。
+             2026-10-13：卡片上也直接给了「手选页序」入口，点它打开的就是这个弹窗 -->
+        <div v-if="needsManualOrder(sheetPage)" class="scan-order" data-role="manual-order-box">
           手选页序
           <input
             type="number"
@@ -1122,6 +1139,7 @@ const zoomIsMarkedLabel = computed(() => {
             :disabled="running"
             @change="onOrderInput(sheetPage, $event.target.value)"
           />
+          <span class="panel-hint">填这一页是第几页；改完这一页的字会按新页号重新对应（笔迹不动）</span>
         </div>
       </div>
     </div>

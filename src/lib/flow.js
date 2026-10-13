@@ -50,6 +50,7 @@ export function emptyProgress() {
     templateChars: 0, // 那份模板一共排了多少字（卡片上的进度文案要用）
     uploadedPages: 0, // 已识别的扫描页数（第 2 步）
     sheetPages: 0, // 这份纸一共几页（来自字序文件或纸面页号；0 = 还不知道）
+    scanFiles: 0, // 这一批一共要识别多少张图（识别时落盘的来源信息；见 stepProgress 里的分母口径）
     glyphCount: 0, // 已提取到笔迹的字形数
     fontCoverage: 0, // 字体产物收录了多少字（第 3 步卡片的进度分子）
     fontBuilt: false // 字体是否已生成（第 3 步的完成判据，也是"下载"能不能点的判据）
@@ -200,8 +201,9 @@ export function stepCardList(progress) {
  * 口径三条：
  *   ① **只报事实、不报口号**：label 是能对得上的中文（"已识别 3 页 / 共 12 页"），ratio 只用来画条；
  *   ② **没有可做的东西时不编数字**：分母为 0 时 ratio = 0、label 直说"还没有…"；
- *   ③ 第 2 步的分母是"这份纸一共几页"（读到的字序文件声明的页数，或纸面页号的最大值），
- *      **不是**某个批次的页数 —— 模板与识别早已脱钩（决策 五-9），拿批次页数当分母会与用户手上的纸对不上。
+ *   ③ 第 2 步的分母是"这一批要识别的量" = **图片张数 / 纸面页号最大值 / 字序文件声明页数**三者取大，
+ *      **不是**某个批次的页数 —— 模板与识别早已脱钩（决策 五-9），拿批次页数当分母会与用户手上的纸对不上；
+ *      三者取大是为了两头都不出错：只看纸面页号时重复页会让分母偏小、进度条提前跑满（2026-10-13 真机反馈）。
  * @param {string} key 'template' | 'scan' | 'build'
  * @param {object} progress 见 emptyProgress()
  */
@@ -216,10 +218,14 @@ export function stepProgress(key, progress) {
     return { done: p.templatePages > 0 ? total : 0, total, ratio: p.templatePages > 0 ? 1 : 0, label }
   }
   if (key === 'scan') {
-    // 分母还不知道时（没有页号、也没有字序文件声明的页数）只报"已识别 N 页"，不编一个分母出来
-    const total = p.sheetPages > 0 ? Math.max(p.sheetPages, p.uploadedPages) : p.uploadedPages
+    // 分母 = 三者取大：**这一批的图片张数** / 纸面页号的最大值 / 字序文件声明的页数。
+    // 为什么要算上"图片张数"（2026-10-13 用户真机反馈："识别还没跑完，这个条就跑满了"）：
+    //   原来只用"纸面页号最大值"，而重复页 / 跳页会让最大页号（12）小于实际张数（14）——
+    //   进度条在识别到第 12 页时就满了，可程序还在跑第 13、14 页。分母偏小会让进度条**提前跑满**，
+    //   比不报进度更误导；分母偏大（比如只扫了 61 页里的 10 页）则是如实反映"这套纸还没扫完"。
+    const total = Math.max(p.sheetPages || 0, p.uploadedPages || 0, p.scanFiles || 0)
     const label = p.uploadedPages > 0
-      ? '已识别 ' + p.uploadedPages + ' 页' + (p.sheetPages > p.uploadedPages ? ' / 共 ' + p.sheetPages + ' 页' : '')
+      ? '已识别 ' + p.uploadedPages + ' 页' + (total > p.uploadedPages ? ' / 共 ' + total + ' 页' : '')
       : '还没有识别结果'
     return { done: p.uploadedPages, total, ratio: clamp(p.uploadedPages, total), label }
   }

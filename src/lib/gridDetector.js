@@ -370,7 +370,7 @@ export function decodeFooterCode(designGray, options = {}) {
     return {
       ...base, ok: false, reason: 'anchor', pageNumber: null, batchCode: null,
       message: '页脚那排编码没读到（定位用的锚点方块不在预期位置）：可能是页脚被裁掉、被手指或阴影挡住、或扫描分辨率太低。' +
-        '请在上传界面手选页序；这一页的字序也可以由纸面印的参考字定位得到'
+        '字序会优先由纸面印的参考字定位得到；定位不出来的话，在它的结果卡片上点「手选页序」填上第几页'
     }
   }
   if (uncertain.length) {
@@ -752,7 +752,8 @@ export function summarizeBatch(pages, options = {}) {
     // 只有"非更正册的件"全都读不出页脚时才提醒手选页序：全是更正册的话本来就没有主区批次码可比
     problems.push({
       level: 'warn',
-      text: '所有扫描件的页脚都没能读出页序：字序会优先由每页的参考字定位得到；定位不出来的页请手选页序'
+      text: '所有扫描件的页脚都没能读出页序：字序会优先由每页的参考字定位得到；' +
+        '定位不出来的页，在它的结果卡片上点「手选页序」填上第几页'
     })
   }
 

@@ -65,6 +65,9 @@ const progress = computed(() => ({
   templateChars: store.template && store.template.charCount ? store.template.charCount : 0,
   uploadedPages: scanStats.value.pagesUsable,
   sheetPages: sheetPageCount.value,
+  // 这一批一共要识别多少张图（识别开始时把来源落盘了）：进度条分母的第三个来源 ——
+  // 只看"纸面页号最大值"时，重复页 / 跳页会让分母偏小、进度条提前跑满（2026-10-13 真机反馈）
+  scanFiles: store.scan.source && store.scan.source.imageCount ? store.scan.source.imageCount : 0,
   glyphCount: scanStats.value.written,
   fontCoverage: store.font.built && store.font.coverage ? store.font.coverage.total : 0,
   // "生成"这一步以**字体已生成**为准：产物一旦生成，下载随时可做（决策 五-7 的同一口径）
