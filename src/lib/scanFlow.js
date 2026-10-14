@@ -18,7 +18,7 @@ import { extractPage } from './handwritingExtractor.js'
 import { rotateQuarterTurns } from './imageOps.js'
 import { LAYOUT } from './layout.js'
 import { getAllChars } from './charset.js'
-import { charAtCell, reorderPages, resolveBatchChars } from './scanMeta.js'
+import { charAtCell, dedupeDuplicatePages, reorderPages, resolveBatchChars } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
 // 格子拼图与 blob→dataURL 的画法在 lib/pageSheet.js 里（刷新后从落盘字形重建时也用它，两处必须同一种画法）
 import { blobToDataUrl, cellSheet } from './pageSheet.js'
@@ -533,6 +533,15 @@ export async function recognizeBatch(files, options = {}) {
     // 不能等整批结束才拿到（全量 61 页要等约 100 秒，期间什么都看不到）。
     // **要 await**：回调里要落盘字形（一页一次写），不等它就没有确定的完成顺序
     if (opt.onPage) await opt.onPage(record, i, files.length, cache)
+  }
+  // 重复页去重（2026-10-14 用户拍板）：同一页号有多份时**自动采用效果最好的一份**，其余打上 duplicateOf。
+  // 为什么放在 summarizeBatch **之前**：汇总与闸门都要按"去重后的页"来数（可用页数、写出格数、被圈数、
+  //   更正配对的候选），否则统计会翻倍错乱（用户真机实测：12 份同一张纸 → "被红笔圈 29 个"、
+  //   配对表里同一个字出现四行、下面一大片"没有对应格"）。判据与字段口径见 scanMeta.dedupeDuplicatePages。
+  const dedupe = dedupeDuplicatePages(pages)
+  for (const p of pages) {
+    const adopted = dedupe.ignored.get(p.fileIndex)
+    if (adopted !== undefined) p.duplicateOf = adopted
   }
   const summary = summarizeBatch(pages, {
     expectedBatchCode,

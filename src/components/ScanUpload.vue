@@ -142,6 +142,14 @@ const savedStats = ref(null) // 已落盘的字形统计（分片键里的字与
 let cancelled = false
 
 const pages = computed(() => store.scan.pages)
+// 结果卡片的展示顺序（2026-10-14 用户口径：**更正册永远排前面**），其余按原来顺序（文件顺序）——
+// 只影响渲染顺序，不动 fileIndex / 页序 / 分片键那些真正决定数据的字段
+const orderedPages = computed(() => {
+  const list = pages.value
+  const corrections = list.filter((p) => p.kind === 'correction')
+  if (!corrections.length) return list
+  return [...corrections, ...list.filter((p) => p.kind !== 'correction')]
+})
 const batch = computed(() => store.scanBatch)
 const chars = computed(() => store.scan.chars || resolveBatchChars(batch.value))
 const stats = computed(() => store.scanGlyphStats)
@@ -174,7 +182,10 @@ const runSummary = computed(() => {
       ' 个，去重后 ' + stats.value.uniqueChars + ' 个字')
     // 2026-10-13 用户口径：这里不再接一句"这一批被拦下（原因见下）"——
     //   真机上明明出了结果（可用 11 页）却因为"有 9 页重复"被拦下，容易让人以为这批白跑了；
-    //   拦下的原因仍然**常驻在下面**（真的整批失败时那条一定在），重复页已降为提示（见 lib/scanMeta.js）
+    //   拦下的原因仍然**常驻在下面**（真的整批失败时那条一定在）。
+    // 2026-10-14：重复页改成**自动去重**，这里补一句结果（详情在下面的提示列表里）
+    const dropped = pages.value.filter(isDuplicateDropped).length
+    if (dropped) parts.push('其中 ' + dropped + ' 页是重复的、已自动忽略')
   }
   return parts.join(' · ')
 })
@@ -388,13 +399,16 @@ function removeOrderCandidate(file) {
   setMessage('已去掉字序文件候选「' + file.name + '」；识别时用的仍是「' + (activeOrderName.value || '（没有可用的字序文件）') + '」', 'info')
 }
 
-// 按钮只有一个（2026-10-13 用户口径：去掉「换一个文件夹」，把「重读上次的文件夹」改成「重新选择文件夹」）：
+// 按钮只有一个（2026-10-13 用户口径：去掉「换一个文件夹」，把「重读上次的文件夹」改成「重选文件夹」）：
 // 语义就是"再选一次" —— 每次点都重新弹系统对话框，不再区分"重读上次那个目录"这条捷径。
+// 2026-10-14 用户口径：**识别过之后按钮就改名**（"选择文件夹"→"重选文件夹"、"开始识别"→"重新识别"），
+//   刷新页面也一样 —— 判据是**落盘的识别来源**（store.scan.source），不是内存里有没有选过文件。
+const pickedOnce = computed(() => !!storedSource.value || pages.value.length > 0 || !!scanInput.value)
 const pickLabel = computed(() => {
   if (readingDir.value) return '正在读取…'
-  if (!files.value.length) return '选择文件夹'
-  return '重新选择文件夹'
+  return pickedOnce.value ? '重选文件夹' : '选择文件夹'
 })
+const startLabel = computed(() => (pickedOnce.value ? '重新识别' : '开始识别'))
 
 onMounted(() => {
   // 给自动化脚本留一个注入口（默认是真实实现）：见上面 pickDirectoryImpl 的注释
@@ -412,7 +426,8 @@ onMounted(() => {
 async function start(options = {}) {
   if (running.value) return
   if (!files.value.length) {
-    setMessage('还没有可识别的图片：先点上面的「选择文件夹」，指向扫描件所在的那一层', 'error')
+    setMessage('还没有可识别的图片：先点「' + pickLabel.value + '」选一次扫描件所在的文件夹' +
+      (pickedOnce.value ? '（刷新页面之后要重选一次）' : ''), 'error')
     return
   }
   // 2026-10-13 用户口径：**第 3 步已经有生成信息时，重新识别要先问一句** ——
@@ -731,18 +746,30 @@ function onDropPage(target) {
 // 卡片上只放四样：文件名、状态（颜色 + 一个短词）、一行统计、三个操作。
 // 缩略图与 136 格视图收进「看格子」弹窗（点开才渲染），完整信息塞进 title（hover 才看）——
 // 五六十页时旧的行式列表既常驻几十张 dataURL 图、又被页数拉得很长，卡片化之后列表长度与图片都受控。
-// 状态四态与通用版 二-3 的配色一致：成功 = 绿、失败 = 红、待处理 = 橙、更正册 = 青（不是"失败"，是另一类件）。
+// 状态四态（外加"重复页"）：成功 = 绿、失败 = 红、待处理 = 橙、更正册 = 青（不是"失败"，是另一类件）；
+// 2026-10-14 新增"重复页"（灰）：同一页号有多份时程序自动采用效果最好的一份，其余标 `duplicateOf`
+//   —— 它们既不算可用页、也不算失败页（口径见 lib/scanMeta.js 的 dedupeDuplicatePages）
+function isDuplicateDropped(page) {
+  return !!page && page.duplicateOf !== undefined && page.duplicateOf !== null
+}
 function cardClass(page) {
+  if (isDuplicateDropped(page)) return 'is-duplicate'
   if (!page.ok) return 'is-failed'
   if (page.kind === 'correction') return 'is-correction'
   if (page.needReview) return 'is-review'
   return 'is-ok'
 }
 function cardStatusLabel(page) {
+  if (isDuplicateDropped(page)) return '重复页'
   if (!page.ok) return '失败'
   if (page.kind === 'correction') return '更正册'
   if (page.needReview) return '待确认'
   return '已识别'
+}
+/** 被采用的那一份的文件名（"重复页"卡片上要说清结果里用的是哪一份） */
+function adoptedName(page) {
+  const adopted = pages.value.find((p) => p.fileIndex === page.duplicateOf)
+  return adopted ? adopted.fileName : ('第 ' + (page.duplicateOf + 1) + ' 个文件')
 }
 // 页号与"这个页号是怎么来的"：序列定位 > 页脚读出 > 手选 —— 三种来源的可信度不同，必须逐页说清
 function pageNumberLabel(page) {
@@ -947,10 +974,10 @@ const zoomIsMarkedLabel = computed(() => {
         <button
           class="primary"
           data-role="scan-start"
-          :disabled="running || readingDir || !files.length"
-          :title="files.length ? '' : '先点左边的「选择文件夹」，指向扫描件所在的那一层'"
+          :disabled="running || readingDir"
+          :title="files.length ? '' : '还没有选文件夹：先点左边的「重选文件夹」'"
           @click="start()"
-        >开始识别</button>
+        >{{ startLabel }}</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
         <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
         <!-- 只有缺 showDirectoryPicker 的浏览器才说这一句（Firefox / Safari 走 <input webkitdirectory> 退路） -->
@@ -1035,7 +1062,7 @@ const zoomIsMarkedLabel = computed(() => {
          完整信息（页号来源 / 校验码 / 方向纠正 / 四角误差 / 字序来源 / 写出统计）在 hover 的 title 里 -->
     <div v-if="showResult" class="scan-cards" data-role="scan-cards">
       <div
-        v-for="page in pages"
+        v-for="page in orderedPages"
         :key="page.fileIndex"
         class="scan-card"
         :class="[cardClass(page), { active: openIndex === page.fileIndex }]"
@@ -1069,7 +1096,11 @@ const zoomIsMarkedLabel = computed(() => {
           <span class="scan-card-badge">{{ cardStatusLabel(page) }}</span>
         </div>
         <p class="scan-card-stats">
-          <template v-if="page.ok">
+          <template v-if="isDuplicateDropped(page)">
+            这一页与「{{ adoptedName(page) }}」的页号相同：已自动忽略（结果里用的是那一份）；
+            想改用这一份，就在「看文件清单」里去掉那一张再识别
+          </template>
+          <template v-else-if="page.ok">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span
               v-if="page.counts.uncertain"
             > · 归属待确认 {{ page.counts.uncertain }}</span>

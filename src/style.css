@@ -921,6 +921,14 @@ label.text-file input {
   background: #f7fbfc;
 }
 
+/* 重复页（同一页号有多份、没被采用的那几份）：整张卡片压暗，一眼能与"结果里真正用的那一份"分开
+   （2026-10-14 用户拍板：重复页自动去重，采用效果最好的一份） */
+.scan-card.is-duplicate {
+  border-left-color: #c3cad6;
+  background: #f7f8fa;
+  opacity: 0.75;
+}
+
 .scan-card.active {
   border-color: var(--primary);
   border-left-color: var(--primary);
@@ -985,6 +993,15 @@ label.text-file input {
 .scan-card.is-correction .scan-card-badge {
   background: #d7e9ee;
   color: #2e6e7e;
+}
+
+.scan-card.is-duplicate .scan-card-badge {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
+.scan-card.is-duplicate .scan-card-stats {
+  color: var(--text-2);
 }
 
 .scan-card-stats {

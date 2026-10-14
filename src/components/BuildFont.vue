@@ -322,7 +322,14 @@ const onRewriteList = computed(() => store.rewriteChars.map((char) => {
     reason: (store.rewrite[char] && store.rewrite[char].reason) || '标为待重写'
   }
 }))
-const listSlice = (list) => list.slice(0, LIST_LIMIT)
+// 一屏最多列这么多条；点「看全部」之后该栏不再截断。
+// 2026-10-14 用户口径（原话："没列出来的字，我去哪里看，去哪里操作？"）：原来只写一句
+//   "还有 N 个字没列出来"，界面上**没有任何看全 / 操作的入口** —— 现在截断那一行自带「看全部」按钮
+const listSlice = (list, key) => ((key && showAll.value[key]) ? list : list.slice(0, LIST_LIMIT))
+const showAll = ref({ rewrite: false, onRewrite: false, note: false, excluded: false })
+function toggleAll(key) {
+  showAll.value = { ...showAll.value, [key]: !showAll.value[key] }
+}
 
 function excludeGlyph(char) {
   store.setGlyphExcluded(char, true, '字形体检里剔除')
@@ -522,15 +529,10 @@ function reloadNow() {
       <button class="primary" data-role="build-font" :disabled="busy || !canBuild" @click="build">生成字体</button>
       <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
     </div>
-    <p v-if="message" class="panel-message" :class="messageType" data-role="build-message">{{ message }}</p>
-    <!-- 字节不在内存里时的提示（2026-10-13 用户口径：**放在"字体已生成：…"那条消息的位置**，
-         且只在后者不显示时才出现）—— 刚生成完内存里有字节，不提示；刷新过页面才提示。
-         2026-10-14 用户口径：**前面加一个「重新加载」按钮** —— 点它当场把字节重建一次，
-         界面就回到"刷新页面之前的样子"（那句话随之消失） -->
-    <p v-if="ready && !hasMemoryBuild" class="panel-hint" data-role="bytes-rebuild-note">
-      <button class="text accent" type="button" :disabled="busy" data-role="reload-bytes" @click="loadPreview">重新加载</button>
-      字体字节在刷新后不在内存里了 —— 点「重新加载」当场重建一次（约 30 秒），不用重扫。
-    </p>
+    <!-- 消息行：**成功消息进「生成结果」框**（2026-10-14 用户口径：放在"生成结果"四个字下面的第一行），
+         其余消息（失败 / 提示）仍留在这里 —— 它们往往发生在"还没有结果"的时候，进框就看不到了。
+         两处共用一个 data-role（互斥渲染），测试与样式钩子照旧只认一个 -->
+    <p v-if="message && !(ready && messageType === 'done')" class="panel-message" :class="messageType" data-role="build-message">{{ message }}</p>
 
     <!-- 生成过之后：「重新生成」挂在步骤标题行右侧（与第 1 步「更新预览」同一个位置）——
          点它回到"点了生成字体之前"的状态（清产物、留名称表与字形）。
@@ -546,18 +548,24 @@ function reloadNow() {
     </Teleport>
 
     <!-- ③ 生成之后的结果方框（2026-10-13 用户口径的顺序）：
-         产物 → 怎么装 → 怎么用 → 下载（zip + 单件）→ zip 内容 → 字体预览 -->
-    <p v-if="hasResult && !ready" class="panel-hint" data-role="download-waiting">
-      还没有生成字体：点上面的「生成字体」，生成完成后这里会出现下载按钮（zip / 单件 / 字形总览图）。
-    </p>
-
+         生成结果标题 → 成功消息 / 字节提示 → 产物 → 怎么装 → 怎么用 → 下载（zip + 单件） -->
     <template v-if="ready">
       <!-- 「生成结果」这一块（2026-10-14 用户口径）：与「字体预览」「字形体检」同一种卡片样式
-           （带背景的虚线框），标题取「生成结果」；"收录情况"那句话从字体预览标题后挪到这里 -->
+           （带背景的虚线框），标题取「生成结果」；"收录情况"那句话从字体预览标题后挪到这里。
+           "字体已生成：…"与"字体字节在刷新后…（带「重新加载」）"都放在标题下面的第一行 -->
       <div class="card nested" data-role="generated-result">
         <div class="panel-head">
           <h3>生成结果 <span class="panel-hint" data-role="result-coverage">收录情况：这套字体共收录 {{ previewCoverage.total }} 个字，当前预览里未收录 {{ previewCoverage.missing }} 个。</span></h3>
         </div>
+
+        <!-- 生成成功的消息：2026-10-14 用户口径 —— 移到「生成结果」框里的第一行 -->
+        <p v-if="message && messageType === 'done'" class="panel-message done" data-role="build-message">{{ message }}</p>
+        <!-- 字节不在内存里时的提示（2026-10-13：放在"字体已生成：…"那条消息的位置，二者只出现一个；
+             2026-10-14：前面加「重新加载」按钮，点它当场重建一次、界面回到刷新前的样子） -->
+        <p v-if="!hasMemoryBuild" class="panel-hint" data-role="bytes-rebuild-note">
+          <button class="text accent" type="button" :disabled="busy" data-role="reload-bytes" @click="loadPreview">重新加载</button>
+          字体字节在刷新后不在内存里了 —— 点「重新加载」当场重建一次（约 30 秒），不用重扫。
+        </p>
 
         <p class="panel-hint" data-role="font-product">
           <strong>产物</strong>：<strong>{{ font.fileName }}.ttf</strong>
@@ -641,7 +649,7 @@ function reloadNow() {
           <strong>加入重写清单</strong> = 这次先不进字体、以后重写补上；<strong>剔除</strong> = 这个字不要了。
         </p>
         <ul class="checkup-list" data-role="rewrite-list">
-          <li v-for="g in listSlice(rewriteList)" :key="'r' + g.char">
+          <li v-for="g in listSlice(rewriteList, 'rewrite')" :key="'r' + g.char">
             <span class="checkup-char">{{ g.char }}</span>
             <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
             <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
@@ -650,7 +658,10 @@ function reloadNow() {
           </li>
         </ul>
         <p v-if="rewriteList.length > LIST_LIMIT" class="panel-hint">
-          还有 {{ rewriteList.length - LIST_LIMIT }} 个字没列出来（一屏只列前 {{ LIST_LIMIT }} 个）
+          还有 {{ rewriteList.length - LIST_LIMIT }} 个字没列出来（一屏只列前 {{ LIST_LIMIT }} 个）——
+          <button class="text accent" type="button" data-role="show-all-rewrite" @click="toggleAll('rewrite')">
+            {{ showAll.rewrite ? '只列前 ' + LIST_LIMIT + ' 个' : '看全部（' + rewriteList.length + ' 个）' }}
+          </button>
         </p>
       </div>
       <p v-else-if="checkup.summary.rewrite === 0" class="panel-message done">
@@ -666,7 +677,7 @@ function reloadNow() {
           重写完那几页后，用第 2 步的「重传」覆盖，再回这里点「生成字体」。
         </p>
         <ul class="checkup-list" data-role="rewrite-plan-list">
-          <li v-for="r in listSlice(onRewriteList)" :key="'w' + r.char">
+          <li v-for="r in listSlice(onRewriteList, 'onRewrite')" :key="'w' + r.char">
             <span class="checkup-char">{{ r.char }}</span>
             <span class="checkup-where">{{ r.pageNumber === null ? '页号未知' : '第 ' + r.pageNumber + ' 页 · 第 ' + r.cellIndex + ' 格' }}</span>
             <span class="checkup-msgs">{{ r.messages.length ? r.messages.join('；') : r.reason }}</span>
@@ -674,7 +685,10 @@ function reloadNow() {
           </li>
         </ul>
         <p v-if="onRewriteList.length > LIST_LIMIT" class="panel-hint">
-          还有 {{ onRewriteList.length - LIST_LIMIT }} 个字没列出来（一屏只列前 {{ LIST_LIMIT }} 个）
+          还有 {{ onRewriteList.length - LIST_LIMIT }} 个字没列出来（一屏只列前 {{ LIST_LIMIT }} 个）——
+          <button class="text accent" type="button" data-role="show-all-onrewrite" @click="toggleAll('onRewrite')">
+            {{ showAll.onRewrite ? '只列前 ' + LIST_LIMIT + ' 个' : '看全部（' + onRewriteList.length + ' 个）' }}
+          </button>
         </p>
       </div>
 
@@ -683,7 +697,7 @@ function reloadNow() {
           <strong>只是留意（{{ noteList.length }}）</strong>：不影响成字，看一眼就行
         </p>
         <ul class="checkup-list" data-role="note-list">
-          <li v-for="g in listSlice(noteList)" :key="'n' + g.char">
+          <li v-for="g in listSlice(noteList, 'note')" :key="'n' + g.char">
             <span class="checkup-char">{{ g.char }}</span>
             <span class="checkup-where">第 {{ g.pageNumber }} 页 · 第 {{ g.cellIndex }} 格</span>
             <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
@@ -693,7 +707,10 @@ function reloadNow() {
           </li>
         </ul>
         <p v-if="noteList.length > LIST_LIMIT" class="panel-hint">
-          还有 {{ noteList.length - LIST_LIMIT }} 个字没列出来
+          还有 {{ noteList.length - LIST_LIMIT }} 个字没列出来 ——
+          <button class="text accent" type="button" data-role="show-all-note" @click="toggleAll('note')">
+            {{ showAll.note ? '只列前 ' + LIST_LIMIT + ' 个' : '看全部（' + noteList.length + ' 个）' }}
+          </button>
         </p>
       </div>
 
@@ -703,12 +720,18 @@ function reloadNow() {
           <button type="button" class="text" :disabled="busy" @click="restoreAll">全部恢复</button>
         </p>
         <ul class="checkup-list" data-role="excluded-list">
-          <li v-for="g in listSlice(excludedList)" :key="'x' + g.char">
+          <li v-for="g in listSlice(excludedList, 'excluded')" :key="'x' + g.char">
             <span class="checkup-char">{{ g.char }}</span>
             <span class="checkup-msgs">{{ (g.messages || []).join('；') }}</span>
             <button type="button" class="text" :disabled="busy" @click="restoreGlyph(g.char)">恢复</button>
           </li>
         </ul>
+        <p v-if="excludedList.length > LIST_LIMIT" class="panel-hint">
+          还有 {{ excludedList.length - LIST_LIMIT }} 个字没列出来 ——
+          <button class="text accent" type="button" data-role="show-all-excluded" @click="toggleAll('excluded')">
+            {{ showAll.excluded ? '只列前 ' + LIST_LIMIT + ' 个' : '看全部（' + excludedList.length + ' 个）' }}
+          </button>
+        </p>
         <p class="panel-hint">
           剔除只影响<strong>这一次生成</strong>的字库：想真正补上，还是重写那一格、重新扫这一页（或用更正册覆盖）。
           重新识别之后，剔除记录仍会保留（可在上面「全部恢复」）。

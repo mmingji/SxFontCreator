@@ -36,9 +36,64 @@ export function charAtCell(chars, pageNumber, cellIndex) {
   return i >= 0 && i < list.length ? list[i] : null
 }
 
-/** 某一页能不能继续用于字形识别（页脚读不出的页，只要用户手选了页序也算能收 —— 决策 二-7） */
+/**
+ * 某一页能不能继续用于字形识别（页脚读不出的页，只要用户手选了页序也算能收 —— 决策 二-7）。
+ * **2026-10-14 补**：重复页里**没被采用**的那些也不算可用（去重的结果落在 `duplicateOf` 上，
+ * 见 `dedupeDuplicatePages`）—— 这一处判据是统计、更正配对、字形计划、字体构建共同的分叉点，
+ * 所以只在这里加一条，下游全都跟着生效。
+ */
 export function usableForGlyphs(page) {
-  return !!(page && page.ok && page.pageNumber)
+  const dropped = !!page && page.duplicateOf !== undefined && page.duplicateOf !== null
+  return !!(page && page.ok && page.pageNumber && !dropped)
+}
+
+/**
+ * 重复页去重（2026-10-14 用户拍板，**修订**"不自动去重、只提示"的旧口径）。
+ *
+ * 背景（用户真机实测）：把同一张纸的不同来源（手机拍、扫描 App 各档、重复拷贝）一起放进目录时，
+ *   识别出的"可用 12 页"其实只有 1 页的内容 —— 于是"被红笔圈 29 个""更正册覆盖 9 处"这类统计
+ *   全部翻倍错乱，更正配对也跟着乱（同一个字被配到好几行、下面一大片"没有对应格"）。
+ * 口径：**同一页号出现多份时，自动采用"效果最好"的一份**，其余打上 `duplicateOf: <采用的 fileIndex>`；
+ *   界面上它们显示成"重复页"（灰），既不算可用页、也不算失败页。
+ * 判据（效果最好）：**先比"能用的字形数"（写出格数 − 可疑格数）多的**，再比四角误差小的，最后按文件顺序。
+ *   为什么不单看"写出格数"：不同来源的曝光不同，写出多不等于写得准；可疑格扣掉之后更接近"这一份好不好用"。
+ * 不参与去重的情形：更正册（它是另一类件）、没有页号的页（手选页序之后才谈得上判重）。
+ * @param {Array} pages 页记录（store.scan.pages）
+ * @returns {{groups:Array, ignored:Map<number,number>}} groups 供界面/文案说明，ignored 是 fileIndex → 采用的 fileIndex
+ */
+export function dedupeDuplicatePages(pages) {
+  const byPage = new Map()
+  for (const p of pages || []) {
+    if (!p || !p.ok || p.kind === 'correction') continue
+    const pageNumber = p.pageNumber
+    if (pageNumber === null || pageNumber === undefined) continue
+    if (!byPage.has(pageNumber)) byPage.set(pageNumber, [])
+    byPage.get(pageNumber).push(p)
+  }
+  const groups = []
+  const ignored = new Map()
+  for (const [pageNumber, group] of byPage) {
+    if (group.length < 2) continue
+    const scored = group.map((p) => ({
+      page: p,
+      usable: p.counts ? p.counts.written - p.counts.suspect : 0,
+      corner: (p.cornerMaxError === null || p.cornerMaxError === undefined) ? 999 : p.cornerMaxError
+    }))
+    scored.sort((a, b) => (b.usable - a.usable) || (a.corner - b.corner) || (a.page.fileIndex - b.page.fileIndex))
+    const adopted = scored[0].page
+    const dropped = scored.slice(1).map((s) => s.page)
+    for (const p of dropped) ignored.set(p.fileIndex, adopted.fileIndex)
+    groups.push({
+      pageNumber,
+      adoptedFileIndex: adopted.fileIndex,
+      adoptedName: adopted.fileName,
+      adoptedUsable: scored[0].usable,
+      droppedFileIndexes: dropped.map((p) => p.fileIndex),
+      droppedNames: dropped.map((p) => p.fileName)
+    })
+  }
+  groups.sort((a, b) => a.pageNumber - b.pageNumber)
+  return { groups, ignored }
 }
 
 /**
@@ -145,6 +200,7 @@ export function evaluateScanGate(input = {}) {
   let needsConfirm = false
   let batchMismatch = 0
   let footerlessFailed = 0 // 页脚读不出、且整页失败的页数（见下面失败分支的注释）
+  let duplicatePages = 0 // 重复页里**没被采用**的页数（去重结果，见 dedupeDuplicatePages）
 
   // 判据优先用 summarizeBatch 的 rows，但**只在行数与页数对得上时**才信它 ——
   // 汇总可能来自上一轮（或还没重算），那时 rows 与 pages 描述的不是同一批件，
@@ -169,6 +225,11 @@ export function evaluateScanGate(input = {}) {
     const label = '第 ' + (i + 1) + ' 个文件'
     // 更正册与主区分别计数：主区页是"能拿出字形"的页，更正册页是"用来覆盖被圈字"的页
     const isCorrection = (row.kind || page.kind) === 'correction'
+    // 2026-10-14（去重落地）：被忽略的重复页既不算可用、也不算跳过（它不是失败）—— 单独计数，下面给一条提示
+    if (page.duplicateOf !== undefined && page.duplicateOf !== null) {
+      duplicatePages++
+      continue
+    }
     if (row.batchMatch === false) {
       batchMismatch++
       continue
@@ -211,13 +272,17 @@ export function evaluateScanGate(input = {}) {
     notes.push('有 ' + batchMismatch + ' 页的页脚校验码与当前批次不一致：多半不是同一批纸（或用的是旧模板），' +
       '请对照结果里的"字序来源"确认这几页认得对不对')
   }
-  if ((summary.duplicates || []).length) {
-    // 2026-10-13（用户口径）：重复页**从"拦下"降为"提示"** —— 真机上这一批明明出了结果
-    //   （可用 11 页 / 跳过 2 页），却因为"有 9 页重复"被整批拦下，用户看到的是"出结果了还说被拦下"；
-    //   而"去掉重复的那一张"这件事界面上本来就有入口（「看文件清单」里逐张去掉，再重新识别），
-    //   所以这里改成如实说清后果 + 给出路，让用户自己决定要不要清。
-    notes.push('有 ' + summary.duplicates.length + ' 页是重复的（页面页号相同）：重复页会让更正配对错位、白占更正格；' +
-      '可以在「看文件清单」里去掉重复的那一张再识别一遍，不清也可以继续')
+  if (duplicatePages > 0) {
+    // 2026-10-14 用户拍板：重复页**自动去重**（采用效果最好的一份），这里如实说清采用了哪一份
+    const adoptedIndexes = new Set()
+    for (const p of pages) {
+      if (p.duplicateOf !== undefined && p.duplicateOf !== null) adoptedIndexes.add(p.duplicateOf)
+    }
+    const adoptedNames = [...adoptedIndexes]
+      .map((idx) => ((pages.find((p) => p.fileIndex === idx) || {}).fileName) || ('第 ' + (idx + 1) + ' 个文件'))
+    notes.push('有 ' + duplicatePages + ' 页与别的页页号相同（重复上传）：已**自动采用效果最好的一份**' +
+      (adoptedNames.length ? '（' + adoptedNames.join('、') + '）' : '') +
+      '，其余 ' + duplicatePages + ' 页已忽略、不计入结果；想换用另一份，就在「看文件清单」里去掉不想要的那张再识别一遍')
   }
   // 2026-10-11（决策 五-9）：界面上「确认这批扫描件属于所选批次」「我知道这是作废模板」两个勾选框
   // 已随"批次对用户不可见"一起去掉，所以这两条**不能再拦人** —— 用户无从勾选，拦下来就是死路。
