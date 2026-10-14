@@ -537,6 +537,24 @@ label.text-file input {
   flex-wrap: wrap;
 }
 
+/* 步骤标题行右侧的操作位（第 1 步「更新预览」、第 2 步「清空结果」、第 3 步「清空全部数据 / 重新生成」）：
+   多个按钮之间要留间距 —— 2026-10-14 用户反馈"清空全部数据和重新生成这俩按钮贴死了" */
+#step-head-actions {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* 卡片里的标题行（生成结果 / 字体预览 / 字形体检）：标题 + 紧随其后的说明，窄窗口自动换行。
+   说明一般都写在 `<h3>` 里紧跟标题（用户口径），这里只管排布与换行 */
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
 /* 步骤标题后面那句"这一步要干什么"（2026-10-07 从右上角移过来）：比正文轻、比标题更淡 */
 .step-hint {
   margin-left: 8px;

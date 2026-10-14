@@ -27,7 +27,7 @@ const props = defineProps({
   loading: { type: Boolean, default: false }, // 正在重建字节（父组件在跑）
   loadingText: { type: String, default: '' } // 重建阶段文案 + 进度
 })
-const emit = defineEmits(['request-bytes'])
+const emit = defineEmits(['request-bytes', 'coverage'])
 
 const size = ref(PREVIEW_SIZES[1])
 const text = ref(defaultPreviewText(props.coveredChars))
@@ -37,6 +37,11 @@ const fontNote = ref('')
 const registeredFamily = ref('')
 
 const analysis = computed(() => analyzePreviewText(text.value, props.coveredChars))
+// 收录情况上报给父组件（2026-10-14 用户口径：那句话显示在「生成结果」标题后）——
+// "未收录几个"取决于当前预览文本，只有这里算得出来；文本一变就重报一次
+watch(analysis, () => {
+  emit('coverage', { total: props.coveredChars.length, missing: analysis.value.missingCount })
+}, { immediate: true })
 const previewStyle = computed(() => ({
   // 未收录的字靠字体栈自动回退：显式给出系统中文字体，让"回退的字"一眼看得出不是这套手写体
   fontFamily: (fontState.value === 'ready' && registeredFamily.value)
@@ -110,11 +115,9 @@ function clearText() {
 
 <template>
   <div class="font-preview">
-    <!-- 标题行（2026-10-13 用户口径：标题从父组件挪进来 —— "收录情况"要**紧跟"字体预览"四个字**） -->
+    <!-- 标题行（2026-10-14 用户口径：这里只留标题 —— "收录情况"那句话挪到了「生成结果」标题后面） -->
     <div class="panel-head">
-      <h3>字体预览 <span v-if="bytes && !fontNote" class="panel-hint" data-role="preview-coverage">
-        收录情况：这套字体共收录 <strong>{{ coveredChars.length }}</strong> 个字，当前预览里未收录 <strong>{{ analysis.missingCount }}</strong> 个。
-      </span></h3>
+      <h3>字体预览</h3>
     </div>
 
     <div v-if="!bytes" class="panel-actions">

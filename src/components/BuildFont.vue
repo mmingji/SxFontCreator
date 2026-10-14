@@ -391,8 +391,12 @@ function exportRewriteList() {
 
 // 剔除了字、或改了名称表之后，之前那份体检快照就与当前状态不一致了（store 会置 checkupStale）
 const staleAfterExclude = computed(() => !!checkup.value && store.font.checkupStale)
-// 内存里还有没有刚生成的字节（没有就说明刷新过页面，下载会当场重建一次）
-const hasMemoryBuild = computed(() => !!getLastBuild())
+// 内存里还有没有刚生成的字节（没有就说明刷新过页面，下载会当场重建一次）。
+// 2026-10-14 修：原来读的是模块级变量（`getLastBuild()`）—— **不是响应式的**，于是点「加载预览 / 重新加载」
+//   把字节重建出来之后，那句"字体字节在刷新后不在内存里了…"还一直挂在那儿（用户真机反馈：
+//   "已经显示了绿色字'字体已经生成…'它还是显示，我觉得它不该显示了"）。
+//   改成盯 `previewBytes` 这个 ref：它在每次 `syncPreviewBytes()` 里更新，是同一件事的响应式镜像。
+const hasMemoryBuild = computed(() => !!previewBytes.value)
 
 // 体检摘要那一行（收起时也看得到）：把"要处理几件"说全。
 // 2026-10-13 用户口径：**只说一遍** —— 原来 message（"已体检 1360 个字形：42 个建议重写、18 个只是留意"）
@@ -405,6 +409,17 @@ const checkupSummaryText = computed(() => {
   if (onRewriteList.value.length) parts.push('重写清单里 ' + onRewriteList.value.length + ' 个')
   return parts.filter(Boolean).join('；')
 })
+
+// ── 「生成结果」标题后面那句"收录情况"（2026-10-14 用户口径：从字体预览挪到这里）──────
+// 数据由预览组件上报：**"未收录几个"取决于当前预览文本**，只有它自己算得出来；
+// 这里存一份用于显示（默认 0，预览还没加载时显示"共收录 N 个字、未收录 0 个"也说得通）
+const previewCoverage = ref({ total: 0, missing: 0 })
+function onPreviewCoverage(payload) {
+  previewCoverage.value = {
+    total: Number(payload && payload.total) || 0,
+    missing: Number(payload && payload.missing) || 0
+  }
+}
 
 // ── 「重新生成」（2026-10-13 用户口径）────────────────────────────────────────
 /**
@@ -473,7 +488,9 @@ function reloadNow() {
     <!-- ① 字形计划行：口径与第 2 步「更正核对」一致（都按**不同的字**计数）——
          2026-10-13 用户口径："这一行的所有信息应该和上一步保持一致"（原来这里按"处"数、对上一步按"字"数，
          同一件事会得出两个数）。原来还会罗列"哪些被圈的字没用上更正册"，与第 2 步重复，已去掉 -->
-    <p v-if="hasResult" class="panel-hint" data-role="glyph-plan">
+    <!-- 字形计划行：**用与"还没有识别结果…再回来生成字体"同一种提示条样式**（2026-10-14 用户口径）——
+         它是"这次会出多少字形"的结论，与上下那些输入控件不是一类东西 -->
+    <p v-if="hasResult" class="step-note" data-role="glyph-plan">
       字形计划：共 <strong>{{ plan.items.length }}</strong> 个字形，其中 <strong>{{ plan.replaced }}</strong> 个来自更正册；
       这批共写出 {{ store.scanGlyphStats.written }} 格、可疑 {{ store.scanGlyphStats.suspect }} 个。
       <span v-for="(p, i) in plan.problems" :key="'p' + i">{{ p }} </span>
@@ -507,9 +524,12 @@ function reloadNow() {
     </div>
     <p v-if="message" class="panel-message" :class="messageType" data-role="build-message">{{ message }}</p>
     <!-- 字节不在内存里时的提示（2026-10-13 用户口径：**放在"字体已生成：…"那条消息的位置**，
-         且只在后者不显示时才出现）—— 刚生成完内存里有字节，不提示；刷新过页面才提示 -->
+         且只在后者不显示时才出现）—— 刚生成完内存里有字节，不提示；刷新过页面才提示。
+         2026-10-14 用户口径：**前面加一个「重新加载」按钮** —— 点它当场把字节重建一次，
+         界面就回到"刷新页面之前的样子"（那句话随之消失） -->
     <p v-if="ready && !hasMemoryBuild" class="panel-hint" data-role="bytes-rebuild-note">
-      字体字节在刷新后不在内存里了 —— 下载时会在打包步骤自动重建一次（约 30 秒），不用重扫。
+      <button class="text accent" type="button" :disabled="busy" data-role="reload-bytes" @click="loadPreview">重新加载</button>
+      字体字节在刷新后不在内存里了 —— 点「重新加载」当场重建一次（约 30 秒），不用重扫。
     </p>
 
     <!-- 生成过之后：「重新生成」挂在步骤标题行右侧（与第 1 步「更新预览」同一个位置）——
@@ -532,32 +552,40 @@ function reloadNow() {
     </p>
 
     <template v-if="ready">
-      <p class="panel-hint" data-role="font-product">
-        <strong>产物</strong>：<strong>{{ font.fileName }}.ttf</strong>
-        （TTF {{ (font.sizes.ttf / 1024).toFixed(1) }}KB<span v-if="font.sizes.woff2">、woff2 {{ (font.sizes.woff2 / 1024).toFixed(1) }}KB</span>）；
-        收录 <strong>{{ font.coverage.total }}</strong> 个字<span v-if="font.coverage.fromCorrection">，其中 {{ font.coverage.fromCorrection }} 个来自更正册</span>；
-        跳过 {{ font.skipped }} 个<span v-if="font.missing">、缺原料 {{ font.missing }} 个</span>
-      </p>
-      <p class="panel-hint" data-role="install-how">
-        <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」；macOS 双击 → 「安装字体」；
-        <strong>装完请重启 Word / PS</strong>。
-      </p>
-      <p class="panel-hint" data-role="use-how">
-        <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录即可。
-      </p>
+      <!-- 「生成结果」这一块（2026-10-14 用户口径）：与「字体预览」「字形体检」同一种卡片样式
+           （带背景的虚线框），标题取「生成结果」；"收录情况"那句话从字体预览标题后挪到这里 -->
+      <div class="card nested" data-role="generated-result">
+        <div class="panel-head">
+          <h3>生成结果 <span class="panel-hint" data-role="result-coverage">收录情况：这套字体共收录 {{ previewCoverage.total }} 个字，当前预览里未收录 {{ previewCoverage.missing }} 个。</span></h3>
+        </div>
 
-      <div class="panel-actions">
-        <button class="primary" data-role="download-zip" :disabled="busy" @click="downloadZip">下载 zip</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('ttf')">只下载 TTF</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('css')">只下载 font.css</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('guide')">只下载使用说明.txt</button>
-        <button class="text" :disabled="busy" @click="downloadSingle('preview')">只下载 preview.html</button>
-        <button class="text" data-role="overview-export" :disabled="busy" @click="exportOverview">导出字形总览图</button>
-        <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
+        <p class="panel-hint" data-role="font-product">
+          <strong>产物</strong>：<strong>{{ font.fileName }}.ttf</strong>
+          （TTF {{ (font.sizes.ttf / 1024).toFixed(1) }}KB<span v-if="font.sizes.woff2">、woff2 {{ (font.sizes.woff2 / 1024).toFixed(1) }}KB</span>）；
+          收录 <strong>{{ font.coverage.total }}</strong> 个字<span v-if="font.coverage.fromCorrection">，其中 {{ font.coverage.fromCorrection }} 个来自更正册</span>；
+          跳过 {{ font.skipped }} 个<span v-if="font.missing">、缺原料 {{ font.missing }} 个</span>
+        </p>
+        <p class="panel-hint" data-role="install-how">
+          <strong>怎么装</strong>：Windows 右键 <code>{{ font.fileName }}.ttf</code> → 「为所有用户安装」；macOS 双击 → 「安装字体」；
+          <strong>装完请重启 Word / PS</strong>。
+        </p>
+        <p class="panel-hint" data-role="use-how">
+          <strong>怎么用</strong>：Word 里在字体列表选「{{ font.familyName }}」；网页里把 font.css 与字体文件放同一目录即可。
+        </p>
+
+        <div class="panel-actions">
+          <button class="primary" data-role="download-zip" :disabled="busy" @click="downloadZip">下载 zip</button>
+          <button class="text" :disabled="busy" @click="downloadSingle('ttf')">只下载 TTF</button>
+          <button class="text" :disabled="busy" @click="downloadSingle('css')">只下载 font.css</button>
+          <button class="text" :disabled="busy" @click="downloadSingle('guide')">只下载使用说明.txt</button>
+          <button class="text" :disabled="busy" @click="downloadSingle('preview')">只下载 preview.html</button>
+          <button class="text" data-role="overview-export" :disabled="busy" @click="exportOverview">导出字形总览图</button>
+          <span v-if="busy" class="panel-hint">{{ stage }}（{{ progress.done }} / {{ progress.total }} 个字形）</span>
+        </div>
       </div>
 
       <!-- 网页字体预览（决策 四-8）：用刚生成的字节当场注册，先看效果再下载。
-           标题与"收录情况"那一行由组件自己渲染（2026-10-13 用户口径：收录情况紧跟"字体预览"四个字） -->
+           2026-10-14：标题行只留「字体预览」，"收录情况"挪到上面的「生成结果」标题后（由预览组件上报数据） -->
       <div class="card nested">
         <FontPreview
           :bytes="previewBytes"
@@ -566,6 +594,7 @@ function reloadNow() {
           :loading="busy"
           :loading-text="busy ? stage + '（' + progress.done + ' / ' + progress.total + ' 个字形）' : ''"
           @request-bytes="loadPreview"
+          @coverage="onPreviewCoverage"
         />
       </div>
     </template>
