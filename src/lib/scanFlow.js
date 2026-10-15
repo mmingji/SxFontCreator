@@ -86,7 +86,9 @@ export function markDuplicatePages(pages) {
   }
   const failedDuplicates = []
   for (const p of list) {
-    if (!p || usableForGlyphs(p)) continue
+    // **作废的页不参与**（2026-10-15：作废是用户主动清掉的，不是"这一份没能识别" —— 真机上它被误标成
+    //   "与某页重复、这一份没能识别"，把用户看糊涂了）
+    if (!p || usableForGlyphs(p) || p.voided) continue
     const footerPage = p.footer && p.footer.ok ? p.footer.pageNumber : null
     const adopted = footerPage ? okByPage.get(footerPage) : null
     if (adopted && adopted.fileIndex !== p.fileIndex) {

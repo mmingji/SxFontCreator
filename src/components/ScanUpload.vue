@@ -155,9 +155,13 @@ const pages = computed(() => store.scan.pages)
 //   （作废 / 失败），最后才是"程序已经替你忽略掉的"（重复页）—— 正好是"结果 → 要不要处理 → 被忽略的"
 //   这个阅读顺序。只影响渲染顺序，不动 fileIndex / 页序 / 分片键那些真正决定数据的字段。
 function cardGroupRank(page) {
+  // **"已作废"必须最先判**（2026-10-15 真机反馈："作废更正册再重传之后，看着乱序了"）——
+  //   原来先判 `kind === 'correction'`，于是"已作废的更正册件"被归进更正册那一组、
+  //   排在**可用的更正册前面**，看上去就像整列顺序被打乱了。作废属于"要处理的"，
+  //   不管它原来是什么件，都排到更正册与已识别主区页之后。
+  if (page.voided) return 2 // 已作废（用户主动清掉、等着重传）
   if (page.kind === 'correction') return 0 // 更正册永远最前
   if (isDuplicateDropped(page)) return 4 // 重复页（程序已自动忽略，只作说明）
-  if (page.voided) return 2 // 已作废（用户主动清掉、等着重传）
   if (!page.ok) return 3 // 识别失败
   return 1 // 已识别的主区页
 }
@@ -1341,7 +1345,12 @@ const zoomIsMarkedLabel = computed(() => {
           <span class="scan-card-badge">{{ cardStatusLabel(page) }}</span>
         </div>
         <p class="scan-card-stats">
-          <template v-if="isDuplicateDropped(page)">
+          <!-- 作废的页**优先说"已作废"**（2026-10-15）：它是用户主动清掉的，不能落到下面"没能识别"那个分支上
+               —— 真机上它曾被显示成"与某页重复、这一份没能识别"，把用户看糊涂了 -->
+          <template v-if="page.voided">
+            已作废：这一页的识别结果与字形都清掉了 —— 点「重传」可以重新扫这一页
+          </template>
+          <template v-else-if="isDuplicateDropped(page)">
             这一页与「{{ adoptedName(page) }}」的页号相同：已自动忽略（结果里用的是那一份 ——
             程序按"认出的红圈数 → 能用的字形数"挑的）；想改用这一份，就在「看文件清单」里去掉那一张再识别
           </template>
