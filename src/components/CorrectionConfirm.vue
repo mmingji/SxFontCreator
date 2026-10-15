@@ -142,12 +142,30 @@ watch(tablePageCount, (n) => { if (tablePage.value > n) tablePage.value = n })
 // 每次展开都从第 1 页看起（收起前的页码留着只会让人以为表头那几行丢了）
 watch(tableOpen, (open) => { if (open) tablePage.value = 1 })
 
-// 首次进入（或被圈清单变了）时算一次配对初值；**用户调整过就不覆盖**
+/**
+ * 更正册页的**指纹**（2026-10-15 修一个真缺陷）：作废 / 重传 / 补传更正册之后，配对必须跟着重算。
+ * 原来 `ensurePairing` 的签名只写"有没有更正册页 + 被圈字清单"，于是"作废 → 重传"之后签名又回到原样、
+ * 函数直接早退，核对表还挂着"作废那一下算出来的那套（全都对不上）"—— 真机反馈正是"对应关系没有更新"。
+ * 指纹里放：每一张更正册页的序号 / 是否可用 / 页号 / **有笔迹的格号**（格内容变了也算换过册子）。
+ */
+function bookFingerprint() {
+  return pages.value
+    .filter((p) => p.kind === 'correction')
+    .map((p) => p.fileIndex + ':' + (p.ok ? '1' : '0') + ':' + (p.pageNumber || '-') + ':' +
+      (p.cells || []).filter((c) => c.verdict !== 'empty').map((c) => c.index).join('.'))
+    .join('|')
+}
+
+// 首次进入（或被圈清单 / 更正册变了）时算一次配对初值；**用户调整过就不覆盖**（除非更正册换过）
 function ensurePairing(force) {
   const signature = (store.correction.circled || []).map((c) => c.pageNumber + ':' + c.mainCellIndex).join(',')
-  const current = (pages.value.some((p) => p.kind === 'correction') ? 'book:' : 'nobook:') + signature
-  if (!force && initialStats.value && initialStats.value.signature === current) return
-  if (!force && Object.keys(store.correction.overrides || {}).length) return
+  const book = bookFingerprint()
+  const current = book + '#' + signature
+  const bookChanged = !!initialStats.value && initialStats.value.book !== book
+  if (!force && initialStats.value && initialStats.value.signature === current && !bookChanged) return
+  // 更正册换过（作废 / 重传 / 补传）时**必须重算**，连手动调整一起作废 —— 那些调整指向的"第 k 格"
+  //   可能已经不是原来那一格了（与"被圈字变了就作废配对"同一口径，见八-14 ④）；重算时会清掉 overrides
+  if (!force && !bookChanged && Object.keys(store.correction.overrides || {}).length) return
   const mapped = pairCorrections(pages.value)
   store.setCorrectionResult({
     pairs: mapped.pairs,
@@ -158,7 +176,11 @@ function ensurePairing(force) {
     stats: mapped.stats,
     circled: mapped.circled
   })
-  initialStats.value = { signature: current, stats: mapped.stats }
+  initialStats.value = { signature: current, book, stats: mapped.stats }
+  if (bookChanged && !force) {
+    setMessage('更正册变了（作废 / 重传 / 补传）：配对已按新的识别结果重算' +
+      (mapped.pairs.length ? '，覆盖 ' + mapped.pairs.length + ' 处' : '') + '；之前的手动调整已作废', 'info')
+  }
 }
 
 // 缩略图：从内存缓存（lib/scanCache 的"格子拼图"）里取。识别完才有的东西，所以每次识别结果变化都要重取
@@ -255,10 +277,15 @@ onMounted(() => {
 // 签名只看"哪些页可用、每页被圈了哪些格、哪些页被判成重复页"，这几项变了配对才需要重算。
 // **2026-10-14 补 duplicateOf**：重复页是"不算可用"的那一类（被判重的页不参与配对候选），
 //   而这个字段是识别收尾时补写进 store 的 —— 它一变，配对就必须重算（否则配对还按 29 条被圈字算）。
+// **2026-10-15 补**：签名里再加"更正册页有笔迹的格" —— 重传一张"内容不同但仍可用"的更正册件时，
+//   只有 ok 位看不出变化，核对表会停在旧配对上（真机反馈："作废更正册再重传之后对应关系没有更新"）。
 const scanSignature = computed(() => pages.value
   .map((p) => p.fileIndex + ':' + (p.ok ? '1' : '0') + ':' +
     (p.duplicateOf === undefined || p.duplicateOf === null ? '' : p.duplicateOf) + ':' +
-    (p.markedCells || []).join('.'))
+    (p.markedCells || []).join('.') + ':' +
+    (p.kind === 'correction'
+      ? (p.cells || []).filter((c) => c.verdict !== 'empty').map((c) => c.index).join('.')
+      : ''))
   .join('|'))
 watch(scanSignature, () => {
   restoreImages()
