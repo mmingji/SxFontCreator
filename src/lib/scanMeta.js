@@ -55,8 +55,15 @@ export function usableForGlyphs(page) {
  *   全部翻倍错乱，更正配对也跟着乱（同一个字被配到好几行、下面一大片"没有对应格"）。
  * 口径：**同一页号出现多份时，自动采用"效果最好"的一份**，其余打上 `duplicateOf: <采用的 fileIndex>`；
  *   界面上它们显示成"重复页"（灰），既不算可用页、也不算失败页。
- * 判据（效果最好）：**先比"能用的字形数"（写出格数 − 可疑格数）多的**，再比四角误差小的，最后按文件顺序。
- *   为什么不单看"写出格数"：不同来源的曝光不同，写出多不等于写得准；可疑格扣掉之后更接近"这一份好不好用"。
+ * 判据（效果最好），按优先级：
+ *   ① **认出的红圈数多的** —— 为什么它在最前（2026-10-14 真夹具实测补的）：同一张纸的多份来源里，
+ *      某些档（去底色 / 转黑白 / 锐化）会把红圈洗掉。只按"能用的字形数"挑，真夹具上挑中的那份
+ *      **被圈 0 个** —— 而去重一旦生效，被圈清单就从 29 变 0、更正配对 0 处、更正册那 9 格全成
+ *      "多写的格"（用户白写一册）。红圈是用户特意留下的信息，丢了补不回来；字形质量差一点还有
+ *      "可疑格"提示兜着。
+ *   ② 再比"能用的字形数"（写出格数 − 可疑格数）多的：不同来源的曝光不同，写出多不等于写得准，
+ *      扣掉可疑格之后更接近"这一份好不好用"。
+ *   ③ 再比四角误差小的；④ 最后按文件顺序（结果可复现）。
  * 不参与去重的情形：更正册（它是另一类件）、没有页号的页（手选页序之后才谈得上判重）。
  * @param {Array} pages 页记录（store.scan.pages）
  * @returns {{groups:Array, ignored:Map<number,number>}} groups 供界面/文案说明，ignored 是 fileIndex → 采用的 fileIndex
@@ -76,10 +83,12 @@ export function dedupeDuplicatePages(pages) {
     if (group.length < 2) continue
     const scored = group.map((p) => ({
       page: p,
+      marked: (p.counts && p.counts.marked) || 0,
       usable: p.counts ? p.counts.written - p.counts.suspect : 0,
       corner: (p.cornerMaxError === null || p.cornerMaxError === undefined) ? 999 : p.cornerMaxError
     }))
-    scored.sort((a, b) => (b.usable - a.usable) || (a.corner - b.corner) || (a.page.fileIndex - b.page.fileIndex))
+    scored.sort((a, b) => (b.marked - a.marked) || (b.usable - a.usable) ||
+      (a.corner - b.corner) || (a.page.fileIndex - b.page.fileIndex))
     const adopted = scored[0].page
     const dropped = scored.slice(1).map((s) => s.page)
     for (const p of dropped) ignored.set(p.fileIndex, adopted.fileIndex)
@@ -87,9 +96,13 @@ export function dedupeDuplicatePages(pages) {
       pageNumber,
       adoptedFileIndex: adopted.fileIndex,
       adoptedName: adopted.fileName,
+      adoptedMarked: scored[0].marked,
       adoptedUsable: scored[0].usable,
       droppedFileIndexes: dropped.map((p) => p.fileIndex),
-      droppedNames: dropped.map((p) => p.fileName)
+      droppedNames: dropped.map((p) => p.fileName),
+      // 有没有哪一份认出了红圈、而采用的那份一个都没认出 —— 界面据此明确提醒"更正配对会少"
+      // （这是"判据 ① 生效了但差距仍在"的情形：例如另一份认出了圈、却因字形更差而没被采用）
+      droppedWithMarks: dropped.filter((p) => ((p.counts && p.counts.marked) || 0) > scored[0].marked).length
     })
   }
   groups.sort((a, b) => a.pageNumber - b.pageNumber)
@@ -97,17 +110,23 @@ export function dedupeDuplicatePages(pages) {
 }
 
 /**
- * 单页重传能不能收下这一页（清单 一-8，决策 八-14 ③）
- * 两条拒绝理由都是"明确失败、不写入"—— 静默拿错数据比拒绝处理糟得多（沿用二-6 的口径）：
- *   · 整页没能识别（没有四角、校正超限……）：把失败原因原样带出来，让用户知道重扫要注意什么；
- *   · 页脚读出了、但校验码与所选批次不符：说明重扫的纸不属于这一批，收下会污染整批。
- * 更正册页（kind === 'correction'，页脚校验码 0）不参与批次比对，直接接受（与 八-10 的分拣口径一致）。
+ * 单页重传 / 补传能不能收下这一页（清单 一-8，决策 八-14 ③；**2026-10-15 用户口径后收敛为一条判据**）。
+ *
+ * **只拒绝"整页没能识别"**（没有四角定位块、校正超限……）—— 把失败原因原样带出来，让用户知道重扫要注意什么。
+ *
+ * 为什么不再拿页脚校验码拦（2026-10-15 用户原话："重传有批次校验码？应该识别到是同一张纸就可以，
+ *   批次校验的意义是啥，只要模板是我们提供的，模板内的字都是一样的"）：
+ *   · 码的用途本来只有一个 —— 认出"这一页属于哪一批纸"（决策 八-10）。而**补传 / 重传是一个人拿着
+ *     刚扫好的那一张纸、在那一张卡片上点的**，意图已经明确；此时拿码拦人，拦住的是"用户自己"；
+ *   · 真出错的情形（拿错纸）由更硬的两道闸兜着：页脚读出的**页号**决定这 136 格对应哪些字，认错纸
+ *     一眼就能在结果里看出来；而且模板与字表都是本程序给的，格子与字的对应关系不会因为批次不同而变。
+ *   所以校验码降为**提示**：识别记录里的 `batchMatch` 照旧保留、卡片 hover 里照旧显示，只是不再拦写入。
+ * 更正册页（kind === 'correction'，页脚校验码 0）同样直接接受（与 八-10 的分拣口径一致）。
  * @param {object} input
  * @param {object|null} input.record 新识别出来的页记录（recognizePage 的产物）
- * @param {number|null} [input.batchCode] 所选批次的 12 位校验码（只为把提示写清楚）
- * @returns {{accept: boolean, reason: 'ok'|'page-failed'|'batch-mismatch', message: string}}
+ * @returns {{accept: boolean, reason: 'ok'|'page-failed', message: string}}
  */
-export function evaluateRescanAccept({ record, batchCode = null } = {}) {
+export function evaluateRescanAccept({ record } = {}) {
   if (!record || !record.ok) {
     return {
       accept: false,
@@ -115,15 +134,10 @@ export function evaluateRescanAccept({ record, batchCode = null } = {}) {
       message: '这一页没能识别：' + ((record && record.reason) || '原因未知') + '。原来的结果与字形都没动，可以重扫一页再试'
     }
   }
-  if (record.kind !== 'correction' && record.batchMatch === false) {
-    return {
-      accept: false,
-      reason: 'batch-mismatch',
-      message: '这一页的页脚校验码是 ' + record.batchCode + '，与所选批次（' + (batchCode === null ? '-' : batchCode) +
-        '）不符：已放弃替换。请确认重扫的是这一批的纸，或换到正确的批次再传'
-    }
-  }
-  return { accept: true, reason: 'ok', message: '' }
+  const note = record.batchMatch === false
+    ? '（页脚校验码与这一批不一致：多半是不同一批纸，若结果里的字不对，就用这一页上的「手选页序」定一下页号）'
+    : ''
+  return { accept: true, reason: 'ok', message: '已收下这一页' + note }
 }
 
 /** 汇总"这批能拿出多少字形"：给流程状态（lib/flow.js）与后续字体构建用 */
@@ -230,10 +244,12 @@ export function evaluateScanGate(input = {}) {
       duplicatePages++
       continue
     }
-    if (row.batchMatch === false) {
-      batchMismatch++
-      continue
-    }
+    // 页脚校验码与当前批次不一致：**只记一笔提示**，这一页照常按"能不能用"来数
+    // （2026-10-15 口径，与重传 / 补传一致 —— 用户原话："批次校验的意义是啥，只要模板是我们提供的，
+    //   模板内的字都是一样的"）。原来这里 `continue`（把这一页当成不可用），后果是：重传收下一张
+    //   别的批次的纸之后，闸门会把整批判成"没有任何一页可用（全部识别失败）"—— 与"校验码不拦人"直接打架
+    //   （冒烟里抓到的真缺陷）。判断"这一页到底是哪些字"靠页号与参考字，不靠这个码。
+    if (row.batchMatch === false) batchMismatch++
     if (!row.ok || !page.ok) {
       // 单页失败：跳过并标红（决策 二-6：明确失败、提示重扫那一页）
       skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: page.reason || '这一页没能识别' })

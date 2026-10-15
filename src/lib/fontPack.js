@@ -57,22 +57,30 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
   return lines.filter((l) => l !== '').join('\n')
 }
 
-// 样张预览页：自包含（只引用同目录的字体文件），双击即可看
-export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, missingNote }) {
+// 样张预览页：自包含（默认只引用同目录的字体文件，双击即可看）
+// `fontDataUrl`（2026-10-15 新增）：把字体字节**内联**进页面（base64 data URL）——
+//   给"在新标签页里查看网页预览"用：那条路没有"同目录的字体文件"可引用（file:// 下 fetch 也被拦），
+//   不内联就只能看到回退后的系统字体，等于没预览。zip 里那一份仍走外链（体积小、可替换）。
+export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, missingNote, fontDataUrl = '' }) {
   const list = (coverage.chars || []).join('')
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  const fontSrc = fontDataUrl
+    ? "src: url('" + fontDataUrl + "') format('truetype');"
+    : "src: url('./" + esc(fileName) + ".woff2') format('woff2'),\n         url('./" + esc(fileName) +
+      ".woff') format('woff'),\n         url('./" + esc(fileName) + ".ttf') format('truetype');"
+  const subNote = fontDataUrl
+    ? '用这套手写体渲染的样张 —— 字体字节已经内联在这一页里，换台机器打开也是这个样子；共收录 ' + coverage.total + ' 个字。'
+    : '用这套手写体渲染的样张 —— 字体文件与本源张放在同一目录即可正常显示；共收录 ' + coverage.total + ' 个字。'
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>${esc(familyName)} 样张预览</title>
 <style>
-  /* 用包内字体渲染（字体文件要与本页放在同一目录） */
+  /* 用这套字体渲染（zip 里那一份引用同目录字体文件；"在新标签页查看"那一份把字节内联进来） */
   @font-face {
     font-family: '${esc(familyName)}';
-    src: url('./${esc(fileName)}.woff2') format('woff2'),
-         url('./${esc(fileName)}.woff') format('woff'),
-         url('./${esc(fileName)}.ttf') format('truetype');
+    ${fontSrc}
   }
   body { margin: 0; padding: 24px 28px; font-family: -apple-system, "Microsoft YaHei", sans-serif; color: #1f2329; }
   h1 { font-size: 16px; margin: 0 0 4px; }
@@ -87,7 +95,7 @@ export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, m
 </head>
 <body>
   <h1>${esc(familyName)}</h1>
-  <p class="sub">用这套手写体渲染的样张 —— 字体文件与本源张放在同一目录即可正常显示；共收录 ${coverage.total} 个字。</p>
+  <p class="sub">${esc(subNote)}</p>
 
   <h2>样张（大字）</h2>
   <p class="sample">${esc(sampleText)}</p>

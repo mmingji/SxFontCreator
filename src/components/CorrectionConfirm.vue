@@ -23,6 +23,10 @@ const initialStats = ref(null) // 配对初值的统计（用于提示"改动过
 // 并排核对表**默认收起**（2026-10-13 用户口径）：它一屏放不下，而"有多少个字要更正、更正册覆盖了几个"
 // 这两句在描述行里已经说清了 —— 想逐行核对再点开
 const tableOpen = ref(false)
+// 核对表**分页**（2026-10-14 用户口径："一页显示 20 条"）：全量下被圈字可能有几百条，
+//   一屏铺出来既看不到头也找不到刚才改到哪一行；分页之后每页 20 条，改派 / 删除照旧逐行做。
+const PAGE_SIZE = 20
+const tablePage = ref(1)
 // 按需重建缩略图的进度与失败原因（重建要解码这一页的掩膜，几十到几百毫秒）
 const rebuilding = ref({})
 const sheetError = ref({})
@@ -127,6 +131,17 @@ function setMessage(text, type) {
   messageType.value = type || 'info'
 }
 
+// ── 核对表分页（2026-10-14 用户口径：一页 20 条）──────────────────────────
+// 页码越界时（改了配对之后行数变少 / 换了被圈清单）自动退到最后一页，不留一个空白页
+const tablePageCount = computed(() => Math.max(1, Math.ceil(rows.value.list.length / PAGE_SIZE)))
+const pagedRows = computed(() => {
+  const from = (tablePage.value - 1) * PAGE_SIZE
+  return rows.value.list.slice(from, from + PAGE_SIZE)
+})
+watch(tablePageCount, (n) => { if (tablePage.value > n) tablePage.value = n })
+// 每次展开都从第 1 页看起（收起前的页码留着只会让人以为表头那几行丢了）
+watch(tableOpen, (open) => { if (open) tablePage.value = 1 })
+
 // 首次进入（或被圈清单变了）时算一次配对初值；**用户调整过就不覆盖**
 function ensurePairing(force) {
   const signature = (store.correction.circled || []).map((c) => c.pageNumber + ':' + c.mainCellIndex).join(',')
@@ -226,9 +241,13 @@ onMounted(() => {
 
 // 2026-10-11：更正核对并入「识别」这一步之后，本组件挂在识别页里、**不会再被重新挂载** ——
 // 识别结果一变（重新识别 / 重传某一页）必须自己跟上：重取缩略图 + 重算配对初值。
-// 签名只看"哪些页可用、每页被圈了哪些格"，这几项变了配对才需要重算（配对依赖被圈字清单）。
+// 签名只看"哪些页可用、每页被圈了哪些格、哪些页被判成重复页"，这几项变了配对才需要重算。
+// **2026-10-14 补 duplicateOf**：重复页是"不算可用"的那一类（被判重的页不参与配对候选），
+//   而这个字段是识别收尾时补写进 store 的 —— 它一变，配对就必须重算（否则配对还按 29 条被圈字算）。
 const scanSignature = computed(() => pages.value
-  .map((p) => p.fileIndex + ':' + (p.ok ? '1' : '0') + ':' + (p.markedCells || []).join('.'))
+  .map((p) => p.fileIndex + ':' + (p.ok ? '1' : '0') + ':' +
+    (p.duplicateOf === undefined || p.duplicateOf === null ? '' : p.duplicateOf) + ':' +
+    (p.markedCells || []).join('.'))
   .join('|'))
 watch(scanSignature, () => {
   restoreImages()
@@ -359,7 +378,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
           <span>#</span><span>主区（写错的字）</span><span>更正册（重写的字）</span><span>操作</span>
         </div>
         <div
-          v-for="row in rows.list"
+          v-for="row in pagedRows"
           :key="row.order"
           class="corr-row"
           :class="{ replaced: row.assigned !== null && row.cell, removed: row.assigned === null }"
@@ -419,6 +438,16 @@ function cellThumbStyle(fileIndex, cellIndex) {
             <button v-if="row.assigned !== null" class="text" type="button" @click="applyOverride(row.order, null)">删除这一对</button>
           </span>
         </div>
+      </div>
+
+      <!-- 分页（2026-10-14 用户口径：一页 20 条）—— 被圈字多时逐行核对才不会迷路；
+           上一页 / 下一页用默认文本色（这两个不是"推荐动作"，只是翻页） -->
+      <div v-if="tableOpen && rows.list.length > PAGE_SIZE" class="table-pager" data-role="correction-pager">
+        <button class="text" type="button" :disabled="tablePage <= 1" @click="tablePage--">上一页</button>
+        <span class="panel-hint">
+          第 {{ tablePage }} / {{ tablePageCount }} 页（共 {{ rows.list.length }} 对，每页 {{ PAGE_SIZE }} 对）
+        </span>
+        <button class="text" type="button" :disabled="tablePage >= tablePageCount" @click="tablePage++">下一页</button>
       </div>
 
       <p v-if="tableOpen && extraCells.length" class="panel-hint">

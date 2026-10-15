@@ -275,11 +275,13 @@ function drawReferenceChar(page, cell, char, font, glyphBoxes) {
  * @param {string[]} [options.chars] 要排入模板的字符（默认全量 8274 字，按官方笔画序分页）
  * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（TTF）
  * @param {boolean} [options.includeSelfCheck] 是否在文末附一页打印自检页（默认附）
+ * @param {number} [options.startPage] 起始页号（默认 1）。**重写模板**用它把页号接在现有纸之后 ——
+ *   页脚编的是"第几页"，接着编才不会与已经写过的纸撞号（撞号会被当成重复页去重掉）
  * @param {(done:number,total:number)=>void} [options.onProgress] 进度回调（按字表页）
  * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, batchCode:number}>}
  *   batchCode 是这一批选字清单的 12 位校验码：它同时印在页脚，识别时用来发现"扫描件与所选批次不匹配"（决策记录 八-10）
  */
-export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, onProgress }) {
+export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, startPage = 1, onProgress }) {
   const list = chars && chars.length ? chars : getAllChars()
   const perPage = LAYOUT.perPage
   const sheetPages = Math.max(1, Math.ceil(list.length / perPage))
@@ -299,7 +301,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   for (let p = 0; p < sheetPages; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
-    drawRegisterMarks(page, p + 1, batchCode)
+    drawRegisterMarks(page, startPage + p, batchCode)
     drawHint(page, font, PAGE_HINT_LINES)
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     for (let i = 0; i < slice.length; i++) {

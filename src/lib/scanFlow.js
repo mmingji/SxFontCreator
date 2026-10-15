@@ -43,6 +43,36 @@ export {
 // 单页重传（清单 一-8）替换完一页后要重算整批，界面不该为此再记一个模块入口
 export { summarizeBatch }
 
+/**
+ * 按页号给重复页打标（**就地**改 pages，返回 `{duplicates, groups}`）。
+ *
+ * 为什么要单独抽一份：这条判据有三个调用方 —— 整批识别收尾（`recognizeBatch`）、手选页序后重算
+ *   （`applyPageOrder`）、以及界面侧的「补传扫描件」（补进来的件可能与已有的页同号）。
+ *   三处必须**同一套判据**，否则卡片标记 / 统计 / 更正配对 / 字形计划会各说一套。
+ *
+ * `duplicates` 是给**主线程**用的（`[{fileIndex, duplicateOf}]`）：识别跑在 Worker 里时，逐页那一批
+ *   消息早就发走了（结构化克隆发生在那一刻，那时还没有 duplicateOf）—— 结论只能随收尾消息带回，
+ *   由 `store.applyScanDuplicates` 补写。不补的话，界面上连「重复页」都不会标（2026-10-14 真机缺陷）。
+ * @param {Array} pages 页记录（会被就地修改）
+ * @returns {{duplicates:Array<{fileIndex:number, duplicateOf:number}>, groups:Array}}
+ */
+export function markDuplicatePages(pages) {
+  const list = pages || []
+  // 先清后打：页号是分组依据，页序一改，"谁与谁同页"就变了，旧的标记必须先作废（否则留下一个与
+  // 当前页号无关的「重复页」—— 那一页就再也算不进统计了）
+  for (const p of list) if (p && p.duplicateOf !== undefined) delete p.duplicateOf
+  const dedupe = dedupeDuplicatePages(list)
+  const duplicates = []
+  for (const p of list) {
+    const adopted = dedupe.ignored.get(p.fileIndex)
+    if (adopted !== undefined) {
+      p.duplicateOf = adopted
+      duplicates.push({ fileIndex: p.fileIndex, duplicateOf: adopted })
+    }
+  }
+  return { duplicates, groups: dedupe.groups }
+}
+
 export const SCAN_DEFAULTS = {
   autoOrient: true, // 整页方向不对时自动纠正（决策 二-11）
   detectRedMarks: true, // 红圈识别 + 从笔迹里剔除（决策 二-12）
@@ -538,17 +568,14 @@ export async function recognizeBatch(files, options = {}) {
   // 为什么放在 summarizeBatch **之前**：汇总与闸门都要按"去重后的页"来数（可用页数、写出格数、被圈数、
   //   更正配对的候选），否则统计会翻倍错乱（用户真机实测：12 份同一张纸 → "被红笔圈 29 个"、
   //   配对表里同一个字出现四行、下面一大片"没有对应格"）。判据与字段口径见 scanMeta.dedupeDuplicatePages。
-  const dedupe = dedupeDuplicatePages(pages)
-  for (const p of pages) {
-    const adopted = dedupe.ignored.get(p.fileIndex)
-    if (adopted !== undefined) p.duplicateOf = adopted
-  }
+  // **2026-10-14 修**：结论要一起回传主线程（见下面 duplicates 的注释）。
+  const { duplicates } = markDuplicatePages(pages)
   const summary = summarizeBatch(pages, {
     expectedBatchCode,
     // 页数口径：有字序文件时以**文件声明的页数**为准（自检页的判据就靠它：页号超出字表页数即自检页）
     sheetPages: typeof opt.orderPages === 'number' ? opt.orderPages : (batch ? batch.pageCount : undefined)
   })
-  return { pages, caches, summary, chars, stopped }
+  return { pages, caches, summary, chars, stopped, duplicates }
 }
 
 /**
@@ -566,9 +593,11 @@ export function applyPageOrder(pages, overrides, chars, options = {}) {
       ? p.pageNumber <= options.sheetPages
       : p.isSheetPage
   }))
+  // 页号变了，"谁与谁同页"跟着变：去重必须重算（判据与整批识别那一处共用，见 markDuplicatePages）
+  const { duplicates } = markDuplicatePages(next)
   const summary = summarizeBatch(next, {
     expectedBatchCode: typeof options.expectedBatchCode === 'number' ? options.expectedBatchCode : null,
     sheetPages: options.sheetPages
   })
-  return { pages: next, summary }
+  return { pages: next, summary, duplicates }
 }

@@ -15,12 +15,14 @@
 // 版式：一行 25 字（用户 2026-10-07 拍板 A，与界面上的字网格、版权登记习惯一致，一眼能数出每行字数）。
 export const OVERVIEW_DEFAULTS = {
   cols: 25, // 一行 25 字
-  cellSize: 28, // 每格边长（像素）；字按它的 6/7 画，四周留 2 像素透气
+  cellSize: 28, // **基准**格边长（像素）：留白、标题、字号都按它与实际格宽的比例换算
   rowGap: 4, // 行与行之间额外留白
   padding: 20, // 图四周留白
   headerHeight: 84, // 标题区高度（标题 + 收录统计 + 收录范围三行）
   footerHeight: 48, // 页脚区（生成说明）
-  maxWidth: 2000, // 图的最大宽度：超了就整体等比缩小（避免以后"一行几十字"时图宽到没法用）
+  maxWidth: 2000, // 图的最大宽度：超了就缩小（避免以后"一行几十字"时图宽到没法用）
+  maxHeight: 16000, // 图的最大高度：**画布上限是 16384**，留一点余量
+  maxCellSize: 64, // 格子最大边长（一页 136 字时按预算放大到这里，观感才够看）
   background: '#ffffff',
   inkColor: '#111111',
   gridColor: '#e8e8e8', // 极淡的格子参考线（便于数行列）
@@ -53,10 +55,22 @@ export function planOverviewLayout({ count, options = {} }) {
   const cols = Math.max(1, Math.floor(opt.cols))
   const rows = Math.max(1, Math.ceil(n / cols))
 
-  const natural = measure(opt, cols, rows, opt.cellSize)
-  // 太宽就整体等比缩小（字号也跟着缩，版面比例不变）
-  const scale = natural.width > opt.maxWidth ? opt.maxWidth / natural.width : 1
-  const final = scale === 1 ? natural : measure(opt, cols, rows, opt.cellSize * scale)
+  // 格宽：在"宽度 ≤ maxWidth、高度 ≤ maxHeight"的预算里**尽量放大**（上限 maxCellSize）。
+  // 为什么要放大（2026-10-15 用户口径："字形总览预览图太小了"）：一页 136 字时旧口径只画到
+  //   740 × 364（一格 28 像素），在 2K 屏上就是一张邮票；按预算放大之后同一个字有 55 像素。
+  // 两个预算都是从 `measure()` 的等比关系里解出来的闭式解（版面比例不变）：
+  //   宽 = 格 × (2×padding + 列数×基准) / 基准；高 = 格 × (2×padding + 页眉 + 页脚 + 行数×行距) / 基准 + 行数×格
+  const base = opt.cellSize
+  const widthPerCell = (2 * opt.padding + cols * base) / base
+  const heightPerCell = (2 * opt.padding + opt.headerHeight + opt.footerHeight + rows * opt.rowGap) / base + rows
+  const wanted = Math.min(
+    opt.maxCellSize,
+    opt.maxWidth / widthPerCell,
+    (opt.maxHeight || Infinity) / heightPerCell
+  )
+  // 向下取整：宁可比预算小一点，也不因为取整顶破上限（画布有硬上限 16384）
+  const cell = Math.max(1, Math.floor(wanted))
+  const final = measure(opt, cols, rows, cell)
 
   const glyphs = []
   for (let i = 0; i < n; i++) {
@@ -68,7 +82,7 @@ export function planOverviewLayout({ count, options = {} }) {
     ...final,
     cols,
     rows,
-    scale,
+    scale: cell / base,
     fontSizes: fontSizes(final.cellSize),
     glyphs
   }
@@ -161,16 +175,23 @@ export async function renderOverviewPng(input) {
     })
     const fonts = layout.fontSizes
 
-    // ② 标题区（三行：标题 / 收录统计 / 收录范围）
+    // ② 标题区（三行：标题 / 收录统计 / 收录范围）——
+    // **2026-10-15 修**：原来"收录统计"与"收录范围"两行的 y 分别按 title / note 的倍数算，
+    //   而 note = 0.5 × cell、title = 1.0 × cell 时 `title × 1.2` 与 `note × 2.4` 恰好相等（都是 33.6）——
+    //   两行文字**永远重叠**（真机截图里标题下面那行小字糊成一团）。现在改成按"行高"从下往上排。
+    const noteLine = Math.round(fonts.note * 1.75)
+    const rangeY = layout.gridTop - noteLine
+    const subY = rangeY - noteLine
+    const titleY = Math.max(layout.gridLeft, subY - Math.round(fonts.title * 1.35))
     ctx.fillStyle = opt.titleColor
     ctx.textBaseline = 'top'
     ctx.textAlign = 'left'
     ctx.font = '600 ' + fonts.title + 'px "Microsoft YaHei", sans-serif'
-    ctx.fillText(texts.title, layout.gridLeft, layout.gridTop - Math.round(fonts.title * 2.4))
+    ctx.fillText(texts.title, layout.gridLeft, titleY)
     ctx.font = fonts.note + 'px "Microsoft YaHei", sans-serif'
     ctx.fillStyle = opt.noteColor
-    ctx.fillText(texts.sub, layout.gridLeft, layout.gridTop - Math.round(fonts.title * 1.2))
-    ctx.fillText(texts.range, layout.gridLeft, layout.gridTop - Math.round(fonts.note * 2.4))
+    ctx.fillText(texts.sub, layout.gridLeft, subY)
+    ctx.fillText(texts.range, layout.gridLeft, rangeY)
 
     // ③ 字形网格：极淡的格子参考线 + 每格一个字（按码点逐字画，代理对不会被拆坏）
     ctx.strokeStyle = opt.gridColor

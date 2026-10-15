@@ -420,6 +420,29 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
+    /**
+     * 补写「重复页」结论（2026-10-14 修一个真缺陷）。
+     * 为什么需要它：去重是在 Worker 的**逐页循环之后**算的，而每页的记录早在逐页那一刻就 post 过来了 ——
+     *   `duplicateOf` 不可能出现在那些消息里。不补写的话，界面上的「重复页」标记、可用页数、写出格数、
+     *   被圈数、更正配对全都按**未去重**的页算：真机上 12 份同一张纸让"被红笔圈 29 个"、
+     *   更正配对里同一个字出现四行、下面一大片"没有对应格"。
+     * @param {Array<{fileIndex:number, duplicateOf:number}>} duplicates
+     */
+    applyScanDuplicates(duplicates) {
+      const list = Array.isArray(duplicates) ? duplicates : []
+      const adopted = new Map(list.map((d) => [d.fileIndex, d.duplicateOf]))
+      // **整体重写**：先清掉所有页的旧标记再按新结论设置 —— 只加不清的话，"补传一张之后不再是重复页"
+      //   的那一页会永远挂着旧标记（它就再也算不进统计与配对了）
+      this.scan.pages = this.scan.pages.map((p) => {
+        const next = { ...p }
+        if (adopted.has(p.fileIndex)) next.duplicateOf = adopted.get(p.fileIndex)
+        else delete next.duplicateOf
+        return next
+      })
+      this.markDirty()
+      schedulePersist(this)
+    },
+
     // 用户手选页序（决策 二-7）：只对页脚读不出的页有效，重排后字与汇总判定都由组件算好再写回来
     setScanPageOrder({ overrides, pages, summary }) {
       this.scan.orderOverrides = overrides || {}

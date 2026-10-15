@@ -12,6 +12,7 @@
   --primary-dark: #2563eb;
   --success: #16a34a;
   --danger: #ef4444;
+  --warn: #b45309;
   --radius: 10px;
 }
 
@@ -553,6 +554,15 @@ label.text-file input {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 4px 10px;
+}
+
+/* 标题行右侧的动作位（2026-10-15）：「字体预览」这一行的
+   「查看字形总览 / 查看网页预览 / 下载 zip」—— 最后一个靠最右，与标题分列两端 */
+.panel-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
 }
 
 /* 步骤标题后面那句"这一步要干什么"（2026-10-07 从右上角移过来）：比正文轻、比标题更淡 */
@@ -1596,6 +1606,110 @@ button.text.accent:hover {
   gap: 8px;
 }
 
+/* ── 字形体检：两栏 tab + 表格（2026-10-15 用户口径）──────────────────────────
+   样式沿用第 2 步「更正核对表」那一套（`.corr-table`），但体检的行**不带底色** ——
+   核对表的浅绿 / 浅红表示"已替换 / 已删除"，体检清单里没有这层含义。 */
+.checkup-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.checkup-tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-2);
+  padding: 6px 12px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+
+.checkup-tab.active {
+  background: #fff;
+  border-color: var(--border);
+  border-bottom-color: #fff;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.checkup-table {
+  margin-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.checkup-head,
+.checkup-row {
+  grid-template-columns: 40px 44px 150px 1fr 200px;
+}
+
+.checkup-row .checkup-char {
+  font-size: 16px;
+}
+
+.checkup-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 批量动作与"体检已过期"提示同一行（2026-10-15 用户口径）：左边一句话、右边一排按钮 —— */
+.checkup-note-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eff6ff;
+  font-size: 12px;
+}
+
+.checkup-note-row .checkup-note-text {
+  flex: 1 1 320px;
+  min-width: 0;
+  color: var(--primary-dark);
+  line-height: 1.7;
+}
+
+.checkup-note-row .panel-actions {
+  margin: 0;
+}
+
+/* 行内"选文件"按钮（第 2 步的「补传扫描件」）：label 包一个隐藏的 input ——
+   看着与旁边的实体按钮一套，点它弹文件选择器 */
+.inline-file-button {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+}
+
+.inline-file-button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.inline-file-button.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.inline-file-button input[type='file'] {
+  display: none;
+}
+
 /* ── 字形体检清单（第 3 步，阶段三 3.2）────────────────────────────────────
    每条一行：字 + 位置 + 提示 + 处置按钮。字用大一号显示（要认得出是哪个字）。 */
 .checkup-group {
@@ -1652,6 +1766,30 @@ button.text.danger {
 
 button.text.danger:hover {
   color: #b91c1c;
+}
+
+/* 长表格的分页行（2026-10-14 用户口径：核对表与字形体检清单每页 20 条）——
+   翻页按钮用默认文本色（翻页不是"推荐动作"），中间那行说明占满剩余宽度 */
+.table-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 2px;
+}
+
+.table-pager .panel-hint {
+  margin: 0;
+  flex: 1 1 auto;
+  text-align: center;
+}
+
+/* 第 2 步按钮行里的提示（2026-10-14 用户口径）：与「开始识别 / 重新识别」同一行、紧跟按钮之后 ——
+   原来"还没有可识别的图片…"另占一整行橙色提示条，隔着半屏，看不出是在说那个按钮 */
+.scan-start-note {
+  margin: 0;
+  color: var(--warn);
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
 /* 2026-10-13：`.danger-zone` / `.inline-confirm` 两条样式随第 3 步的「清理数据」模块一起去掉了

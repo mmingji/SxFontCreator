@@ -139,9 +139,19 @@ async function handleBatch(msg) {
       }
     })
     // 主线程**直接用这一份汇总**（它自己的页记录也一样，但两处各算一遍只会多一处可能不一致的地方）。
-    // 中止过就单独发一条 stopped，让客户端知道"是停下来而不是跑完了"
+    // 中止过就单独发一条 stopped，让客户端知道"是停下来而不是跑完了"。
+    // `duplicates` 必须一起发（2026-10-14 修）：去重是在逐页循环**之后**算的，逐页那一批 page 消息里
+    //   还没有 `duplicateOf`，主线程的页记录只能靠这条消息补齐 —— 否则界面上的「重复页」标记、
+    //   统计与更正配对全按未去重的页算（真机表现：同一个字在配对表里出现四行）。
     if (res.stopped) post({ type: 'stopped', rid })
-    post({ type: 'done', rid, summary: res.summary, count: res.pages.length, stopped: res.stopped })
+    post({
+      type: 'done',
+      rid,
+      summary: res.summary,
+      count: res.pages.length,
+      stopped: res.stopped,
+      duplicates: res.duplicates || []
+    })
   } catch (e) {
     post({ type: 'error', rid, message: e && e.message ? e.message : String(e) })
   }

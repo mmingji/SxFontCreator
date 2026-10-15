@@ -11,12 +11,13 @@
 //   产物缓存（缩略图 / 掩膜）在 lib/scanCache.js，轻量页记录落盘在 store.scan —— 口径见 二-15 / 五-9。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { SCAN_DEFAULTS, applyPageOrder, evaluateRescanAccept, evaluateScanGate, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
+import { SCAN_DEFAULTS, applyPageOrder, evaluateRescanAccept, evaluateScanGate, markDuplicatePages, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
 import { cancelTask, recognizeBatchInWorker, recognizePageInWorker } from '../lib/scanWorkerClient.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { describeOrderFile } from '../lib/orderFile.js'
 import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, naturalCompare, pickScanInputs } from '../lib/scanInput.js'
+import { clearScanDirHandle, loadScanDirHandle, requestScanDirPermission, saveScanDirHandle } from '../lib/scanDirHandle.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { LAYOUT } from '../lib/layout.js'
 import CharReview from './CharReview.vue'
@@ -137,6 +138,9 @@ const reviewIndex = ref(null) // 打开逐格复核的页（fileIndex）
 const reviewOpen = ref(false)
 const message = ref('')
 const messageType = ref('info') // info | error | done
+// 按钮行里的提示（2026-10-14 用户口径）："还没有可识别的图片…"这类**与那一下点击直接相关**的话，
+// 放在「开始识别 / 重新识别」按钮后面，不再另占一行橙色提示条 —— 用户看到的就是"点了这里、为什么没动"
+const startNotice = ref('')
 const dragFrom = ref(null)
 const savedStats = ref(null) // 已落盘的字形统计（分片键里的字与体积）
 let cancelled = false
@@ -169,6 +173,17 @@ const runInfo = ref(null) // { stopped:boolean, pages:number, seconds:string }
 const pendingPick = ref(false)
 // 当前展示的结果是不是**现在这批**的：刚选完文件夹还没点识别时为假 —— 页卡片、更正核对、汇总都跟着它走
 const showResult = computed(() => pages.value.length > 0 && !pendingPick.value)
+// 更正册的识别结果（2026-10-13 用户口径：这一块要"包括更正册的识别结果"）——
+// 这里只说**识别事实**（更正册几页、写出几格）；"覆盖了几个被圈的字"属配对结论，在下面的更正核对里说。
+// **2026-10-14 用户口径**：这一段并进上面的识别汇总、一行展示（原来是下面另起一行）——
+//   "这一批跑出了什么"本来就是一件事，分两行反而要多读一遍。
+const correctionScanResult = computed(() => {
+  const list = pages.value.filter((p) => p.ok && p.kind === 'correction')
+  if (!list.length) return ''
+  let cells = 0
+  for (const p of list) for (const c of p.cells || []) if (c.verdict !== 'empty') cells++
+  return '更正册 ' + list.length + ' 页：写出 ' + cells + ' 格'
+})
 const runSummary = computed(() => {
   if (!showResult.value) return ''
   const g = gate.value
@@ -187,16 +202,9 @@ const runSummary = computed(() => {
     const dropped = pages.value.filter(isDuplicateDropped).length
     if (dropped) parts.push('其中 ' + dropped + ' 页是重复的、已自动忽略')
   }
-  return parts.join(' · ')
-})
-// 更正册的识别结果（2026-10-13 用户口径：这一块要"包括更正册的识别结果"）——
-// 这里只说**识别事实**（更正册几页、写出几格）；"覆盖了几个被圈的字"属配对结论，在下面的更正核对里说。
-const correctionScanResult = computed(() => {
-  const list = pages.value.filter((p) => p.ok && p.kind === 'correction')
-  if (!list.length) return ''
-  let cells = 0
-  for (const p of list) for (const c of p.cells || []) if (c.verdict !== 'empty') cells++
-  return '更正册 ' + list.length + ' 页：写出 ' + cells + ' 格'
+  // 更正册的识别结果接在汇总后面（同一条描述行、分号分隔 —— 2026-10-14 用户口径）
+  if (correctionScanResult.value) parts.push(correctionScanResult.value)
+  return parts.join('；')
 })
 
 // ── 页级结果里的"新模型"信息（定位到的字序 / 还要确认几格）──────────────────
@@ -276,10 +284,14 @@ watch(() => store.scan.batchId, (id) => {
 // 挂到 window 上是**唯一**能让自动化脚本介入的地方：系统目录对话框无法无人值守驱动，
 //   而识别这一整条链路（挑图片、读字序文件、逐页识别、落盘）都该被冒烟覆盖 —— 替换的只是"选目录"那一下。
 // 默认实现就是真实调用：拿目录句柄 → 读根层文件（lib/scanInput.js 的 collectDirectoryFiles）。
-let pickDirectoryImpl = async () => {
+// **句柄一起回传**（2026-10-14）：界面把它存进本机存储，刷新之后点「重新识别」就能直接
+//   对同一个文件夹再识别一次，不必让用户重选（见 lib/scanDirHandle.js）。
+async function pickDirectoryDefault() {
   const handle = await window.showDirectoryPicker({ mode: 'read' })
-  return await collectDirectoryFiles(handle)
+  const res = await collectDirectoryFiles(handle)
+  return { ...res, handle }
 }
+let pickDirectoryImpl = pickDirectoryDefault
 
 /** 选一个文件夹：拿到文件清单后统一走 applyDirFiles() */
 async function onPickDirClick() {
@@ -288,11 +300,45 @@ async function onPickDirClick() {
   try {
     const res = await pickDirectoryImpl()
     if (!res) return // 用户取消（AbortError 由下面接住，这里兜住"返回空"的实现）
+    // 记下句柄（不 await、也不提示失败：它只是"刷新后省一次点击"，坏了不影响任何功能）
+    if (res.handle) saveScanDirHandle(res.handle)
     applyDirFiles(res.files || [], res.folderName || '', res.subdirFiles || 0)
   } catch (e) {
     // 用户点了取消：不是错误，什么都不做（静默返回，界面不弹红字）
     if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return
     setMessage('读取文件夹失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    readingDir.value = false
+  }
+}
+
+/**
+ * 刷新页面之后点「重新识别」：**直接对上次那个文件夹再识别一次**（2026-10-14 用户口径）。
+ * 为什么能做到：选文件夹时把目录句柄存了本机（lib/scanDirHandle.js）。刷新后权限回到 prompt，
+ *   而点这个按钮正是"用户手势"—— 就在这里申请一次读取权限。
+ * 拿不回权限 / 浏览器存不了句柄时**不静默**：给一句中文提示，让用户点「重选文件夹」，
+ *   并说明这是浏览器的限制（不是程序坏了）。
+ * @returns {Promise<boolean>} 文件清单是否已经恢复（true 时调用方继续识别）
+ */
+async function recoverDirFromHandle() {
+  readingDir.value = true
+  startNotice.value = ''
+  try {
+    const handle = await loadScanDirHandle()
+    if (!handle) return false
+    const granted = await requestScanDirPermission(handle)
+    if (!granted) {
+      startNotice.value = '上次那个文件夹还没有读取授权：点左边的「' + pickBtnName.value +
+        '」再选一次就行（浏览器只允许在你亲自点击时读取它）'
+      return false
+    }
+    const res = await collectDirectoryFiles(handle)
+    await applyDirFiles(res.files || [], res.folderName || '', res.subdirFiles || 0)
+    return files.value.length > 0
+  } catch (e) {
+    startNotice.value = '上次那个文件夹读不了了（' + (e && e.message ? e.message : e) +
+      '）：点左边的「' + pickBtnName.value + '」再选一次'
+    return false
   } finally {
     readingDir.value = false
   }
@@ -404,32 +450,47 @@ function removeOrderCandidate(file) {
 // 2026-10-14 用户口径：**识别过之后按钮就改名**（"选择文件夹"→"重选文件夹"、"开始识别"→"重新识别"），
 //   刷新页面也一样 —— 判据是**落盘的识别来源**（store.scan.source），不是内存里有没有选过文件。
 const pickedOnce = computed(() => !!storedSource.value || pages.value.length > 0 || !!scanInput.value)
+// 「选择文件夹」只在**没选过**的时候这么说；选过（或刷新后还记着上次那个文件夹）就叫「重选文件夹」，
+// 因为它真的会再弹一次系统对话框（判定用落盘的识别来源，刷新后也保持）
+// 注意：**提示文案里要用 pickBtnName，不要用 pickLabel** —— 后者在读取期间会变成"正在读取…"，
+// 写进"请点左边的「…」"就成了一句看不懂的话（2026-10-15 自查发现）
+const pickBtnName = computed(() => (pickedOnce.value ? '重选文件夹' : '选择文件夹'))
 const pickLabel = computed(() => {
   if (readingDir.value) return '正在读取…'
-  return pickedOnce.value ? '重选文件夹' : '选择文件夹'
+  return pickBtnName.value
 })
-const startLabel = computed(() => (pickedOnce.value ? '重新识别' : '开始识别'))
+// 「开始识别 / 重新识别」的改名时机（2026-10-14 用户口径，**修订 八-18 ㉟②**）：
+//   判据是"**这一批**有没有识别结果"，不是"选过没选过文件夹" —— 刚选完文件夹（结果已收起）、
+//   或换了一个文件夹时，按钮回到「开始识别」；识别结束之后才叫「重新识别」。
+//   （旧口径按 pickedOnce 改名，于是"第二次选择文件夹后"按钮仍写着「重新识别」，用户当场指出不对。）
+const hasRunResult = computed(() => pages.value.length > 0 && !pendingPick.value)
+const startLabel = computed(() => (hasRunResult.value ? '重新识别' : '开始识别'))
 
 onMounted(() => {
   // 给自动化脚本留一个注入口（默认是真实实现）：见上面 pickDirectoryImpl 的注释
   window.__sxScanPickDir = {
     set(fn) { pickDirectoryImpl = typeof fn === 'function' ? fn : pickDirectoryImpl },
-    reset() {
-      pickDirectoryImpl = async () => {
-        const handle = await window.showDirectoryPicker({ mode: 'read' })
-        return await collectDirectoryFiles(handle)
-      }
-    }
+    // 复位走**同一份默认实现**（不再在这里抄一遍"弹对话框 + 读文件"）——
+    // 抄一遍就会多一处"改了默认实现却忘了这里"的地方，而这里正是自动化脚本复位后要用的那条路
+    reset() { pickDirectoryImpl = pickDirectoryDefault }
   }
 })
 
 async function start(options = {}) {
   if (running.value) return
+  // 没有文件时**先试"用上次那个文件夹"**（2026-10-14 用户口径）：刷新页面之后点「重新识别」，
+  // 程序应当直接对已选的文件夹再识别一次，而不是让用户重选一遍。句柄存在本机、权限在这个手势里申请；
+  // 恢复不了（没存过 / 权限被拒 / 浏览器存不了句柄）才给提示，并说清那是浏览器的限制。
   if (!files.value.length) {
-    setMessage('还没有可识别的图片：先点「' + pickLabel.value + '」选一次扫描件所在的文件夹' +
-      (pickedOnce.value ? '（刷新页面之后要重选一次）' : ''), 'error')
-    return
+    const recovered = await recoverDirFromHandle()
+    if (!recovered) {
+      if (!startNotice.value) {
+        startNotice.value = '还没有可识别的图片：点左边的「' + pickBtnName.value + '」选一次扫描件所在的文件夹'
+      }
+      return
+    }
   }
+  startNotice.value = ''
   // 2026-10-13 用户口径：**第 3 步已经有生成信息时，重新识别要先问一句** ——
   //   整批重新识别会把那份字体产物与体检清单一起清掉（`store.beginScanRun` 里 clearFont()）。
   //   用户点「继续识别」才真的开始（skipConfirm 由弹窗传进来）。
@@ -537,6 +598,10 @@ async function start(options = {}) {
       }
     })
     store.finishScanRun({ summary: res.summary })
+    // 重复页的结论要**补写回页记录**（2026-10-14 修一个真缺陷）：去重是在 Worker 的逐页循环之后才
+    //   算出来的，逐页那批消息里还没有 duplicateOf —— 不补写的话，卡片不标「重复页」、统计与更正配对
+    //   全按未去重的页算（真机：12 份同一张纸 → "被红笔圈 29 个"、配对里同一个字出现四行）
+    store.applyScanDuplicates(res.duplicates)
     const secs = ((performance.now() - t0) / 1000).toFixed(1)
     // 落盘自检（2026-10-13）：识别完成之后再核一遍"有结果的页是不是都落盘了" ——
     //   漏落盘的后果是**刷新之后那几页的字形再也找不回来**（字体里会少几个字，更正核对里那一列图是空的）。
@@ -609,83 +674,161 @@ function clearAll() {
 //   ② **复用原页的 fileIndex**：分片键（`sxfont.glyphs.v1.<批次>.<fileIndex>`）与内存缓存都按它命名，
 //      复用即"原地覆盖"，页序机制一行都不用动；
 //   ③ 整页失败、或页脚校验码与当前用的批次不符 → **明确失败、不写入**（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）。
-const rescanning = ref(null) // 正在重传的页 fileIndex（同一时刻只允许一页在跑）
+const rescanning = ref(null) // 正在重传 / 补传（同一时刻只允许一件在跑；'supplement' 表示补传那一批）
 
+/**
+ * 单页识别 → 归位 → 落盘（**「重传」与「补传扫描件」共用这一条**，2026-10-15 用户口径：
+ *   "卡片上的重传的逻辑应该和补传扫描件的逻辑保持一致"）。
+ *
+ * 归位规则（两者的差别只在这里）：
+ *   · 传了 `fileIndex`（重传）：**原地覆盖**原来那一页 —— 卡片位置不跳、页序机制一行不动；
+ *   · 没传（补传）：**按识别出的页号找同一个位置** —— 已经有这一页就覆盖它（连同落盘字形），
+ *     没有就追加成一页新的。
+ * 收不收这一页只由 `evaluateRescanAccept` 判（2026-10-15 起**不再用页脚校验码拦**，只拒"整页没识别"）。
+ *
+ * @param {File} file 新扫的那一张
+ * @param {object} [opts]
+ * @param {number|null} [opts.fileIndex] 指定落点（重传传原页的 fileIndex）
+ * @param {number|null} [opts.fallbackPageNumber] 页脚读不出时的兜底页号（重传传原页的页号）
+ * @returns {Promise<{ok:boolean, reason?:string, replaced?:boolean, target?:number,
+ *   pageNumber?:number|null, written?:number, marked?:number, markedCells?:string}>}
+ */
+async function ingestOnePage(file, opts = {}) {
+  // 批次是内部容器：这里也取一次（复用最近一个，或自动补一个）—— 字形分片键是「批次 + 页序」，
+  // 批次为空会落成 `default` 键，之后既不属于任何批次、也没有入口能清掉（冒烟里踩到过）
+  const currentBatch = store.ensureScanBatch()
+  const expectedBatchCode = currentBatch && typeof currentBatch.batchCode === 'number' ? currentBatch.batchCode : null
+  const { record, cache } = await recognizePageInWorker(file, {
+    chars: chars.value,
+    // 字序来源与整批识别一致：文件夹里有字序文件就按文件定（决策 一-18），没有才走"认纸面参考字"
+    // （否则这一页的字会退回按**批次的全局字序**取 —— 自定义选字的纸会被张冠李戴）
+    orderChars: orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : '',
+    orderPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined,
+    expectedBatchCode,
+    fileIndex: opts.fileIndex === null || opts.fileIndex === undefined ? undefined : opts.fileIndex,
+    pageNumberOverride: opts.fallbackPageNumber || undefined,
+    onStage: (text) => setMessage('正在识别「' + file.name + '」：' + text, 'info')
+  })
+  const verdict = evaluateRescanAccept({ record })
+  if (!verdict.accept) return { ok: false, reason: verdict.message }
+
+  // 落点：指定了就用它；否则按"页号 + 件类型"找同页（更正册只能落在更正册页上）
+  let target = opts.fileIndex
+  if (target === null || target === undefined) {
+    const same = store.scan.pages.find((p) => p.ok && p.pageNumber &&
+      p.pageNumber === record.pageNumber &&
+      (p.kind === 'correction') === (record.kind === 'correction'))
+    target = same ? same.fileIndex : store.scan.pages.reduce((m, p) => Math.max(m, p.fileIndex), -1) + 1
+  }
+
+  const saved = await savePageGlyphs({
+    batchId: store.scan.batchId,
+    fileIndex: target,
+    pageNumber: record.pageNumber,
+    glyphs: (cache.masks || []).map((m) => ({
+      char: m.char,
+      cellIndex: m.index,
+      mask: m.mask,
+      width: m.width,
+      height: m.height,
+      boxInSlice: m.boxInSlice
+    }))
+  })
+  if (!saved.ok) {
+    setMessage('这一页识别成功，但字形落盘失败（结果只在内存里，刷新会丢）：' + saved.error, 'error')
+  }
+
+  const nextPages = store.scan.pages.map((p) => (p.fileIndex === target ? record : p))
+  if (!nextPages.some((p) => p.fileIndex === target)) nextPages.push(record)
+  // 归位之后要重算两件事，判据都与整批识别共用：
+  //   ① 重复页去重（补进来的件可能与已有的页同号 —— 采用哪一份要跟着重挑）
+  //   ② 整批汇总（页号重复 / 缺页 / 收批闸门都读它）
+  const { duplicates } = markDuplicatePages(nextPages)
+  const summary = summarizeBatch(nextPages, {
+    expectedBatchCode,
+    sheetPages: batch.value ? batch.value.pageCount : undefined
+  })
+  putPageCache(target, cache)
+  images.value = { ...images.value, [target]: { thumb: cache.thumb, sheet: cache.sheet } }
+  if (openIndex.value === target) openIndex.value = null
+  zoomIndex.value = null
+  const res = store.replaceScanPage({ fileIndex: target, record, summary })
+  store.applyScanDuplicates(duplicates)
+  savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
+  return {
+    ok: true,
+    replaced: res.replaced,
+    target,
+    pageNumber: record.pageNumber,
+    written: record.counts.written,
+    marked: record.counts.marked,
+    markedCells: (record.markedCells || []).join(',')
+  }
+}
+
+/** 重传这一页（清单 一-8）：入口在每张结果卡片上，点它会弹文件选择器挑新扫的那一张 */
 async function rescanPage(page, event) {
   const file = (event.target.files || [])[0]
   event.target.value = '' // 清空，便于再选同一个文件
   if (!file || running.value || rescanning.value !== null) return
-  // 批次是内部容器：重传前也取一次（复用最近一个，或自动补一个）—— 字形分片键是「批次 + 页序」，
-  // 批次为空会落成 `default` 键，之后既不属于任何批次、也没有入口能清掉（冒烟里踩到过）
-  const currentBatch = store.ensureScanBatch()
   rescanning.value = page.fileIndex
-  setMessage('正在重传第 ' + (page.pageNumber || '?') + ' 页（' + file.name + '）…', 'info')
+  const markedBefore = (page.markedCells || []).join(',')
   try {
-    const expectedBatchCode = currentBatch && typeof currentBatch.batchCode === 'number' ? currentBatch.batchCode : null
-    // 重传这一页也走 Worker（决策 六-15）与同一个字序来源：文件夹里有字序文件就按文件定（决策 一-18），
-    // 没有才走"认纸面参考字"（否则这一页的字会退回按**批次的全局字序**取 —— 自定义选字的纸会被张冠李戴）
-    const { record, cache } = await recognizePageInWorker(file, {
-      chars: chars.value,
-      orderChars: orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : '',
-      orderPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined,
-      expectedBatchCode,
-      fileIndex: page.fileIndex, // 复用原页序号：分片键与缓存键都按它覆盖
-      pageNumberOverride: page.pageNumber || undefined,
-      onStage: (text) => setMessage('正在重传第 ' + (page.pageNumber || '?') + ' 页（' + file.name + '）：' + text, 'info')
-    })
-    if (!record.ok) {
-      setMessage('这一页没能识别：' + record.reason + '。原来的结果与字形都没动，可以重扫一页再试', 'error')
+    const r = await ingestOnePage(file, { fileIndex: page.fileIndex, fallbackPageNumber: page.pageNumber })
+    if (!r.ok) {
+      setMessage(r.reason, 'error')
       return
-    }
-    // 收不收这一页的判据抽在 scanMeta.evaluateRescanAccept 里（纯函数、有单测）：
-    // 整页失败与校验码不符都属"明确失败、不写入"（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）
-    const verdict = evaluateRescanAccept({ record, batchCode: currentBatch ? currentBatch.batchCode : null })
-    if (!verdict.accept) {
-      setMessage(verdict.message, 'error')
-      return
-    }
-    const saved = await savePageGlyphs({
-      batchId: store.scan.batchId,
-      fileIndex: page.fileIndex,
-      pageNumber: record.pageNumber,
-      glyphs: (cache.masks || []).map((m) => ({
-        char: m.char,
-        cellIndex: m.index,
-        mask: m.mask,
-        width: m.width,
-        height: m.height,
-        boxInSlice: m.boxInSlice
-      }))
-    })
-    if (!saved.ok) {
-      setMessage('这一页识别成功，但字形落盘失败（结果只在内存里，刷新会丢）：' + saved.error, 'error')
     }
     // 被圈字变了 → 之前的更正配对失效（配对依赖被圈字清单）：清掉并明确提示去下面的更正核对重来
-    const markedChanged = (page.markedCells || []).join(',') !== (record.markedCells || []).join(',')
+    const markedChanged = markedBefore !== r.markedCells
     if (markedChanged) store.resetCorrection()
-    // 重算整批汇总（页号重复 / 批次码不符 / 缺页 / 收批闸门都读它）；顺序保持原位置，不把这一页挪到最后
-    const nextPages = store.scan.pages.map((p) => (p.fileIndex === page.fileIndex ? record : p))
-    if (!nextPages.some((p) => p.fileIndex === page.fileIndex)) nextPages.push(record)
-    const summary = summarizeBatch(nextPages, {
-      expectedBatchCode,
-      sheetPages: batch.value ? batch.value.pageCount : undefined
-    })
-    putPageCache(page.fileIndex, cache)
-    images.value = { ...images.value, [page.fileIndex]: { thumb: cache.thumb, sheet: cache.sheet } }
-    if (openIndex.value === page.fileIndex) openIndex.value = null
-    zoomIndex.value = null
-    const res = store.replaceScanPage({ fileIndex: page.fileIndex, record, summary })
-    savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
     setMessage(
-      '已重传第 ' + (record.pageNumber || page.pageNumber || '?') + ' 页（' + file.name + '）：写出 ' +
-        record.counts.written + ' 格 / 被圈 ' + record.counts.marked + ' 个' +
-        (res.replaced ? '' : '（结果里原本没有这一页，已补上）') +
+      '已重传第 ' + (r.pageNumber || page.pageNumber || '?') + ' 页（' + file.name + '）：写出 ' +
+        r.written + ' 格 / 被圈 ' + r.marked + ' 个' +
         (markedChanged ? '。这一页的被圈字有变化，之前的更正配对已作废，请在下面的「更正核对」里重新核对' : '') +
         '。这一页的字形已更新，字体要重新生成才生效',
       markedChanged ? 'info' : 'done'
     )
   } catch (e) {
     setMessage('重传失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    rescanning.value = null
+  }
+}
+
+/**
+ * 补传扫描件（2026-10-15 用户口径）：识别跑完之后又补扫了几页 —— 把那些件一次丢进来即可，
+ * 不必整批重来。归位规则与「重传」完全一致（见 ingestOnePage）：**同一页就覆盖、新页就追加**。
+ * 补完会同步作废第 3 步的字体产物与体检清单（`replaceScanPage` 里做的），并当场给一句提示。
+ */
+async function supplementFiles(event) {
+  const list = Array.from(event.target.files || [])
+  event.target.value = ''
+  if (!list.length || running.value || rescanning.value !== null) return
+  rescanning.value = 'supplement'
+  let added = 0
+  let replaced = 0
+  const failed = []
+  try {
+    for (const file of list) {
+      try {
+        const r = await ingestOnePage(file)
+        if (!r.ok) {
+          failed.push(file.name + '：' + r.reason)
+          continue
+        }
+        if (r.replaced) replaced++
+        else added++
+      } catch (e) {
+        failed.push(file.name + '：' + (e && e.message ? e.message : e))
+      }
+    }
+    setMessage(
+      '补传完成：新增 ' + added + ' 页' + (replaced ? '、覆盖 ' + replaced + ' 页' : '') +
+        (failed.length ? '；' + failed.length + ' 张没能收下（' + failed.join('；') + '）' : '') +
+        '。第 3 步的字体产物与体检清单已作废，回第 3 步点「生成字体」重新生成一次即生效',
+      failed.length ? 'info' : 'done'
+    )
   } finally {
     rescanning.value = null
   }
@@ -698,6 +841,8 @@ function applyOrder(overrides, note) {
     expectedBatchCode: batch.value ? batch.value.batchCode : undefined
   })
   store.setScanPageOrder({ overrides, pages: next.pages, summary: next.summary })
+  // 改了页序，"谁与谁同页"就变了：去重结论一并重算写回（applyPageOrder 里重跑过 dedupeDuplicatePages）
+  store.applyScanDuplicates(next.duplicates)
   if (note) setMessage(note, 'info')
 }
 function onOrderInput(page, value) {
@@ -975,11 +1120,33 @@ const zoomIsMarkedLabel = computed(() => {
           class="primary"
           data-role="scan-start"
           :disabled="running || readingDir"
-          :title="files.length ? '' : '还没有选文件夹：先点左边的「重选文件夹」'"
+          :title="files.length ? '' : '还没有文件：点左边的「' + pickBtnName + '」选一个文件夹；直接点本按钮会先试着用上次那个文件夹'"
           @click="start()"
         >{{ startLabel }}</button>
         <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
+        <!-- 补传扫描件（2026-10-15 用户口径）：识别跑完之后又补扫了几页时用 ——
+             把那些件一次丢进来，按页号归位（**同一页就覆盖、新的一页就追加**，与卡片上的「重传」同一条逻辑），
+             补完会作废第 3 步的字体产物并给提示，不必整批重来 -->
+        <label
+          v-if="showResult"
+          class="inline-file-button"
+          :class="{ disabled: running || rescanning !== null }"
+          data-role="supplement-pages"
+          title="补扫的页丢进来：按页号归位（已有这一页就覆盖它、没有就追加一页）；补完第 3 步的字体要重新生成"
+        >
+          {{ rescanning === 'supplement' ? '补传中…' : '补传扫描件' }}
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            :disabled="running || rescanning !== null"
+            @change="supplementFiles"
+          />
+        </label>
         <span v-if="readingDir" class="panel-hint">正在读取文件夹…</span>
+        <!-- 与这一下点击直接相关的话放在按钮后面（2026-10-14 用户口径）：
+             "还没有可识别的图片…"原来另占一整行橙色提示条，离按钮很远 -->
+        <span v-if="startNotice" class="panel-hint scan-start-note" data-role="start-notice">{{ startNotice }}</span>
         <!-- 只有缺 showDirectoryPicker 的浏览器才说这一句（Firefox / Safari 走 <input webkitdirectory> 退路） -->
         <span v-if="!canPickDirectory" class="panel-hint" data-role="no-dir-picker">
           这台浏览器没有系统文件夹对话框（Firefox / Safari 不支持），这里改用普通文件夹选择器，功能一样；想要系统对话框请用 Chrome 或 Edge（86+）。
@@ -1015,20 +1182,22 @@ const zoomIsMarkedLabel = computed(() => {
            上一批的汇总 / 拦下结论 / 卡片都收起来 —— 下面那段"选好文件夹后点「开始识别」…"就是这一步的引导 -->
 
       <template v-if="showResult">
-        <!-- 三行描述：识别汇总 → 更正册的识别结果 → 字形落盘 -->
+        <!-- 两行描述：识别汇总（含更正册的识别结果，分号分隔）→ 字形落盘 -->
         <p v-if="runSummary" class="panel-hint" data-role="run-summary">{{ runSummary }}</p>
-        <p v-if="correctionScanResult" class="panel-hint" data-role="correction-scan-result">{{ correctionScanResult }}</p>
         <p v-if="savedStats && savedStats.glyphs" class="panel-hint" data-role="glyph-saved">
           字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
           —— <strong>刷新或关掉浏览器后不用重扫</strong>
         </p>
 
         <!-- 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
-             逐页的"跳过：第 N 个文件…"清单收进「看跳过的 N 页」弹窗 —— 它常常几十条、原因还一模一样 -->
-        <ul v-if="gate.blockers.length" class="scan-problems">
+             逐页的"跳过：第 N 个文件…"清单收进「看跳过的 N 页」弹窗 —— 它常常几十条、原因还一模一样。
+             **识别进行中一律不下结论**（2026-10-15 用户口径）：闸门读的是"当前已识别的那些页"，
+             跑到一半时"只有更正册可用"这类话必然出现 —— 那只是"主区那几张还没轮到"，
+             摆在界面上就是误导（真机上扫到一半就弹这条）。 -->
+        <ul v-if="!running && gate.blockers.length" class="scan-problems">
           <li v-for="(text, i) in gate.blockers" :key="'b' + i" class="error">拦下：{{ text }}</li>
         </ul>
-        <ul v-if="gate.notes.length" class="scan-problems">
+        <ul v-if="!running && gate.notes.length" class="scan-problems">
           <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
         </ul>
         <!-- 识别进行中不给"可以继续"这类结论（2026-10-13 用户口径：还没结束，别下结论） -->
@@ -1097,8 +1266,8 @@ const zoomIsMarkedLabel = computed(() => {
         </div>
         <p class="scan-card-stats">
           <template v-if="isDuplicateDropped(page)">
-            这一页与「{{ adoptedName(page) }}」的页号相同：已自动忽略（结果里用的是那一份）；
-            想改用这一份，就在「看文件清单」里去掉那一张再识别
+            这一页与「{{ adoptedName(page) }}」的页号相同：已自动忽略（结果里用的是那一份 ——
+            程序按"认出的红圈数 → 能用的字形数"挑的）；想改用这一份，就在「看文件清单」里去掉那一张再识别
           </template>
           <template v-else-if="page.ok">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span

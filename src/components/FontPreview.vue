@@ -115,10 +115,15 @@ function clearText() {
 
 <template>
   <div class="font-preview">
-    <!-- 标题行（2026-10-14 用户口径：这里只留标题 —— "收录情况"那句话挪到了「生成结果」标题后面） -->
+    <!-- 标题行（2026-10-15 用户口径）：左边「字体预览」四个字，右边由父组件塞进来的动作
+         （查看字形总览 / 查看网页预览 / 下载 zip，最右那个是主按钮）——
+         这一块现在**同时承担「生成结果」**（那个独立框已并入这里） -->
     <div class="panel-head">
       <h3>字体预览</h3>
+      <span class="panel-head-actions"><slot name="head-actions" /></span>
     </div>
+    <!-- 标题下面第一行：生成成功的结论（"字体已生成：…"，由父组件给） -->
+    <slot name="head-note" />
 
     <div v-if="!bytes" class="panel-actions">
       <button type="button" class="text accent" :disabled="loading" @click="emit('request-bytes')">加载预览</button>
