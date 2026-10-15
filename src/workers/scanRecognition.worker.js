@@ -1,4 +1,4 @@
-// 识别链路的 Web Worker（决策 六-15：把四段重计算搬出主线程）
+﻿// 识别链路的 Web Worker（决策 六-15：把四段重计算搬出主线程）
 //
 // 职责：收下「图片字节 + 参数」，在 Worker 里跑完一页的
 //   预处理 → 切格（含方向自动纠正）→ 认参考字与定字序 → 红圈识别 → 字形提取 → 缩略图 PNG，
@@ -162,12 +162,21 @@ async function handleBatch(msg) {
 self.onmessage = (event) => {
   const msg = event.data || {}
   if (msg.type === 'cancel') {
+    // 中止请求：**只置标志、不回话**（决策 二-18：当前这一页处理完就停，不打断正在跑的那一页）。
+    // 这里绝不能顺手把标志清掉 —— 它由 `handleBatch` 在每页开始前读（`shouldStop`）
     cancelled = true
     return
   }
-  cancelled = false
-  if (msg.type === 'page') return void handlePage(msg)
-  if (msg.type === 'batch') return void handleBatch(msg)
+  if (msg.type === 'page') {
+    cancelled = false
+    return void handlePage(msg)
+  }
+  if (msg.type === 'batch') {
+    // 新一轮开始才清标志（2026-10-15 收紧：原来任何非 cancel 消息都会清它 ——
+    //   将来再加一种消息类型，就会把刚收到的中止请求悄悄吞掉）
+    cancelled = false
+    return void handleBatch(msg)
+  }
 }
 
 // 兜底：任何在 promise 之外冒出来的异常都要**回一句话给主线程**，否则界面会一直停在"正在…"上

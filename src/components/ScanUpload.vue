@@ -144,6 +144,8 @@ const messageType = ref('info') // info | error | done
 const startNotice = ref('')
 const dragFrom = ref(null)
 const savedStats = ref(null) // 已落盘的字形统计（分片键里的字与体积）
+// 已请求中止、还在等这一页跑完（2026-10-15 用户口径："点中止第一次像没反应" —— 立即给按钮与进度行一个反馈）
+const stopping = ref(false)
 let cancelled = false
 
 const pages = computed(() => store.scan.pages)
@@ -197,7 +199,8 @@ const correctionScanResult = computed(() => {
 //   且没有任何记录"）：页记录其实是**逐页落盘**的（每页一次 400ms 防抖写），所以已识别的页与字形都还在；
 //   缺的只是"整批汇总"——它是收尾时才写的（`finishScanRun`），而 `beginScanRun` 会把它清空。
 //   拿它当"这一批跑完了没有"的判据最干净：有页、没有汇总 = 上一轮被打断了。
-const interruptedRun = computed(() => !running.value && pages.value.length > 0 && !store.scan.summary)
+const interruptedRun = computed(() => !running.value && pages.value.length > 0 &&
+  (!store.scan.summary || store.scan.stopped))
 const runSummary = computed(() => {
   if (!showResult.value) return ''
   const g = gate.value
@@ -613,7 +616,7 @@ async function start(options = {}) {
         savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
       }
     })
-    store.finishScanRun({ summary: res.summary })
+    store.finishScanRun({ summary: res.summary, stopped: res.stopped })
     // 重复页的结论要**补写回页记录**（2026-10-14 修一个真缺陷）：去重是在 Worker 的逐页循环之后才
     //   算出来的，逐页那批消息里还没有 duplicateOf —— 不补写的话，卡片不标「重复页」、统计与更正配对
     //   全按未去重的页算（真机：12 份同一张纸 → "被红笔圈 29 个"、配对里同一个字出现四行）
@@ -637,6 +640,7 @@ async function start(options = {}) {
     setMessage('识别失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
     running.value = false
+    stopping.value = false
     setScanRunning(false)
     stage.value = ''
   }
@@ -645,7 +649,11 @@ async function start(options = {}) {
 function stop() {
   cancelled = true
   // 中止请求要**跨线程**送过去（决策 六-15 ③）：Worker 是消息驱动的，所以它在两步之间才会看到 ——
-  // 表现与旧口径完全一致："当前这一页处理完就停"（不打断正在跑的那一页）
+  // 表现与旧口径完全一致："当前这一页处理完就停"（不打断正在跑的那一页，一页最多约 2 秒）。
+  // **2026-10-15 用户反馈"点中止第一次像没反应"**：那两秒里界面上什么都没有变，所以现在：
+  //   ① 按钮立刻变成「正在中止…」并禁点（避免连点）；② 进度行末尾挂一句"已请求中止…"；
+  //   ③ 收尾之后由 `scan-interrupted` 那条提示条给出最终结论（中止已落盘，刷新也还在）。
+  stopping.value = true
   cancelTask()
   setMessage('已请求中止：当前这一页处理完就停（已识别的页会保留）', 'info')
 }
@@ -1184,7 +1192,7 @@ const zoomIsMarkedLabel = computed(() => {
           :title="files.length ? '' : '还没有文件：点左边的「' + pickBtnName + '」选一个文件夹；直接点本按钮会先试着用上次那个文件夹'"
           @click="start()"
         >{{ startLabel }}</button>
-        <button v-if="running" type="button" data-role="scan-stop" @click="stop">中止</button>
+        <button v-if="running" type="button" data-role="scan-stop" :disabled="stopping" @click="stop">{{ stopping ? '正在中止…' : '中止' }}</button>
         <!-- 补传扫描件（2026-10-15 用户口径）：识别跑完之后又补扫了几页时用 ——
              把那些件一次丢进来，按页号归位（**同一页就覆盖、新的一页就追加**，与卡片上的「重传」同一条逻辑），
              补完会作废第 3 步的字体产物并给提示，不必整批重来 -->
@@ -1249,10 +1257,12 @@ const zoomIsMarkedLabel = computed(() => {
           字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
           —— <strong>刷新或关掉浏览器后不用重扫</strong>
         </p>
-        <!-- 上一轮识别没跑完（识别中途刷新 / 关掉浏览器）：已识别的页与字形都留着，说清接下来能做什么 -->
+        <!-- 上一轮识别没跑完（**用户点了「中止」**，或识别中途刷新 / 关掉浏览器）：
+             两种情况都提示清楚，并说清接下来能做什么（2026-10-15 用户口径："停下来了要有提示"） -->
         <p v-if="interruptedRun" class="step-note" data-role="scan-interrupted">
-          上一次识别没有跑完就中断了（已经识别 {{ pages.length }} 页）—— 已识别的页与字形都还在，
-          可以点「重新识别」整批重跑，或用「补传扫描件」把没扫到的那些补进来。
+          <template v-if="store.scan.stopped">上一次识别是<strong>中途停止</strong>的（已经识别 {{ pages.length }} 页）——</template>
+          <template v-else>上一次识别没有跑完就中断了（已经识别 {{ pages.length }} 页）——</template>
+          已识别的页与字形都还在，可以点「重新识别」整批重跑，或用「补传扫描件」把没扫到的那些补进来。
         </p>
 
         <!-- 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
@@ -1288,7 +1298,7 @@ const zoomIsMarkedLabel = computed(() => {
          把后面的"进度 / 还剩"推来推去（真机上看着在跳）；② 用与"识别结果与字形…"同一种提示条样式 -->
     <p v-if="running" class="step-note" data-role="scan-progress">
       进度 {{ progress.done }} / {{ progress.total }} 页；还剩 {{ progress.total - progress.done }} 页（约 {{ remainingSteps }} 步）<span v-if="etaLabel">，预计还要 {{ etaLabel }}</span>；
-      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}
+      当前：第 {{ progress.currentPage }} / {{ progress.total }} 页 · {{ stage || '准备中' }}<strong v-if="stopping">（已请求中止，当前这一页跑完就停）</strong>
     </p>
     <p v-if="message" class="panel-message" :class="messageType" data-role="scan-message">{{ message }}</p>
 

@@ -1,4 +1,4 @@
-﻿// 项目状态（Pinia）：本项目只支持一套字体（决策记录 五-1），因此状态就是"当前项目"本身。
+// 项目状态（Pinia）：本项目只支持一套字体（决策记录 五-1），因此状态就是"当前项目"本身。
 // 数据结构（也是「导出项目包」的内容，决策记录 五-2）：
 //   meta      —— 字体名称表字段（族名、子族名、版本、设计者、版权、许可…），全部有默认值（四-1）
 //   glyphs    —— 字形数据：码位 → 轮廓（阶段一后续步骤填充）
@@ -75,6 +75,10 @@ export const useProjectStore = defineStore('project', {
       orderOverrides: {},
       chars: '',
       summary: null,
+      // 这一轮识别是"跑完"还是"中途停止"（用户点「中止」，或识别中被刷新/关浏览器）——
+      // **2026-10-15 落盘**：原来它只活在内存里（`ScanUpload` 的 runInfo），刷新即丢，
+      // 于是"停下来了"这件事在界面上没有任何记录（真机反馈："点中止之后界面没有信息提示"）
+      stopped: false,
       lastRunAt: null,
       source: null
     },
@@ -392,6 +396,7 @@ export const useProjectStore = defineStore('project', {
       if (batchId) this.scan.batchId = batchId
       this.scan.pages = []
       this.scan.summary = null
+      this.scan.stopped = false // 新一轮开始：先把"上一轮是停下来的"这条记录清掉
       this.scan.orderOverrides = {}
       this.scan.chars = typeof chars === 'string' ? chars : ''
       this.scan.lastRunAt = null
@@ -413,8 +418,11 @@ export const useProjectStore = defineStore('project', {
     },
 
     // 一轮识别结束：写入批次汇总判定（整批判定与收批闸门都在界面上算，这里只存结果）
-    finishScanRun({ summary }) {
+    // `stopped` = 这一轮是被用户「中止」停下来的（2026-10-15 落盘）：刷新之后界面还要据此提示
+    //   "上一次识别是中途停止的，可以重新识别或补传没扫到的页"（原来只活在内存里，刷新即丢）
+    finishScanRun({ summary, stopped }) {
       this.scan.summary = summary || null
+      this.scan.stopped = !!stopped
       this.scan.lastRunAt = new Date().toISOString()
       this.markDirty()
       schedulePersist(this)
