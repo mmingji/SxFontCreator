@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 // 第 2 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
 // 职责：① 取这一轮要用的批次（**用户不再选**：进这一步时自动复用最近一个仍有效的，或顺手建一个）
 //   ② 指定一个文件夹（系统文件夹对话框）→ 挑图片与字序文件 → 串行识别，边跑边显示、可中止
@@ -18,6 +18,7 @@ import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.
 import { describeOrderFile } from '../lib/orderFile.js'
 import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, naturalCompare, pickScanInputs } from '../lib/scanInput.js'
 import { clearScanDirHandle, loadScanDirHandle, requestScanDirPermission, saveScanDirHandle } from '../lib/scanDirHandle.js'
+import { setScanRunning } from '../lib/scanRunState.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { LAYOUT } from '../lib/layout.js'
 import CharReview from './CharReview.vue'
@@ -512,6 +513,8 @@ async function start(options = {}) {
   const orderChars = withOrderFile ? orderFile.value.file.chars : ''
   const orderPages = withOrderFile ? orderFile.value.file.pageCount : undefined
   running.value = true
+  // 第 3 步的「生成字体」据此禁用（识别进行中不许生成：结果还在一页页进来，生成完也得再生成一次）
+  setScanRunning(true)
   cancelled = false
   openIndex.value = null
   zoomIndex.value = null
@@ -626,6 +629,7 @@ async function start(options = {}) {
     setMessage('识别失败：' + (e && e.message ? e.message : e), 'error')
   } finally {
     running.value = false
+    setScanRunning(false)
     stage.value = ''
   }
 }

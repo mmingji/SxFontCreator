@@ -1682,6 +1682,42 @@ button.text.accent:hover {
   margin: 0;
 }
 
+/* tab 下面那一行：说明文字在左、**该栏的批量动作在说明文字最右侧**（2026-10-15 用户口径） */
+.checkup-tab-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 0;
+}
+
+.checkup-tab-bar .panel-hint {
+  margin: 0;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.checkup-tab-bar .panel-actions {
+  margin: 0;
+}
+
+/* 「体检之后你剔除过…」提示跟在「生成字体」按钮后面（2026-10-15 用户口径）——
+   它就是"点这个按钮才生效"的说明，贴在按钮旁边 */
+.panel-actions .checkup-note-text {
+  color: var(--primary-dark);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 识别结果卡片：说明文字**固定两行高**，超出省略号截断（完整信息在 hover 的 title 里）——
+   2026-10-15 用户口径：卡片高度要一致，不能因为解释文字长短而参差 */
+.scan-card-stats {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* 行内"选文件"按钮（第 2 步的「补传扫描件」）：label 包一个隐藏的 input ——
    看着与旁边的实体按钮一套，点它弹文件选择器 */
 .inline-file-button {

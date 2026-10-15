@@ -234,13 +234,18 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
   const version = meta.version || '1.0'
   const built = []
   const skipped = []
-  const seen = new Set()
+  // 同字多份（一个 `char` 只能有一个字形）：**后到的覆盖先前的**（2026-10-15 用户口径 ——
+  //   "重写模板写完后补传回来，同一个字与主区都有字形时以新写的优先"）。
+  //   补传进来的页排在 `pages` 最后，而字形计划按页顺序展开，所以"后到优先"正好等于"新写的优先"；
+  //   改动之前是"先到先得"，主区那份（要重写的旧字形）会赢，重写就白写了。
+  //   覆盖时**位置不动**（保持这个字第一次出现的次序），只把内容换成新的。
+  const byChar = new Map()
   for (let i = 0; i < glyphs.length; i++) {
     const g = glyphs[i]
     const code = charToCodePoint(g.char)
-    // 防御：非字符码位、重复字符、缺掩膜的字形都不进字体（宁缺勿错）
-    if (!g.char || !g.mask || seen.has(g.char) || isNoncharacter(code)) {
-      skipped.push({ char: g.char, reason: seen.has(g.char) ? 'duplicate' : (isNoncharacter(code) ? 'noncharacter' : 'empty') })
+    // 防御：非字符码位、缺掩膜的字形都不进字体（宁缺勿错）
+    if (!g.char || !g.mask || isNoncharacter(code)) {
+      skipped.push({ char: g.char, reason: isNoncharacter(code) ? 'noncharacter' : 'empty' })
       continue
     }
     const path = await buildGlyphPath(g, opt)
@@ -248,8 +253,14 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
       skipped.push({ char: g.char, reason: 'noOutline' })
       continue
     }
-    seen.add(g.char)
-    built.push({ char: g.char, code, d: path.d, advanceWidth: path.advanceWidth, clamped: path.clamped })
+    const entry = { char: g.char, code, d: path.d, advanceWidth: path.advanceWidth, clamped: path.clamped }
+    if (byChar.has(g.char)) {
+      built[byChar.get(g.char)] = entry
+      skipped.push({ char: g.char, reason: 'duplicate' })
+    } else {
+      byChar.set(g.char, built.length)
+      built.push(entry)
+    }
     if (cfg.onProgress) cfg.onProgress(i + 1, glyphs.length)
   }
   if (!built.length) {

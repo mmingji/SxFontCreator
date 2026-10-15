@@ -193,6 +193,14 @@ const neededFileIndexes = computed(() => {
 // 为什么要在区块里说一遍：那原因原来只写在缩略图的 title 上 —— 触屏看不到、鼠标也要悬停，
 //   用户看到的就是"一块灰"，与"这一格本来就没有笔迹"长得一样（2026-10-13 复现确认的第二种缺陷）。
 const thumbErrorFiles = computed(() => Object.keys(sheetError.value || {}).map((k) => Number(k)))
+// 正在重建的页（2026-10-15）：斜纹底那几个缩略图是"还没画出来"，不是"这一格没有笔迹" ——
+//   原来只有"重建不了"时才有一句提示，正在重建时界面上什么都不说，用户看到的就是"偶现没有字形"。
+const rebuildingFiles = computed(() => Object.keys(rebuilding.value || {}).map((k) => Number(k)))
+/** 重建失败之后的重试：清掉失败记录再补一遍（分片偶尔读不到、或上一次撞上并发时会需要） */
+function retrySheets() {
+  sheetError.value = {}
+  ensureMissingSheets()
+}
 function thumbFailReason(fileIndex) {
   const page = pages.value.find((p) => p.fileIndex === fileIndex)
   const name = page && page.fileName ? page.fileName : ('第 ' + (fileIndex + 1) + ' 个文件')
@@ -368,9 +376,13 @@ function cellThumbStyle(fileIndex, cellIndex) {
 
       <!-- 缩略图重建失败：把原因写到页面上（原来只在缩略图的 title 里，触屏根本看不到），并给出出路 ——
            字形分片缺失时那一页的图补不出来，只能重传这一页或重新识别 -->
+      <p v-if="tableOpen && rebuildingFiles.length" class="panel-hint" data-role="thumb-rebuilding">
+        正在从落盘的字形里重建 {{ rebuildingFiles.length }} 页的格子图（斜纹底的那些就是还没画出来的）……
+      </p>
       <p v-if="tableOpen && thumbErrorFiles.length" class="step-note" data-role="thumb-error-note">
         有 {{ thumbErrorFiles.length }} 页的格子图没能从落盘的字形里重建（{{ thumbErrorFiles.map((i) => thumbFailReason(i)).join('；') }}）——
         用第 2 步结果卡片上的「重传」把这一页补一次，或重新识别一遍；这几页的字形可能没有落盘。
+        <button class="text" type="button" data-role="thumb-retry" @click="retrySheets">重新重建这几页</button>
       </p>
 
       <div v-if="rows.list.length && tableOpen" class="corr-table" data-role="correction-table">
