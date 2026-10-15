@@ -91,7 +91,10 @@ onMounted(syncPreviewBytes)
 async function ensureBuild() {
   const existing = getLastBuild()
   if (existing && existing.ttf) return existing
-  setMessage('内存里没有字体字节（刷新过页面），正在用落盘的掩膜重建一次…', 'info')
+  // 2026-10-15 用户口径：这里**不再写"内存里没有字体字节（刷新过页面），正在用落盘的掩膜重建一次…"**——
+  //   「字体预览」区已经把那件事说清并给了「加载预览」按钮，同一个事实说两遍只会让人以为出错了；
+  //   而用户点的明明是"查看字形总览 / 查看网页预览"，弹出一句与按钮无关的重建说明更困惑。
+  //   重建本身仍有反馈：调用方会报"正在画字形总览图（…）/ 正在准备网页预览…"，按钮旁的阶段文字也在走。
   return await build()
 }
 
@@ -257,7 +260,6 @@ async function openOverview() {
   busy.value = true
   const t0 = performance.now()
   try {
-    setMessage('正在准备字体字节…', 'info')
     const built = await ensureBuild()
     if (!built) return
     const chars = (font.value.coverage && font.value.coverage.chars) || []

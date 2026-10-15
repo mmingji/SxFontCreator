@@ -18,8 +18,8 @@ export const OVERVIEW_DEFAULTS = {
   cellSize: 28, // **基准**格边长（像素）：留白、标题、字号都按它与实际格宽的比例换算
   rowGap: 4, // 行与行之间额外留白
   padding: 20, // 图四周留白
-  headerHeight: 84, // 标题区高度（标题 + 收录统计 + 收录范围三行）
-  footerHeight: 48, // 页脚区（生成说明）
+  headerHeight: 64, // 标题区高度（标题 + 收录统计一行）
+  footerHeight: 32, // 页脚区（生成说明一行）
   maxWidth: 2000, // 图的最大宽度：超了就缩小（避免以后"一行几十字"时图宽到没法用）
   maxHeight: 16000, // 图的最大高度：**画布上限是 16384**，留一点余量
   maxCellSize: 64, // 格子最大边长（一页 136 字时按预算放大到这里，观感才够看）
@@ -30,14 +30,19 @@ export const OVERVIEW_DEFAULTS = {
   noteColor: '#666666'
 }
 
-// 标题与页脚的字号（按格宽算，保证整体缩放时版面比例一致）
+// 标题与说明的字号。
+// **2026-10-15 用户口径**：灰色说明（收录统计、页脚）**固定 12 像素** —— 原来它按格宽的一半算，
+//   放大版式之后一页 136 字时它有 32 像素，比格子里的字还抢眼；"改到 12px 试试"。
+//   标题仍与格宽挂钩（它是这张图的主标题，随图的大小走）。
 function fontSizes(cell) {
   return {
     title: Math.max(18, Math.round(cell * 1.0)),
-    note: Math.max(11, Math.round(cell * 0.5)),
+    note: 12,
     glyph: Math.max(12, Math.round(cell * 0.857)) // 6/7 ≈ 0.857：字占格子的 86%，四周留白
   }
 }
+// 说明文字的行高（固定：字号固定 12px，行高跟着固定）
+const NOTE_LINE = 18
 
 /**
  * 排布计算（纯函数，可在 Node 里断言）。
@@ -105,8 +110,13 @@ function measure(opt, cols, rows, cell) {
   }
 }
 
-/** 图上要写的几行文字（标题 / 副标题 / 收录范围 / 页脚）—— 抽出来是为了能在 Node 里断言内容与口径 */
-export function buildOverviewTexts({ familyName, version, total, chars, generatedAt, fromCorrection, excluded }) {
+/**
+ * 图上要写的几行文字（标题 / 收录统计 / 页脚）—— 抽出来是为了能在 Node 里断言内容与口径。
+ * **2026-10-15 去掉了"收录范围"那一行**（用户口径：`收录范围：的 … 由（共 129 字，按生成顺序排列）`
+ *   这种"首尾两个字 + 总数"的说法对人没有用 —— 图上一眼看得到的就是全部收录字，
+ *   而"的 … 由"既说不清范围也不好核对）。
+ */
+export function buildOverviewTexts({ familyName, version, total, generatedAt, fromCorrection, excluded }) {
   const when = generatedAt instanceof Date ? generatedAt : new Date(generatedAt || Date.now())
   const p = (v) => String(v).padStart(2, '0')
   const stamp = when.getFullYear() + '-' + p(when.getMonth() + 1) + '-' + p(when.getDate()) +
@@ -117,11 +127,8 @@ export function buildOverviewTexts({ familyName, version, total, chars, generate
   if (excluded) bits.push('已剔除 ' + excluded + ' 字（不在本图内）')
   bits.push('生成时间 ' + stamp)
   const sub = bits.join('　·　')
-  const range = chars && chars.length
-    ? '收录范围：' + chars[0] + ' … ' + chars[chars.length - 1] + '（共 ' + chars.length + ' 字，按生成顺序排列）'
-    : '收录范围：（无）'
   const footer = '本图由 SxFontCreator 生成，用于版权登记材料　·　字体文件中没有收录的字不在本图内'
-  return { title, sub, range, footer, stamp }
+  return { title, sub, footer, stamp }
 }
 
 /** 判断当前环境能不能画图（供界面给中文提示；Node 里没有 canvas） */
@@ -168,20 +175,18 @@ export async function renderOverviewPng(input) {
       familyName: input.familyName || 'SxFontCreator',
       version: input.version,
       total: chars.length,
-      chars,
       generatedAt: input.generatedAt,
       fromCorrection: input.fromCorrection,
       excluded: input.excluded
     })
     const fonts = layout.fontSizes
 
-    // ② 标题区（三行：标题 / 收录统计 / 收录范围）——
+    // ② 标题区（两行：标题 / 收录统计）——
     // **2026-10-15 修**：原来"收录统计"与"收录范围"两行的 y 分别按 title / note 的倍数算，
     //   而 note = 0.5 × cell、title = 1.0 × cell 时 `title × 1.2` 与 `note × 2.4` 恰好相等（都是 33.6）——
-    //   两行文字**永远重叠**（真机截图里标题下面那行小字糊成一团）。现在改成按"行高"从下往上排。
-    const noteLine = Math.round(fonts.note * 1.75)
-    const rangeY = layout.gridTop - noteLine
-    const subY = rangeY - noteLine
+    //   两行文字**永远重叠**（真机截图里标题下面那行小字糊成一团）。现在按"行高"从下往上排；
+    //   同一轮里"收录范围"那一行按用户口径**整行去掉**（`的 … 由` 对人没有用）。
+    const subY = layout.gridTop - NOTE_LINE
     const titleY = Math.max(layout.gridLeft, subY - Math.round(fonts.title * 1.35))
     ctx.fillStyle = opt.titleColor
     ctx.textBaseline = 'top'
@@ -191,7 +196,6 @@ export async function renderOverviewPng(input) {
     ctx.font = fonts.note + 'px "Microsoft YaHei", sans-serif'
     ctx.fillStyle = opt.noteColor
     ctx.fillText(texts.sub, layout.gridLeft, subY)
-    ctx.fillText(texts.range, layout.gridLeft, rangeY)
 
     // ③ 字形网格：极淡的格子参考线 + 每格一个字（按码点逐字画，代理对不会被拆坏）
     ctx.strokeStyle = opt.gridColor
