@@ -147,14 +147,22 @@ const savedStats = ref(null) // 已落盘的字形统计（分片键里的字与
 let cancelled = false
 
 const pages = computed(() => store.scan.pages)
-// 结果卡片的展示顺序（2026-10-14 用户口径：**更正册永远排前面**），其余按原来顺序（文件顺序）——
-// 只影响渲染顺序，不动 fileIndex / 页序 / 分片键那些真正决定数据的字段
-const orderedPages = computed(() => {
-  const list = pages.value
-  const corrections = list.filter((p) => p.kind === 'correction')
-  if (!corrections.length) return list
-  return [...corrections, ...list.filter((p) => p.kind !== 'correction')]
-})
+// 结果卡片的展示顺序（**2026-10-15 用户口径**，扩展 2026-10-14 的"更正册永远排前面"）：
+//   更正册 → 已识别的主区页 → 已作废 → 失败 → 重复页；同组内保持原来的文件顺序。
+//   为什么这么排：一眼扫过去先看到"能用的"（更正册与已识别的主区页），再看"要处理的"
+//   （作废 / 失败），最后才是"程序已经替你忽略掉的"（重复页）—— 正好是"结果 → 要不要处理 → 被忽略的"
+//   这个阅读顺序。只影响渲染顺序，不动 fileIndex / 页序 / 分片键那些真正决定数据的字段。
+function cardGroupRank(page) {
+  if (page.kind === 'correction') return 0 // 更正册永远最前
+  if (isDuplicateDropped(page)) return 4 // 重复页（程序已自动忽略，只作说明）
+  if (page.voided) return 2 // 已作废（用户主动清掉、等着重传）
+  if (!page.ok) return 3 // 识别失败
+  return 1 // 已识别的主区页
+}
+const orderedPages = computed(() => pages.value
+  .map((p, i) => ({ p, i }))
+  .sort((a, b) => (cardGroupRank(a.p) - cardGroupRank(b.p)) || (a.i - b.i))
+  .map((x) => x.p))
 const batch = computed(() => store.scanBatch)
 const chars = computed(() => store.scan.chars || resolveBatchChars(batch.value))
 const stats = computed(() => store.scanGlyphStats)
