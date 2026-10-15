@@ -400,12 +400,10 @@ async function generatePack() {
       </div>
     </div>
 
-    <div class="panel-row">
-      <div class="panel-field">
-        <span class="field-label">参考字体</span>
-        <span class="panel-hint" data-role="ref-font-note">{{ BUILTIN_FONT_LABEL }}，固定用它 —— 识别时靠认出纸面上印的参考字，才能判断这一页写了哪些字。</span>
-      </div>
-    </div>
+    <!-- 2026-10-15 用户口径：**去掉「参考字体」这一整行**（"内置楷体…固定用它 —— 识别时靠认出纸面上印的
+         参考字…"）—— 参考字用什么字体是程序的内部选择，写在界面上只是给用户多一段要读的字；
+         为什么不能换、认字定序的道理在《使用说明》里（决策 一-15：正文只有一份）。
+         注：`BUILTIN_FONT_LABEL` 仍被 `resolveFont()` 用作返回值的标签，import 保留 -->
 
     <!-- 预览：真实 PDF 渲染（与点「生成模板 PDF」得到的内容完全一致）。
          原来这里有一行「打印预览」标签 + 一段说明（左边是模板、右边是「书写示意」、示意只看不打印……）——
@@ -457,7 +455,7 @@ async function generatePack() {
       <strong>打印</strong>：彩色喷墨、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>；先打最后一页自检页量一下 1cm 方框。<br />
       <strong>书写</strong>：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字居中写小些；不描不改；
       写错的字用红笔<strong>把这一格的参考字圈起来</strong>，要重写的字写到更正册上。<br />
-      <strong>扫描</strong>：<strong>彩色 300dpi、照片模式</strong>，一页一个文件；手机 App 选<strong>「智能高清」（默认档）</strong>。<br />
+      <strong>扫描</strong>：<strong>彩色 300dpi、照片模式</strong>，一页一个文件；如用手机扫描 App（如扫描全能王），选<strong>「智能高清」（默认档）</strong>。<br />
       <!-- 「写哪些字」下面那段"没写的字会回退、不必写完也能用"按用户要求插在这个位置：
            扫描那一句之后、"完整说明见…"之前；随选择变化的"这次排哪些字、多少页"仍留在上面那一组里 -->
       <span data-role="fallback-hint">没写的字不会进字体：Word 里显示成方框、浏览器与 PS 里回退成系统字体，<strong>已写的字不受影响</strong> —— 不必一次写完。</span>
