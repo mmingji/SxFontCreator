@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 // 第 2 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
 // 职责：① 取这一轮要用的批次（**用户不再选**：进这一步时自动复用最近一个仍有效的，或顺手建一个）
 //   ② 指定一个文件夹（系统文件夹对话框）→ 挑图片与字序文件 → 串行识别，边跑边显示、可中止
@@ -184,6 +184,11 @@ const correctionScanResult = computed(() => {
   for (const p of list) for (const c of p.cells || []) if (c.verdict !== 'empty') cells++
   return '更正册 ' + list.length + ' 页：写出 ' + cells + ' 格'
 })
+// 识别跑到一半被刷新 / 关掉浏览器（2026-10-15 用户口径："正在识别过程中刷新页面，识别就中断了，
+//   且没有任何记录"）：页记录其实是**逐页落盘**的（每页一次 400ms 防抖写），所以已识别的页与字形都还在；
+//   缺的只是"整批汇总"——它是收尾时才写的（`finishScanRun`），而 `beginScanRun` 会把它清空。
+//   拿它当"这一批跑完了没有"的判据最干净：有页、没有汇总 = 上一轮被打断了。
+const interruptedRun = computed(() => !running.value && pages.value.length > 0 && !store.scan.summary)
 const runSummary = computed(() => {
   if (!showResult.value) return ''
   const g = gate.value
@@ -601,7 +606,7 @@ async function start(options = {}) {
     // 重复页的结论要**补写回页记录**（2026-10-14 修一个真缺陷）：去重是在 Worker 的逐页循环之后才
     //   算出来的，逐页那批消息里还没有 duplicateOf —— 不补写的话，卡片不标「重复页」、统计与更正配对
     //   全按未去重的页算（真机：12 份同一张纸 → "被红笔圈 29 个"、配对里同一个字出现四行）
-    store.applyScanDuplicates(res.duplicates)
+    store.applyScanDuplicates(res.duplicates, res.failedDuplicates)
     const secs = ((performance.now() - t0) / 1000).toFixed(1)
     // 落盘自检（2026-10-13）：识别完成之后再核一遍"有结果的页是不是都落盘了" ——
     //   漏落盘的后果是**刷新之后那几页的字形再也找不回来**（字体里会少几个字，更正核对里那一列图是空的）。
@@ -743,7 +748,7 @@ async function ingestOnePage(file, opts = {}) {
   // 归位之后要重算两件事，判据都与整批识别共用：
   //   ① 重复页去重（补进来的件可能与已有的页同号 —— 采用哪一份要跟着重挑）
   //   ② 整批汇总（页号重复 / 缺页 / 收批闸门都读它）
-  const { duplicates } = markDuplicatePages(nextPages)
+  const { duplicates, failedDuplicates } = markDuplicatePages(nextPages)
   const summary = summarizeBatch(nextPages, {
     expectedBatchCode,
     sheetPages: batch.value ? batch.value.pageCount : undefined
@@ -753,7 +758,7 @@ async function ingestOnePage(file, opts = {}) {
   if (openIndex.value === target) openIndex.value = null
   zoomIndex.value = null
   const res = store.replaceScanPage({ fileIndex: target, record, summary })
-  store.applyScanDuplicates(duplicates)
+  store.applyScanDuplicates(duplicates, failedDuplicates)
   savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
   return {
     ok: true,
@@ -842,7 +847,7 @@ function applyOrder(overrides, note) {
   })
   store.setScanPageOrder({ overrides, pages: next.pages, summary: next.summary })
   // 改了页序，"谁与谁同页"就变了：去重结论一并重算写回（applyPageOrder 里重跑过 dedupeDuplicatePages）
-  store.applyScanDuplicates(next.duplicates)
+  store.applyScanDuplicates(next.duplicates, next.failedDuplicates)
   if (note) setMessage(note, 'info')
 }
 function onOrderInput(page, value) {
@@ -911,10 +916,15 @@ function cardStatusLabel(page) {
   if (page.needReview) return '待确认'
   return '已识别'
 }
-/** 被采用的那一份的文件名（"重复页"卡片上要说清结果里用的是哪一份） */
+/** 被采用的那一份的文件名（"重复页"卡片上要说清结果里用的是哪一份）——
+    两种情形都走它：**识别成功但被判重**的页（`duplicateOf`），与**整页失败、页脚却同页号**的页
+    （`failedDuplicateOf`，折角页 / 去阴影页那种） */
 function adoptedName(page) {
-  const adopted = pages.value.find((p) => p.fileIndex === page.duplicateOf)
-  return adopted ? adopted.fileName : ('第 ' + (page.duplicateOf + 1) + ' 个文件')
+  const idx = page.duplicateOf !== undefined && page.duplicateOf !== null
+    ? page.duplicateOf
+    : page.failedDuplicateOf
+  const adopted = pages.value.find((p) => p.fileIndex === idx)
+  return adopted ? adopted.fileName : ('第 ' + (idx + 1) + ' 个文件')
 }
 // 页号与"这个页号是怎么来的"：序列定位 > 页脚读出 > 手选 —— 三种来源的可信度不同，必须逐页说清
 function pageNumberLabel(page) {
@@ -1188,6 +1198,11 @@ const zoomIsMarkedLabel = computed(() => {
           字形已落盘：{{ savedStats.pages }} 页 / {{ savedStats.glyphs }} 个字 / {{ (savedStats.bytes / 1024 / 1024).toFixed(1) }} MB
           —— <strong>刷新或关掉浏览器后不用重扫</strong>
         </p>
+        <!-- 上一轮识别没跑完（识别中途刷新 / 关掉浏览器）：已识别的页与字形都留着，说清接下来能做什么 -->
+        <p v-if="interruptedRun" class="step-note" data-role="scan-interrupted">
+          上一次识别没有跑完就中断了（已经识别 {{ pages.length }} 页）—— 已识别的页与字形都还在，
+          可以点「重新识别」整批重跑，或用「补传扫描件」把没扫到的那些补进来。
+        </p>
 
         <!-- 收批闸门：**拦下的原因与提示常驻在这里**（必须一眼看到，不跟着详情进弹窗）；
              逐页的"跳过：第 N 个文件…"清单收进「看跳过的 N 页」弹窗 —— 它常常几十条、原因还一模一样。
@@ -1268,6 +1283,11 @@ const zoomIsMarkedLabel = computed(() => {
           <template v-if="isDuplicateDropped(page)">
             这一页与「{{ adoptedName(page) }}」的页号相同：已自动忽略（结果里用的是那一份 ——
             程序按"认出的红圈数 → 能用的字形数"挑的）；想改用这一份，就在「看文件清单」里去掉那一张再识别
+          </template>
+          <!-- 整页失败、但页脚读出了同一个页号：说清"它其实是同一页的另一份"（2026-10-15 用户口径）——
+               真机上的折角页与"去阴影"页就是这种：它们与主件是同一张纸，用户看到两页失败会以为漏了什么 -->
+          <template v-else-if="page.failedDuplicateOf !== undefined && page.failedDuplicateOf !== null">
+            这一页与「{{ adoptedName(page) }}」的页号相同（那一份已经识别成功）—— 这一份没能识别：{{ page.reason }}
           </template>
           <template v-else-if="page.ok">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span

@@ -1,4 +1,4 @@
-// 上传识别流程编排（阶段一「界面串联」B2）
+﻿// 上传识别流程编排（阶段一「界面串联」B2）
 // 职责：一串扫描件 → 逐页「预处理 → 切格（含整页方向自动纠正）→ 红圈识别 → 字形提取（顺带剔除红圈像素）」
 //   → 页级 + 格级结果；再按《决策记录》八-9 / 八-10 / 二-7 给出"这一批能不能继续"的判定与中文说明。
 // 为什么单独成模块：这是界面与四个识别模块（1.4~1.7）之间**唯一的接缝** —— 界面只管渲染结果，
@@ -18,7 +18,7 @@ import { extractPage } from './handwritingExtractor.js'
 import { rotateQuarterTurns } from './imageOps.js'
 import { LAYOUT } from './layout.js'
 import { getAllChars } from './charset.js'
-import { charAtCell, dedupeDuplicatePages, reorderPages, resolveBatchChars } from './scanMeta.js'
+import { charAtCell, dedupeDuplicatePages, reorderPages, resolveBatchChars, usableForGlyphs } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
 // 格子拼图与 blob→dataURL 的画法在 lib/pageSheet.js 里（刷新后从落盘字形重建时也用它，两处必须同一种画法）
 import { blobToDataUrl, cellSheet } from './pageSheet.js'
@@ -60,7 +60,11 @@ export function markDuplicatePages(pages) {
   const list = pages || []
   // 先清后打：页号是分组依据，页序一改，"谁与谁同页"就变了，旧的标记必须先作废（否则留下一个与
   // 当前页号无关的「重复页」—— 那一页就再也算不进统计了）
-  for (const p of list) if (p && p.duplicateOf !== undefined) delete p.duplicateOf
+  for (const p of list) {
+    if (!p) continue
+    if (p.duplicateOf !== undefined) delete p.duplicateOf
+    if (p.failedDuplicateOf !== undefined) delete p.failedDuplicateOf
+  }
   const dedupe = dedupeDuplicatePages(list)
   const duplicates = []
   for (const p of list) {
@@ -70,7 +74,27 @@ export function markDuplicatePages(pages) {
       duplicates.push({ fileIndex: p.fileIndex, duplicateOf: adopted })
     }
   }
-  return { duplicates, groups: dedupe.groups }
+
+  // **整页失败、但页脚读出了页号**、而这个页号已经有可用页的：也标一句（2026-10-15 用户口径）。
+  // 真机上就是这种情况：折角页与"去阴影"页跟主件其实是同一张纸，但它们四角不全 / 定位块缺失、
+  // 整页失败 —— 原来连一句"它与某页重复"都没有，用户看到两页失败会以为漏了什么。
+  // 判据用**页脚原始结果**（`p.footer`）：切格失败时 record.pageNumber 是 null，页脚却照常解得出页码。
+  // 这类页不参与"采用哪一份"的竞争（它本来就没识别成功），只作为提示。
+  const okByPage = new Map()
+  for (const p of list) {
+    if (p && usableForGlyphs(p) && p.pageNumber) okByPage.set(p.pageNumber, p)
+  }
+  const failedDuplicates = []
+  for (const p of list) {
+    if (!p || usableForGlyphs(p)) continue
+    const footerPage = p.footer && p.footer.ok ? p.footer.pageNumber : null
+    const adopted = footerPage ? okByPage.get(footerPage) : null
+    if (adopted && adopted.fileIndex !== p.fileIndex) {
+      p.failedDuplicateOf = adopted.fileIndex
+      failedDuplicates.push({ fileIndex: p.fileIndex, duplicateOf: adopted.fileIndex })
+    }
+  }
+  return { duplicates, failedDuplicates, groups: dedupe.groups }
 }
 
 export const SCAN_DEFAULTS = {
@@ -569,13 +593,13 @@ export async function recognizeBatch(files, options = {}) {
   //   更正配对的候选），否则统计会翻倍错乱（用户真机实测：12 份同一张纸 → "被红笔圈 29 个"、
   //   配对表里同一个字出现四行、下面一大片"没有对应格"）。判据与字段口径见 scanMeta.dedupeDuplicatePages。
   // **2026-10-14 修**：结论要一起回传主线程（见下面 duplicates 的注释）。
-  const { duplicates } = markDuplicatePages(pages)
+  const { duplicates, failedDuplicates } = markDuplicatePages(pages)
   const summary = summarizeBatch(pages, {
     expectedBatchCode,
     // 页数口径：有字序文件时以**文件声明的页数**为准（自检页的判据就靠它：页号超出字表页数即自检页）
     sheetPages: typeof opt.orderPages === 'number' ? opt.orderPages : (batch ? batch.pageCount : undefined)
   })
-  return { pages, caches, summary, chars, stopped, duplicates }
+  return { pages, caches, summary, chars, stopped, duplicates, failedDuplicates }
 }
 
 /**
@@ -594,10 +618,10 @@ export function applyPageOrder(pages, overrides, chars, options = {}) {
       : p.isSheetPage
   }))
   // 页号变了，"谁与谁同页"跟着变：去重必须重算（判据与整批识别那一处共用，见 markDuplicatePages）
-  const { duplicates } = markDuplicatePages(next)
+  const { duplicates, failedDuplicates } = markDuplicatePages(next)
   const summary = summarizeBatch(next, {
     expectedBatchCode: typeof options.expectedBatchCode === 'number' ? options.expectedBatchCode : null,
     sheetPages: options.sheetPages
   })
-  return { pages: next, summary, duplicates }
+  return { pages: next, summary, duplicates, failedDuplicates }
 }

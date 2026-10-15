@@ -150,7 +150,9 @@ async function handleBatch(msg) {
       summary: res.summary,
       count: res.pages.length,
       stopped: res.stopped,
-      duplicates: res.duplicates || []
+      duplicates: res.duplicates || [],
+      // 整页失败、但页脚读出了同一个页号的那些件（折角页 / 去阴影页…）：界面据此说明"它其实是重复的"
+      failedDuplicates: res.failedDuplicates || []
     })
   } catch (e) {
     post({ type: 'error', rid, message: e && e.message ? e.message : String(e) })

@@ -20,7 +20,7 @@ import { useProjectStore } from '../store/project.js'
 import { buildFinalGlyphPlan } from '../lib/scanFlow.js'
 import { buildFontFromPlan, clearLastBuild, getLastBuild } from '../lib/buildFont.js'
 import { buildPreviewHtml, packFontZip } from '../lib/fontPack.js'
-import { downloadBytes, downloadText } from '../lib/download.js'
+import { downloadBytes } from '../lib/download.js'
 import { OVERVIEW_DEFAULTS, overviewFileName, renderOverviewPng } from '../lib/glyphOverview.js'
 import { openBlobInNewTab } from '../lib/openBlob.js'
 import { clearScanDirHandle } from '../lib/scanDirHandle.js'
@@ -228,8 +228,9 @@ async function downloadZip() {
       sampleText: coverage.chars.slice(0, 80).join('')
     })
     downloadBytes(zip, 'SxFontCreator-' + built.fileName + '.zip', 'application/zip')
-    setMessage('已下载 zip（' + (zip.byteLength / 1024).toFixed(0) + 'KB）：解压后双击 preview.html 就能看样张，' +
-      '装字体请右键 ' + built.fileName + '.ttf → 安装。', 'done')
+    // 2026-10-15 用户口径：下载完**不再弹绿色提示**（"已下载 zip（144KB）：解压后双击 preview.html…
+    //   装字体请右键 …"）—— 浏览器自己的下载条已经说明下载完成，这句话只是把《使用说明》里的内容
+    //   又抄了一遍；它还会把"字体已生成：…"那条结论顶掉（两处共用同一个消息位）
   } catch (e) {
     setMessage('打包失败：' + (e && e.message ? e.message : e), 'error')
   }
@@ -421,43 +422,6 @@ function clearRewriteAll() {
   store.clearRewrite()
   setMessage(n ? '已移出全部 ' + n + ' 个待重写的字（都继续采用现有字形）' : '重写清单本来就是空的', 'info')
 }
-/**
- * 导出重写清单（按页归组）：拿着它去重写那几页 —— 重写后走第 2 步的「重传这一页」（决策 八-14），
- * 不需要额外的模板或册子（这也是决策 一-6 ①「按清单动态生成更正册」不做之后留下的路径）。
- */
-function exportRewriteList() {
-  const rows = onRewriteList.value
-  if (!rows.length) return
-  const byPage = new Map()
-  for (const r of rows) {
-    const key = r.pageNumber === null ? 0 : r.pageNumber
-    if (!byPage.has(key)) byPage.set(key, [])
-    byPage.get(key).push(r)
-  }
-  const lines = []
-  lines.push('SxFontCreator 重写清单')
-  lines.push('生成时间：' + new Date().toLocaleString('zh-CN'))
-  lines.push('待重写 ' + rows.length + ' 个字 —— 它们这次没有进字体。')
-  lines.push('')
-  lines.push('怎么用：先在下面对话框里点「下载重写模板」拿到一张按这些字印好的模板（页号接在现有纸之后）；')
-  lines.push('照它写完后，把扫描件用第 2 步的「补传扫描件」丢进来（按页号归位：已有这一页就覆盖、没有就追加），')
-  lines.push('再回第 3 步点「生成字体」。下面这份清单可以打印出来当核对表用。')
-  lines.push('')
-  for (const [page, list] of [...byPage.entries()].sort((a, b) => a[0] - b[0])) {
-    lines.push((page ? '第 ' + page + ' 页' : '页号未知') + '（' + list.length + ' 个字）')
-    for (const r of list) {
-      // 格号取 1 起（与更正册上印的格号、人的数法一致）
-      const where = r.cellIndex === null ? '' : ' 第 ' + (r.cellIndex + 1) + ' 格'
-      const why = (r.messages && r.messages.length) ? '：' + r.messages.join('；') : ''
-      lines.push('  ' + r.char + where + why)
-    }
-    lines.push('')
-  }
-  lines.push('（每格序号从 1 起：一页 136 格，从左到右、从上到下。）')
-  downloadText(lines.join('\n'), '重写清单-' + new Date().toISOString().slice(0, 10) + '.txt', 'text/plain;charset=utf-8')
-  setMessage('已导出重写清单：' + rows.length + ' 个字，按页归组', 'done')
-}
-
 // ── 重写模板（2026-10-15 用户口径："重写清单应该直接按重写字生成可下载的模板"）──────────
 // 原来只有一个 txt 清单（"第几页第几格、写成什么样"），用户还得自己去翻出那一页重写；
 // 现在直接照重写清单**出一份模板 PDF**：格子与参考字都印好，照着写就行。
@@ -697,38 +661,24 @@ function reloadNow() {
         >{{ checkupOpen ? '收起清单' : '看清单' }}</button>
         {{ checkupSummaryText }}
       </p>
-      <!-- 批量动作留在**摘要行上**（不只在展开的清单里）：已剔除的字要能一键恢复、
-           重写清单要能一键导出 / 全部移出 —— 收起状态下也是"一眼看到 + 一步做到"，
-           不必为了恢复一个字先把整张清单铺开（冒烟里当场撞到过这个别扭） -->
-      <div v-if="excludedList.length || onRewriteList.length" class="panel-actions" data-role="checkup-bulk">
-        <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-export" @click="exportRewriteList">导出重写清单</button>
-        <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出重写清单</button>
-        <button v-if="excludedList.length" type="button" class="text" :disabled="busy" data-role="restore-all" @click="restoreAll">
-          恢复全部被剔除的字（{{ excludedList.length }}）
-        </button>
-      </div>
-      <p v-if="staleAfterExclude" class="checkup-note-row" data-role="checkup-stale-row">
-        <span class="checkup-note-text" data-role="checkup-stale">
+
+      <!-- 批量动作与"体检已过期"提示**同一行**（2026-10-15 用户口径）：**按钮组在左、提示文字在右** ——
+           这样没有提示文字时（入口照样要在）看着也自然。原来按钮另占一行，与这一行里的按钮**重复了一遍**
+           （真机截图里被一眼看出来：同一排按钮出现两次）。 -->
+      <p
+        v-if="staleAfterExclude || excludedList.length || onRewriteList.length"
+        class="checkup-note-row"
+        data-role="checkup-stale-row"
+      >
+        <span class="panel-actions" data-role="checkup-bulk">
+          <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-template" @click="downloadRewriteTemplate">下载重写模板</button>
+          <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出重写清单</button>
+          <button v-if="excludedList.length" type="button" class="text" :disabled="busy" data-role="restore-all" @click="restoreAll">
+            恢复全部被剔除的字（{{ excludedList.length }}）
+          </button>
+        </span>
+        <span v-if="staleAfterExclude" class="checkup-note-text" data-role="checkup-stale">
           体检之后你剔除过字形（或改过名称表），点上面的「生成字体」重新生成一次即生效。
-        </span>
-        <span class="panel-actions" data-role="checkup-bulk">
-          <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-export" @click="exportRewriteList">导出重写清单</button>
-          <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出重写清单</button>
-          <button v-if="excludedList.length" type="button" class="text" :disabled="busy" data-role="restore-all" @click="restoreAll">
-            恢复全部被剔除的字（{{ excludedList.length }}）
-          </button>
-        </span>
-      </p>
-      <!-- 没有"过期"提示、但有批量动作时（重写清单 / 已剔除）：**同一行的布局照旧**，只是左边那句话不出现 ——
-           入口永远在，不因为提示不在就消失 -->
-      <p v-else-if="excludedList.length || onRewriteList.length" class="checkup-note-row" data-role="checkup-stale-row">
-        <span class="checkup-note-text"></span>
-        <span class="panel-actions" data-role="checkup-bulk">
-          <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-export" @click="exportRewriteList">导出重写清单</button>
-          <button v-if="onRewriteList.length" type="button" class="text" :disabled="busy" data-role="rewrite-clear" @click="clearRewriteAll">全部移出重写清单</button>
-          <button v-if="excludedList.length" type="button" class="text" :disabled="busy" data-role="restore-all" @click="restoreAll">
-            恢复全部被剔除的字（{{ excludedList.length }}）
-          </button>
         </span>
       </p>
 
@@ -750,6 +700,17 @@ function reloadNow() {
           @click="checkupTab = 'note'"
         >只是留意（{{ noteList.length }}）</button>
       </div>
+
+      <!-- 说明文字**紧跟 tab**（2026-10-15 用户口径：切到哪一栏，先看到的就是这一栏是干什么的） -->
+      <p class="panel-hint" data-role="checkup-tab-note">
+        <template v-if="checkupTab === 'rewrite'">
+          <strong>成字后这些字会明显偏小或不成形</strong>；<strong>加入重写清单</strong> = 这次先不进字体、
+          以后重写补上，<strong>剔除</strong> = 这个字不要了。
+        </template>
+        <template v-else>
+          <strong>不影响成字，看一眼就行</strong>；想重写的字也可以在这里加入重写清单。
+        </template>
+      </p>
 
       <p v-if="!activeCheckupList.length" class="panel-message done" data-role="checkup-empty">
         {{ checkupTab === 'rewrite' ? '没有需要重写的字形 —— 这一批可以直接生成字体。' : '没有「只是留意」的字形。' }}
@@ -779,29 +740,21 @@ function reloadNow() {
           </div>
         </div>
 
-        <!-- 表格下面一行：分页（每页 20 条）+「看全部」—— 两个都用默认文本色（2026-10-15 用户口径） -->
+        <!-- 表格下面一行（2026-10-15 用户口径）：**上一页 / 下一页 挨在一起放左边**（原来说明夹在中间，
+             两个翻页按钮隔着半屏），说明跟在后面，最后是「看全部」—— 都用默认文本色 -->
         <div class="table-pager" data-role="checkup-pager">
           <button v-if="!checkupShowAll" class="text" type="button" :disabled="checkupPage <= 1" @click="checkupPage--">上一页</button>
+          <button v-if="!checkupShowAll" class="text" type="button" :disabled="checkupPage >= checkupPageCount" @click="checkupPage++">下一页</button>
           <span class="panel-hint">
             <template v-if="checkupShowAll">已列出全部 {{ activeCheckupList.length }} 个字</template>
             <template v-else>第 {{ checkupPage }} / {{ checkupPageCount }} 页（共 {{ activeCheckupList.length }} 个字，每页 {{ CHECKUP_PAGE_SIZE }} 个）</template>
           </span>
-          <button v-if="!checkupShowAll" class="text" type="button" :disabled="checkupPage >= checkupPageCount" @click="checkupPage++">下一页</button>
           <button class="text" type="button" :data-role="'show-all-' + checkupTab" @click="checkupShowAll = !checkupShowAll">
             {{ checkupShowAll ? '分页显示' : '看全部（' + activeCheckupList.length + ' 个）' }}
           </button>
         </div>
 
-        <!-- 说明文字跟在表格后面（2026-10-15 用户口径：切到哪一栏就显示哪一栏的说明） -->
-        <p class="panel-hint" data-role="checkup-tab-note">
-          <template v-if="checkupTab === 'rewrite'">
-            <strong>成字后这些字会明显偏小或不成形</strong>；<strong>加入重写清单</strong> = 这次先不进字体、
-            以后重写补上，<strong>剔除</strong> = 这个字不要了。
-          </template>
-          <template v-else>
-            <strong>不影响成字，看一眼就行</strong>；想重写的字也可以在这里加入重写清单。
-          </template>
-        </p>
+
       </template>
 
       <!-- 重写清单（八-8 第四态，清单一-12）：与上面"建议重写"分开列 ——
@@ -810,8 +763,8 @@ function reloadNow() {
       <div v-if="onRewriteList.length" class="checkup-group" data-role="rewrite-plan">
         <p class="panel-hint">
           <strong>重写清单（{{ onRewriteList.length }}）</strong>：这些字这次不进字体。
-          <button type="button" class="text" :disabled="busy" data-role="rewrite-template" @click="downloadRewriteTemplate">下载重写模板</button>
-          照着写完后，用第 2 步的「补传扫描件」丢进来（按页号归位：已有这一页就覆盖、没有就追加），
+          用上面那一行的「下载重写模板」按这些字印一张模板（页号接在现有纸之后），
+          照着写完后用第 2 步的「补传扫描件」丢进来（按页号归位：已有这一页就覆盖、没有就追加），
           再回这里点「生成字体」。
         </p>
         <ul class="checkup-list" data-role="rewrite-plan-list">

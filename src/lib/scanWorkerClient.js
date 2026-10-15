@@ -1,4 +1,4 @@
-// 识别链路的 Worker 客户端（决策 六-15）：界面只跟它打交道，不再直接调 recognizeBatch / recognizePage。
+﻿// 识别链路的 Worker 客户端（决策 六-15）：界面只跟它打交道，不再直接调 recognizeBatch / recognizePage。
 //
 // 它做四件事：
 //   ① **把 File 读成字节再 transfer**（零拷贝）：File 直接 postMessage 会被结构化克隆整份复制，
@@ -136,6 +136,8 @@ function runTask(payload, hooks = {}) {
     // 重复页的去重结论（2026-10-14 修）：它是在 Worker 的逐页循环**之后**算出来的，逐页那批 page 消息里
     //   还没有 `duplicateOf` —— 只能随 `done` 一起回来，再由界面补写进 store（见 store.applyScanDuplicates）
     let duplicates = []
+    // 整页失败但页脚同页号的那些件（同样只能随 done 回来，见 scanFlow.markDuplicatePages）
+    let failedDuplicates = []
     // 单页任务只有一条 `page` 消息，**没有** `done`（见 worker 的 handlePage）——
     // 所以那一类必须"收到 page 就结束"。整批任务靠 `done` 结束，并留一条兜底：
     // 页数已经收满也结束（万一 done 丢了，界面不该永远停在"正在识别"）。
@@ -198,6 +200,7 @@ function runTask(payload, hooks = {}) {
             summary = msg.summary || null
             stopped = !!msg.stopped
             duplicates = Array.isArray(msg.duplicates) ? msg.duplicates : []
+            failedDuplicates = Array.isArray(msg.failedDuplicates) ? msg.failedDuplicates : []
             settle()
           } else if (msg.type === 'error') {
             finish(reject, new Error(msg.message || '后台线程报错'))
@@ -234,7 +237,7 @@ function runTask(payload, hooks = {}) {
     }).finally(() => {
       activeRid = null
     })
-    return { pages, caches, summary, stopped, duplicates }
+    return { pages, caches, summary, stopped, duplicates, failedDuplicates }
   }
   const next = queue.then(task, task)
   queue = next.catch(() => {}) // 队列自身不因某次失败中断

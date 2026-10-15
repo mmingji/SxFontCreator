@@ -1,4 +1,4 @@
-* {
+﻿* {
   box-sizing: border-box;
 }
 
@@ -1780,7 +1780,8 @@ button.text.danger:hover {
 .table-pager .panel-hint {
   margin: 0;
   flex: 1 1 auto;
-  text-align: center;
+  /* 说明跟在两个翻页按钮**后面**（2026-10-15 用户口径：上一页 / 下一页 挨在一起放左边），所以左对齐 */
+  text-align: left;
 }
 
 /* 第 2 步按钮行里的提示（2026-10-14 用户口径）：与「开始识别 / 重新识别」同一行、紧跟按钮之后 ——

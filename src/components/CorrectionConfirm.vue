@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 // 第 2 步：更正核对（阶段一「界面串联」B3b；规则见《决策记录》一-7、二-13）
 // 职责：把「第 k 个被圈字 ↔ 更正册第 m 格」并排摆出来，允许**改派 / 删除 / 补录**，确认后交给字体构建。
 // 为什么必须有这一步：红圈识别与顺序配对都只是初值 —— 配对错一个字，整套字体就有一个字对错人。
@@ -444,10 +444,10 @@ function cellThumbStyle(fileIndex, cellIndex) {
            上一页 / 下一页用默认文本色（这两个不是"推荐动作"，只是翻页） -->
       <div v-if="tableOpen && rows.list.length > PAGE_SIZE" class="table-pager" data-role="correction-pager">
         <button class="text" type="button" :disabled="tablePage <= 1" @click="tablePage--">上一页</button>
+        <button class="text" type="button" :disabled="tablePage >= tablePageCount" @click="tablePage++">下一页</button>
         <span class="panel-hint">
           第 {{ tablePage }} / {{ tablePageCount }} 页（共 {{ rows.list.length }} 对，每页 {{ PAGE_SIZE }} 对）
         </span>
-        <button class="text" type="button" :disabled="tablePage >= tablePageCount" @click="tablePage++">下一页</button>
       </div>
 
       <p v-if="tableOpen && extraCells.length" class="panel-hint">

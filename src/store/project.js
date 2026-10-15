@@ -427,16 +427,22 @@ export const useProjectStore = defineStore('project', {
      *   被圈数、更正配对全都按**未去重**的页算：真机上 12 份同一张纸让"被红笔圈 29 个"、
      *   更正配对里同一个字出现四行、下面一大片"没有对应格"。
      * @param {Array<{fileIndex:number, duplicateOf:number}>} duplicates
+     * @param {Array<{fileIndex:number, duplicateOf:number}>} [failedDuplicates] 整页失败、但页脚读出了同一个
+     *   页号的那些件（折角页 / 去阴影页…）：只用于**界面提示**，不影响统计
      */
-    applyScanDuplicates(duplicates) {
+    applyScanDuplicates(duplicates, failedDuplicates) {
       const list = Array.isArray(duplicates) ? duplicates : []
+      const failed = Array.isArray(failedDuplicates) ? failedDuplicates : []
       const adopted = new Map(list.map((d) => [d.fileIndex, d.duplicateOf]))
+      const failedMap = new Map(failed.map((d) => [d.fileIndex, d.duplicateOf]))
       // **整体重写**：先清掉所有页的旧标记再按新结论设置 —— 只加不清的话，"补传一张之后不再是重复页"
       //   的那一页会永远挂着旧标记（它就再也算不进统计与配对了）
       this.scan.pages = this.scan.pages.map((p) => {
         const next = { ...p }
         if (adopted.has(p.fileIndex)) next.duplicateOf = adopted.get(p.fileIndex)
         else delete next.duplicateOf
+        if (failedMap.has(p.fileIndex)) next.failedDuplicateOf = failedMap.get(p.fileIndex)
+        else delete next.failedDuplicateOf
         return next
       })
       this.markDirty()
