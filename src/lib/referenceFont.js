@@ -20,7 +20,9 @@ export const BUILTIN_FONT_LABEL = '内置楷体（霞鹜文楷子集）'
 export const HANDWRITING_FONT_URL = './fonts/yozai-subset.ttf'
 // 2026-10-13：原来这里还有一个 `HANDWRITING_FONT_LABEL`（'悠哉字体（手写体子集）'）——
 // 它全库零引用（界面上的写法已经在 PdfPreview 的标题里写死为"按悠哉字体示意书写格式"），已删。
-// 保留 `BUILTIN_FONT_LABEL`：它的名字确实上了界面（第 1 步「参考字体」那一行的说明）。
+// 保留 `BUILTIN_FONT_LABEL`：它仍被 `resolveFont()` 用作标签，并且确实还上界面 ——
+// 2026-10-15 起不再单独占「参考字体」那一行（那行已按用户口径去掉），而是出现在第 1 步
+// 末尾那段提示里（"…参考字用内置楷体（霞鹜文楷子集）；打印前先用尺子量自检页上的 1cm 方框。"）。
 
 // 两条内置字体各自对应的内联资源名（构建期约定，见 vite.config.js 的 INLINE_ASSETS）
 const INLINE_BY_URL = {
