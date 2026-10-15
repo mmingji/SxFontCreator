@@ -13,9 +13,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   PREVIEW_FALLBACK_STACK,
   PREVIEW_SIZES,
-  SAMPLE_SENTENCE,
   analyzePreviewText,
   defaultPreviewText,
+  pickSampleSentence,
   previewFontFamily,
   registerPreviewFont
 } from '../lib/fontPreview.js'
@@ -27,7 +27,9 @@ const props = defineProps({
   loading: { type: Boolean, default: false }, // 正在重建字节（父组件在跑）
   loadingText: { type: String, default: '' } // 重建阶段文案 + 进度
 })
-const emit = defineEmits(['request-bytes', 'coverage'])
+// request-bytes：预览区要重建字节（父组件跑）；
+// fill-template：把"未收录的那几个字"交给父组件去出一张补写模板（2026-10-15 用户口径）
+const emit = defineEmits(['request-bytes', 'coverage', 'fill-template'])
 
 const size = ref(PREVIEW_SIZES[1])
 const text = ref(defaultPreviewText(props.coveredChars))
@@ -103,9 +105,10 @@ function fillCovered() {
   touched.value = true
   text.value = defaultPreviewText(props.coveredChars)
 }
+// 换一句常用话（2026-10-15 用户口径）：从预置的唐诗宋词里**随机**取一句，并避开当前这一句
 function fillSample() {
   touched.value = true
-  text.value = SAMPLE_SENTENCE
+  text.value = pickSampleSentence(text.value)
 }
 function clearText() {
   touched.value = true
@@ -154,6 +157,9 @@ function clearText() {
         <button type="button" class="text" @click="fillCovered">填入收录的字</button>
         <button type="button" class="text" @click="fillSample">换一句常用话</button>
         <button type="button" class="text" @click="clearText">清空</button>
+        <!-- 工具条**最右侧**：查看字形总览 / 查看网页预览（2026-10-15 用户口径：从标题行挪到这里，
+             与"看预览"这一组操作放在一起；下载 zip 仍留在标题行最右） -->
+        <span class="font-preview-toolbar-actions"><slot name="toolbar-actions" /></span>
       </div>
 
       <div class="font-preview-lines" :style="previewStyle" data-preview="lines">
@@ -173,8 +179,18 @@ function clearText() {
       <p v-if="analysis.missing.length" class="font-preview-missing">
         未收录的字：
         <span v-for="ch in analysis.missing" :key="ch" class="font-preview-char missing">{{ ch }}</span>
+        <!-- 缺的字**就地**给一条出路（2026-10-15 用户口径）：按这几个字印一张补写模板，
+             写完后用第 2 步的「补传扫描件」丢回来即可（与重写模板同一条路径） -->
+        <button
+          type="button"
+          class="text font-preview-fill"
+          data-role="fill-template"
+          :disabled="loading"
+          @click="emit('fill-template', analysis.missing)"
+        >生成补写模板</button>
         <br />
-        这些字在浏览器与 PS 里会回退成系统字体，在 Word 里可能显示成方框 —— 想要完整可用，建议把这些字补写进下一批。
+        这些字在浏览器与 PS 里会回退成系统字体，在 Word 里可能显示成方框 —— 想要完整可用，
+        可以点「生成补写模板」把缺的这几个字补写进来（也可以补写进下一批）。
       </p>
       <p v-if="fontNote" class="panel-message error">{{ fontNote }}</p>
       <p v-else-if="fontState === 'loading'" class="panel-hint">正在把这套字体注册进页面…</p>

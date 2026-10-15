@@ -1,4 +1,4 @@
-// 字形总览图（阶段三步骤 3.6，2026-10-07 用户拍板"要做"，清单 一-1）
+﻿// 字形总览图（阶段三步骤 3.6，2026-10-07 用户拍板"要做"，清单 一-1）
 // 职责：把这一套字体**收录的字**排成一张图（PNG），用作版权登记的材料；图上标注族名、版本、
 //   收录字数与生成时间。
 // 三个关键取舍：
@@ -31,18 +31,24 @@ export const OVERVIEW_DEFAULTS = {
 }
 
 // 标题与说明的字号。
-// **2026-10-15 用户口径**：灰色说明（收录统计、页脚）**固定 12 像素** —— 原来它按格宽的一半算，
-//   放大版式之后一页 136 字时它有 32 像素，比格子里的字还抢眼；"改到 12px 试试"。
+// **2026-10-15 用户口径（两轮）**：灰色说明（收录统计、页脚）原来按格宽的一半算 —— 放大版式之后
+//   一页 136 字时是 32 像素（比格子里的字还抢眼）、全量 8274 字时是 20 像素；先试过固定 12 像素，
+//   又偏小。**定为按格宽在 16~20 之间取值**：一页 136 字（格宽 64）用 **20**、全量 8274 字（格宽 41）
+//   用 **16**，中间线性过渡；更小的图不低于 12、更大的图不超过 20。
 //   标题仍与格宽挂钩（它是这张图的主标题，随图的大小走）。
+const NOTE_AT_CELL_64 = 20
+const NOTE_AT_CELL_41 = 16
+function noteFontSize(cell) {
+  const raw = NOTE_AT_CELL_41 + (cell - 41) * (NOTE_AT_CELL_64 - NOTE_AT_CELL_41) / (64 - 41)
+  return Math.max(12, Math.min(20, Math.round(raw)))
+}
 function fontSizes(cell) {
   return {
     title: Math.max(18, Math.round(cell * 1.0)),
-    note: 12,
+    note: noteFontSize(cell),
     glyph: Math.max(12, Math.round(cell * 0.857)) // 6/7 ≈ 0.857：字占格子的 86%，四周留白
   }
 }
-// 说明文字的行高（固定：字号固定 12px，行高跟着固定）
-const NOTE_LINE = 18
 
 /**
  * 排布计算（纯函数，可在 Node 里断言）。
@@ -186,7 +192,8 @@ export async function renderOverviewPng(input) {
     //   而 note = 0.5 × cell、title = 1.0 × cell 时 `title × 1.2` 与 `note × 2.4` 恰好相等（都是 33.6）——
     //   两行文字**永远重叠**（真机截图里标题下面那行小字糊成一团）。现在按"行高"从下往上排；
     //   同一轮里"收录范围"那一行按用户口径**整行去掉**（`的 … 由` 对人没有用）。
-    const subY = layout.gridTop - NOTE_LINE
+    const noteLine = Math.round(fonts.note * 1.4) // 说明文字的行高跟着字号走（20px 字号 → 28px 行高）
+    const subY = layout.gridTop - noteLine
     const titleY = Math.max(layout.gridLeft, subY - Math.round(fonts.title * 1.35))
     ctx.fillStyle = opt.titleColor
     ctx.textBaseline = 'top'

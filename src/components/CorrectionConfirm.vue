@@ -196,6 +196,9 @@ const thumbErrorFiles = computed(() => Object.keys(sheetError.value || {}).map((
 // 正在重建的页（2026-10-15）：斜纹底那几个缩略图是"还没画出来"，不是"这一格没有笔迹" ——
 //   原来只有"重建不了"时才有一句提示，正在重建时界面上什么都不说，用户看到的就是"偶现没有字形"。
 const rebuildingFiles = computed(() => Object.keys(rebuilding.value || {}).map((k) => Number(k)))
+// 分片**根本不存在**时\\"重新重建\\"没有意义（点多少次都一样）—— 那种情况只给\\"重传 / 重新识别\\"这条出路；
+// 只有\\"偶发读失败\\"（并发、事务被中止）才值得给重试按钮（2026-10-15 用户口径：点了没用的按钮只会让人困惑）
+const thumbRetryable = computed(() => thumbErrorFiles.value.some((i) => !/没有落盘|找不到/.test(String(sheetError.value[i] || ''))))
 /** 重建失败之后的重试：清掉失败记录再补一遍（分片偶尔读不到、或上一次撞上并发时会需要） */
 function retrySheets() {
   sheetError.value = {}
@@ -382,7 +385,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
       <p v-if="tableOpen && thumbErrorFiles.length" class="step-note" data-role="thumb-error-note">
         有 {{ thumbErrorFiles.length }} 页的格子图没能从落盘的字形里重建（{{ thumbErrorFiles.map((i) => thumbFailReason(i)).join('；') }}）——
         用第 2 步结果卡片上的「重传」把这一页补一次，或重新识别一遍；这几页的字形可能没有落盘。
-        <button class="text" type="button" data-role="thumb-retry" @click="retrySheets">重新重建这几页</button>
+        <button v-if="thumbRetryable" class="text" type="button" data-role="thumb-retry" @click="retrySheets">重新重建这几页</button>
       </p>
 
       <div v-if="rows.list.length && tableOpen" class="corr-table" data-role="correction-table">

@@ -251,3 +251,28 @@ export async function clearGlyphs({ batchId = null } = {}) {
     return { ok: false, removed: 0, error: e && e.message ? e.message : String(e) }
   }
 }
+
+/**
+ * 清掉**某一页**的字形分片（2026-10-15 用户口径：卡片上的「作废」）。
+ * 为什么必须按页删：作废一页之后这一页的掩膜就不该再留着 —— 不删的话，下次生成字体或
+ *   重建缩略图还会把它当成"这一页的字形"，作废就只是界面上的假象。
+ * 分片键是「批次 + fileIndex」，两个都要给（批次为空时按 `default` 处理，与写入侧口径一致）。
+ * @returns {{ok:boolean, removed:number, error?:string}} 这一页本来就没有分片时 `removed: 0`（不算失败）
+ */
+export async function deleteGlyphPage({ batchId = null, fileIndex = 0 } = {}) {
+  try {
+    const pages = await listGlyphPages()
+    const wanted = pages.filter((p) => p.fileIndex === fileIndex && (batchId ? p.batchId === batchId : true))
+    if (!wanted.length) return { ok: true, removed: 0 }
+    const { db, store } = await openProjectDb()
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite')
+      for (const info of wanted) tx.objectStore(store).delete(info.key)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error || new Error('字形清理失败'))
+    })
+    return { ok: true, removed: wanted.length }
+  } catch (e) {
+    return { ok: false, removed: 0, error: e && e.message ? e.message : String(e) }
+  }
+}

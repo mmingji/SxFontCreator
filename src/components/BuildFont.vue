@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 // 第 3 步：生成（原第 5 步「生成字体」+ 第 6 步「下载安装」合并，决策 八-15 ①）
 // 职责（**一页到底**，原两步的全部功能都在这里）：
 //   ① 名称表字段（决策 四-1：默认值齐全、可在这里改）
@@ -28,6 +28,7 @@ import { loadBuiltinFont } from '../lib/referenceFont.js'
 import { buildTemplatePdf } from '../lib/templatePdf.js'
 import { dateStamp } from '../lib/orderFile.js'
 import { scanRunning } from '../lib/scanRunState.js'
+import { getAllChars } from '../lib/charset.js'
 import { releaseAllPreviewFonts } from '../lib/fontPreview.js'
 import FontPreview from './FontPreview.vue'
 
@@ -491,6 +492,52 @@ async function downloadRewriteTemplate() {
     progress.value = { done: 0, total: 0 }
   }
 }
+
+/**
+ * 按"预览里未收录的字"出一张**补写模板**（2026-10-15 用户口径）。
+ * 与「重写模板」同一条路径：`buildTemplatePdf` + 页号接在现有纸之后 → 写完后用第 2 步的
+ *   「补传扫描件」丢回来（按页号追加成新页，不会覆盖已经识别过的那些页）。
+ * 一条硬约束：**印在 PDF 上的参考字必须在字表内**（决策 一-4 (a)：字表外的字符会印成方块）——
+ *   所以先把不在表内的字挑出来，如实告诉用户"这几个字做不进模板"。
+ * @param {string[]} chars 未收录的字（预览组件上报）
+ */
+async function downloadFillTemplate(chars) {
+  const list = Array.from(new Set((chars || []).filter((c) => typeof c === 'string' && c.length)))
+  if (busy.value || !list.length) return
+  busy.value = true
+  try {
+    const all = new Set(getAllChars())
+    const inTable = list.filter((c) => all.has(c))
+    const notInTable = list.filter((c) => !all.has(c))
+    if (!inTable.length) {
+      setMessage('这几个字都不在字表里（' + notInTable.join('、') +
+        '），做不出模板 —— 模板上的参考字只能取《通用规范汉字表》+ 基础字符里的字', 'error')
+      return
+    }
+    setMessage('正在准备参考字…', 'info')
+    const fontBytes = await loadBuiltinFont()
+    const maxPage = pages.value.reduce((m, p) => Math.max(m, p.pageNumber || 0), 0)
+    const out = await buildTemplatePdf({
+      chars: inTable,
+      fontBytes,
+      includeSelfCheck: false,
+      startPage: maxPage + 1,
+      onProgress: (done, total) => setMessage('正在生成补写模板：第 ' + done + ' / ' + total + ' 页…', 'info')
+    })
+    downloadBytes(out.bytes, '补写模板-' + dateStamp() + '.pdf', 'application/pdf')
+    setMessage('已下载补写模板（' + inTable.length + ' 个字、' + out.sheetPages + ' 页，页号 ' + (maxPage + 1) +
+      ' 起）：照着写完后，把扫描件用第 2 步的「补传扫描件」丢进来 —— 它会按页号追加成新的页，' +
+      '不会覆盖已经识别过的那些页' +
+      (notInTable.length ? '。另有 ' + notInTable.length + ' 个字不在字表里（' + notInTable.join('、') + '），做不进模板' : ''),
+      'done')
+  } catch (e) {
+    setMessage('生成补写模板失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    busy.value = false
+    stage.value = ''
+    progress.value = { done: 0, total: 0 }
+  }
+}
 // 剔除了字、或改了名称表之后，之前那份体检快照就与当前状态不一致了（store 会置 checkupStale）
 const staleAfterExclude = computed(() => !!checkup.value && store.font.checkupStale)
 // 内存里还有没有刚生成的字节（没有就说明刷新过页面，下载会当场重建一次）。
@@ -667,11 +714,16 @@ function reloadNow() {
           :loading-text="busy ? stage + '（' + progress.done + ' / ' + progress.total + ' 个字形）' : ''"
           @request-bytes="loadPreview"
           @coverage="onPreviewCoverage"
+          @fill-template="downloadFillTemplate"
         >
           <template #head-actions>
+            <button class="primary" data-role="download-zip" :disabled="busy" @click="downloadZip">下载 zip</button>
+          </template>
+          <!-- 两个"看一眼"的按钮挪到**预览工具条最右侧**（2026-10-15 用户口径）：
+               与"填入收录的字 / 换一句常用话 / 清空"同一栏，下载 zip 仍留在标题行最右 -->
+          <template #toolbar-actions>
             <button class="text" type="button" data-role="overview-open" :disabled="busy" @click="openOverview">查看字形总览</button>
             <button class="text" type="button" data-role="preview-open" :disabled="busy" @click="openPreviewPage">查看网页预览</button>
-            <button class="primary" data-role="download-zip" :disabled="busy" @click="downloadZip">下载 zip</button>
           </template>
           <!-- 标题下面第一行：生成成功的结论（"字体已生成：136 个字形…可以回第 2 步的格级视图逐格看"） -->
           <template #head-note>
@@ -684,14 +736,8 @@ function reloadNow() {
     <!-- ④ 字形体检（阶段三 3.2，决策 四-7）：只提示、不改字形；处置手段是"剔除"或"重写那一格"。
          放在 ready 分支**之外**：剔除一个字之后 `store.font.built` 会被清掉（提示"要重新生成"），
          如果它在里面，面板会跟着整块消失 —— 那样就看不清单、也没法恢复（实测踩到）。
-         2026-10-12（决策 八-16 ⑥）：整块**默认收起**，只显示一行摘要，点开才看清单 -->
-    <!-- ④ 字形体检（阶段三 3.2，决策 四-7）：只提示、不改字形；处置手段是"剔除"或"重写那一格"。
-         放在 ready 分支**之外**：剔除一个字之后 `store.font.built` 会被清掉（提示"要重新生成"），
-         如果它在里面，面板会跟着整块消失 —— 那样就看不清单、也没法恢复（实测踩到）。
          2026-10-12（决策 八-16 ⑥）：整块**默认收起**，只显示一行摘要，点开才看清单。
-         2026-10-15（八-19 ⑱）：四栏统一成 tab（建议重写 / 只是留意 / **重写清单** / **已剔除的字**）——
-           每栏都是「说明 + 该栏的批量动作（在说明文字最右侧）+ 同一套表格 + 同一套分页」，
-           不再各写一套列表与按钮；「看清单 / 收起清单」挪到标题行最右侧。 -->
+         2026-10-15（八-19 ⑱）：四栏统一成 tab（建议重写 / 只是留意 / 重写清单 / 已剔除的字）。 -->
     <div v-if="checkup" class="card nested" data-role="glyph-checkup">
       <div class="panel-head">
         <!-- 说明紧跟"字形体检"四个字（2026-10-13 用户口径：不要被推到行尾去） -->

@@ -1,4 +1,4 @@
-// 项目状态（Pinia）：本项目只支持一套字体（决策记录 五-1），因此状态就是"当前项目"本身。
+﻿// 项目状态（Pinia）：本项目只支持一套字体（决策记录 五-1），因此状态就是"当前项目"本身。
 // 数据结构（也是「导出项目包」的内容，决策记录 五-2）：
 //   meta      —— 字体名称表字段（族名、子族名、版本、设计者、版权、许可…），全部有默认值（四-1）
 //   glyphs    —— 字形数据：码位 → 轮廓（阶段一后续步骤填充）
@@ -493,6 +493,45 @@ export const useProjectStore = defineStore('project', {
       this.markDirty()
       schedulePersist(this)
       return { ok: true, replaced: index >= 0 }
+    },
+
+    /**
+     * 作废某一页（2026-10-15 用户口径：结果卡片上的「作废」）。
+     * 语义：把这一页的识别结果与字形**一起作废**，但**卡片留着**（页记录降级成一条"已作废"占位）——
+     *   作废之后用户多半要重扫这一页，入口（卡片上的「重传」）必须还在；把卡片删掉就没有入口了。
+     * 连带：与单页重传同一口径 —— 这一页的字形没了，第 3 步的产物就不再对应（`built=false` + 体检快照标过期）。
+     * 落盘的字形分片由调用方（`deleteGlyphPage`）删掉：不删的话下次生成字体还会把它当"这一页的字形"，
+     *   作废就只是界面上的假象。
+     */
+    voidScanPage({ fileIndex, summary }) {
+      this.scan.pages = this.scan.pages.map((p) => {
+        if (p.fileIndex !== fileIndex) return p
+        const row = {
+          ...p,
+          ok: false,
+          voided: true,
+          reason: '已作废（等你重传这一页）',
+          cells: [],
+          markedCells: [],
+          counts: { written: 0, empty: 0, suspect: 0, marked: 0, uncertain: 0, inkPixels: 0 },
+          pageChars: null,
+          unsureCells: [],
+          needReview: false
+        }
+        // 作废之后它既不是"重复页"也不是"失败的重复件"：两个标记都要清掉
+        delete row.duplicateOf
+        delete row.failedDuplicateOf
+        return row
+      })
+      if (summary) this.scan.summary = summary
+      this.scan.lastRunAt = new Date().toISOString()
+      if (this.font.built) {
+        this.font.built = false
+        this.font.builtAt = null
+      }
+      if (this.font.checkup) this.font.checkupStale = true
+      this.markDirty()
+      schedulePersist(this)
     },
 
     // 清掉更正配对（**不动识别结果**）：配对依赖"被圈字清单"，清单一变就必须重新核对。

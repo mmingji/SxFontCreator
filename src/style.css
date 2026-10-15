@@ -1005,6 +1005,17 @@ label.text-file input {
   color: #2e6e7e;
 }
 
+/* 已作废（2026-10-15）：灰底 + 灰标签 —— 与"失败"（红）分开：它不是识别失败，是用户主动清掉的 */
+.scan-card.is-voided {
+  background: #f7f8fa;
+  border-left-color: #b9bec7;
+  opacity: 0.85;
+}
+
+.scan-card.is-voided .scan-card-badge {
+  background: #eceef2;
+  color: #6b7280;
+}
 .scan-card.is-duplicate .scan-card-badge {
   background: #e5e7eb;
   color: #4b5563;
@@ -1490,6 +1501,19 @@ button.text.accent:hover {
 
 .font-preview-input:focus {
   border-color: var(--primary);
+}
+
+/* 工具条最右侧的动作位（2026-10-15 用户口径）：查看字形总览 / 查看网页预览 —— 与"看预览"这一组放一起 */
+.font-preview-toolbar-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 「未收录的字」后面那个按钮：与前面的字列**留出距离**（用户口径："不要贴死前面文本"） */
+.font-preview-missing .font-preview-fill {
+  margin-left: 10px;
 }
 
 .font-preview-toolbar {

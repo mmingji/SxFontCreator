@@ -14,7 +14,7 @@ import { useProjectStore } from '../store/project.js'
 import { SCAN_DEFAULTS, applyPageOrder, evaluateRescanAccept, evaluateScanGate, markDuplicatePages, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
 import { cancelTask, recognizeBatchInWorker, recognizePageInWorker } from '../lib/scanWorkerClient.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
-import { clearGlyphs, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
+import { clearGlyphs, deleteGlyphPage, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
 import { describeOrderFile } from '../lib/orderFile.js'
 import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, naturalCompare, pickScanInputs } from '../lib/scanInput.js'
 import { clearScanDirHandle, loadScanDirHandle, requestScanDirPermission, saveScanDirHandle } from '../lib/scanDirHandle.js'
@@ -843,6 +843,42 @@ async function supplementFiles(event) {
   }
 }
 
+// ── 作废一页（2026-10-15 用户口径：结果卡片上的「作废」）────────────────────────
+// 与「重传」是一对：重传 = 立刻用新扫的件替换这一页；作废 = 先把它清掉（卡片留着），
+//   之后想什么时候重扫都行。语义与"整批重新识别"类似但**只作用于这一页**。
+const voidTarget = ref(null)
+function openVoid(page) {
+  if (running.value) return
+  voidTarget.value = page
+}
+async function confirmVoid() {
+  const page = voidTarget.value
+  voidTarget.value = null
+  if (!page || running.value) return
+  // ① 落盘的字形按页删掉（不删的话下次生成字体还会把它当"这一页的字形"）
+  const removed = await deleteGlyphPage({ batchId: store.scan.batchId, fileIndex: page.fileIndex })
+    .catch(() => ({ ok: false, removed: 0 }))
+  // ② 内存里的分片缓存与缩略图也清掉
+  clearPageCache(page.fileIndex)
+  const nextImages = { ...images.value }
+  delete nextImages[page.fileIndex]
+  images.value = nextImages
+  if (openIndex.value === page.fileIndex) openIndex.value = null
+  if (zoomIndex.value !== null) zoomIndex.value = null
+  // ③ 页记录降级成"已作废"占位 + 重算整批汇总与去重（这一页退出全部统计）
+  const preview = store.scan.pages.map((p) => (p.fileIndex === page.fileIndex ? { ...p, ok: false, voided: true } : p))
+  const { duplicates, failedDuplicates } = markDuplicatePages(preview)
+  const summary = summarizeBatch(preview, {
+    expectedBatchCode: batch.value ? batch.value.batchCode : undefined,
+    sheetPages: batch.value ? batch.value.pageCount : undefined
+  })
+  store.voidScanPage({ fileIndex: page.fileIndex, summary })
+  store.applyScanDuplicates(duplicates, failedDuplicates)
+  savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
+  setMessage('已作废「' + page.fileName + '」：这一页的识别结果与字形都清掉了 —— 卡片还留着，' +
+    '点「重传」可以把这一页重新扫进来；第 3 步的字体要重新生成才生效' +
+    (removed && removed.removed ? '' : '（这一页本来就没有落盘的字形）'), 'info')
+}
 // ── 手选页序（决策 二-7）：改数字或拖动都能改 ────────────────────────────
 function applyOrder(overrides, note) {
   const next = applyPageOrder(pages.value, overrides, chars.value, {
@@ -908,6 +944,8 @@ function isDuplicateDropped(page) {
 }
 function cardClass(page) {
   if (isDuplicateDropped(page)) return 'is-duplicate'
+  // 已作废（2026-10-15）：灰掉，与"失败"分开说 —— 它不是识别失败，是用户主动清掉的
+  if (page.voided) return 'is-voided'
   if (!page.ok) return 'is-failed'
   if (page.kind === 'correction') return 'is-correction'
   if (page.needReview) return 'is-review'
@@ -915,6 +953,7 @@ function cardClass(page) {
 }
 function cardStatusLabel(page) {
   if (isDuplicateDropped(page)) return '重复页'
+  if (page.voided) return '已作废'
   if (!page.ok) return '失败'
   if (page.kind === 'correction') return '更正册'
   if (page.needReview) return '待确认'
@@ -1316,6 +1355,16 @@ const zoomIsMarkedLabel = computed(() => {
           >手选页序</button>
           <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来。
                2026-10-12 按用户口径由实体按钮改成文本按钮「重传」，位置紧跟「看格子」之后 -->
+          <!-- 作废这一页（2026-10-15 用户口径）：清掉它的识别结果与字形，卡片留着 ——
+               之后点「重传」就能重新扫进来（与"整批重新识别"同一语义，只是只作用于这一页） -->
+          <button
+            v-if="page.ok"
+            class="text"
+            type="button"
+            data-role="void-page"
+            title="把这一页的识别结果与字形一起作废（卡片留着，可以用「重传」重新扫这一页）"
+            @click="openVoid(page)"
+          >作废</button>
           <label
             class="scan-card-rescan"
             :class="{ disabled: running || rescanning !== null }"
@@ -1526,6 +1575,27 @@ const zoomIsMarkedLabel = computed(() => {
          它是识别结果的下一步处理，不该另占一步；有识别结果时就挂在这里 -->
     <CorrectionConfirm v-if="showResult && !running" />
 
+    <!-- 作废一页的二次确认（2026-10-15 用户口径）：它是破坏性动作，必须先说清后果 -->
+    <div v-if="voidTarget" class="backup-overlay" @click.self="voidTarget = null">
+      <div class="backup-modal" role="dialog" aria-label="作废这一页" data-role="void-modal">
+        <div class="backup-head">
+          <h3>作废这一页？</h3>
+          <button class="text" type="button" data-role="void-cancel" @click="voidTarget = null">关闭</button>
+        </div>
+        <p class="panel-hint">
+          会把「{{ voidTarget.fileName }}」的<strong>识别结果与落盘的字形一起清掉</strong>
+          （第 3 步已经生成的字体也要重新生成）。
+        </p>
+        <p class="step-note">
+          卡片会留着 —— 想重新扫这一页，作废之后点它上面的「<strong>重传</strong>」即可；
+          整批重扫则用上面的「重新识别」。
+        </p>
+        <div class="panel-actions">
+          <button class="text danger" type="button" data-role="void-confirm" @click="confirmVoid">确认作废这一页</button>
+          <button class="text" type="button" data-role="void-cancel-btn" @click="voidTarget = null">取消</button>
+        </div>
+      </div>
+    </div>
     <!-- 重新识别前的确认（2026-10-13 用户口径）：第 3 步已经有生成信息时先说一句，
          因为整批重新识别会把那份字体产物与体检清单一起清掉 -->
     <div v-if="restartOpen" class="backup-overlay" @click.self="restartOpen = false">

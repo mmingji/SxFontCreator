@@ -12,8 +12,35 @@
 // 预览字号三档（像素）：小字看字距与整体匀称、大字看笔画细节与起收笔（用户 2026-10-07 拍板）
 export const PREVIEW_SIZES = [24, 36, 56]
 
-// 「换一句常用话」的示例句：全是极常用字，用来演示"清单外的字会回退成系统字体"
-export const SAMPLE_SENTENCE = '这套手写体是我自己写的，看看效果怎么样。'
+// 「换一句常用话」的示例句库（2026-10-15 用户口径：**预置几句经典唐诗宋词、每点一次随机换一句**）。
+// 选句标准：① 都是耳熟能详的名句；② **尽量用笔画简单、日常常见的字** —— 这样做出来的手写体里
+//   命中率高、认读也容易（生僻字会让预览里满屏回退，反而看不出自己写的字）。
+export const SAMPLE_SENTENCES = [
+  '床前明月光，疑是地上霜。', // 李白《静夜思》
+  '白日依山尽，黄河入海流。', // 王之涣《登鹳雀楼》
+  '春眠不觉晓，处处闻啼鸟。', // 孟浩然《春晓》
+  '锄禾日当午，汗滴禾下土。', // 李绅《悯农》
+  '空山不见人，但闻人语响。', // 王维《鹿柴》
+  '千山鸟飞绝，万径人踪灭。', // 柳宗元《江雪》
+  '明月几时有，把酒问青天。', // 苏轼《水调歌头》
+  '大江东去，浪淘尽，千古风流人物。' // 苏轼《念奴娇·赤壁怀古》
+]
+
+// 兼容旧名字（示例句从"一句"变成"一组"）：仍导出第一句，测试与旧引用不受影响
+export const SAMPLE_SENTENCE = SAMPLE_SENTENCES[0]
+
+/**
+ * 随机取一句示例诗（2026-10-15 用户口径：「每点一次换一句」）。
+ * 传入上一句时会**避开它**（点一下却还是同一句，用户会以为按钮坏了）；只有一句可选时原样返回。
+ * @param {string} [current] 当前这一句
+ * @returns {string}
+ */
+export function pickSampleSentence(current) {
+  const list = SAMPLE_SENTENCES
+  if (list.length <= 1) return list[0] || ''
+  const rest = list.filter((s) => s !== current)
+  return rest[Math.floor(Math.random() * rest.length)]
+}
 
 // 默认预览文本 = 已收录的前 40 个字：保证 100% 命中，第一眼就看到自己写的字
 export const DEFAULT_PREVIEW_CHARS = 40
