@@ -13,7 +13,7 @@ import fontkit from '@pdf-lib/fontkit'
 import { getAllChars } from './charset.js'
 // 页级校验码抽在 lib/pageCode.js（零依赖纯函数）：识别端也要用同一个算法，若留在本文件里，
 // 识别链路就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
-import { computePageCode } from './pageCode.js'
+import { computePageCode, isBlankChar } from './pageCode.js'
 import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, correctionPageNumber } from './layout.js'
 
 // 版面常量（LAYOUT、格位换算、页脚编码）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
@@ -331,14 +331,20 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     // 这一页的字：**先切出来、再算指纹、再用它印参考字** —— 三处必须用同一份，
     // 否则"印在纸上的字"与"页脚指纹描述的字"就会不是一回事（识别端永远对不上）
     const slice = list.slice(p * perPage, (p + 1) * perPage)
-    const pageCode = computePageCode(slice)
+    // **空白字符要当作"这一格没有字"**（2026-10-16 修）：字表里恰好有一个半角空格（基础字符 169 的第 1 个），
+    //   它落在常用档第 48 页第 109 格、全量档第 60 页第 82 格。参考字字体给空格的是空字形 → 纸上没墨迹 →
+    //   识别端判 empty 跳过；生成端若照算指纹，两端就对不上（实测 836 vs 1132）→ 那一页必然整页失败。
+    //   **格位保留**（后面的字不前移）：页号 + 格号 → 字的映射与字序文件仍一一对应。
+    const pageChars = slice.map((ch) => (isBlankChar(ch) ? null : ch))
+    const pageCode = computePageCode(pageChars.filter((ch) => ch !== null))
     pageCodes.push(pageCode)
     drawGrid(page)
     drawRegisterMarks(page, startPage + p, pageCode)
     drawVisiblePageNumber(page, startPage + p, font)
     drawHint(page, font, PAGE_HINT_LINES)
-    for (let i = 0; i < slice.length; i++) {
-      drawReferenceChar(page, cellRect(i), slice[i], font, glyphBoxes)
+    for (let i = 0; i < pageChars.length; i++) {
+      if (pageChars[i] === null) continue // 空白格：印出来什么都没有，跳过（指纹也把它排除了）
+      drawReferenceChar(page, cellRect(i), pageChars[i], font, glyphBoxes)
     }
     if (onProgress) {
       onProgress(p + 1, sheetPages)
