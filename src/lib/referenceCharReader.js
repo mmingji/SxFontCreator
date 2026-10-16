@@ -431,11 +431,12 @@ export function locateInSequence(cells, seq, options = {}) {
 /**
  * 一页的完整读取：逐格识别 + 候选全序各试一次定位。
  * @returns {{cells:object, located:object|null, chars:string|null, printedChars:string[],
- *            sureCount:number, unsureCells:number[], emptyCells:number[], source:string}}
+ *            sureCount:number, unsureCount:number, emptyCount:number, emptyCells:number[], source:string}}
  *   located 命中时 `chars` 就是**整页字序**（认错的格与没有参考字的格都由它补上）；
  *   没命中（自定义选字 / 不是模板页）时 `chars` 为 null —— 这种页的字序由**逐格认字**给出，
- *   再由页脚指纹自证（见 `scanFlow` 的 ③.5 / ③.6）。**注意**：`unsureCells` 只是这一层的测量结果，
- *   界面上早已没有"逐格复核"这条操作（2026-10-15 用户拍板去掉，页级指纹一致即认为整页字序正确）。
+ *   再由页脚指纹自证（见 `scanFlow` 的 ③.5 / ③.6）。**注意**：界面上早已没有"逐格复核"这条操作
+ *   （2026-10-15 用户拍板去掉，页级指纹一致即认为整页字序正确），所以这一层只给**计数**
+ *   （`unsureCount` / `emptyCount`），不再给"哪几格没认准"的索引 —— `unsureCells` 字段 2026-10-16 删除。
  *   `printedChars` = **这一页实际印了参考字的那些格的字**（按格号升序）—— 它就是页脚校验码的输入，
  *   识别端拿它算一遍与纸面比（见 scanFlow 的页级校验），所以必须与生成端的切法完全一致。
  */
@@ -453,7 +454,6 @@ export function readPage(designGray, library, options = {}) {
     const cand = { seqKey: s.key, seqLabel: s.label, ...hit }
     if (!located || cand.agree > located.agree) located = cand
   }
-  const unsureCells = read.cells.filter((c) => !c.empty && !c.sure).map((c) => c.index)
   const emptyCells = read.cells.filter((c) => c.empty).map((c) => c.index)
   const chars = located ? located.chars.join('') : null
   // 指纹的输入：**这一页实际印了参考字的那些格的字**，按"最后一个有参考字的格"截断
@@ -474,7 +474,6 @@ export function readPage(designGray, library, options = {}) {
     emptyCount: read.emptyCount,
     sureCount: read.sureCount,
     unsureCount: read.unsureCount,
-    unsureCells,
     emptyCells,
     // 有参考字的格占多少 —— 这是"这张纸是不是本程序模板"的判据（外来件取不到参考字）
     inkRatio: 1 - read.emptyCount / LAYOUT.perPage,

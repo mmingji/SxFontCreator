@@ -393,7 +393,8 @@ export async function recognizePage(file, options = {}) {
   //   · 纸上没有本程序的参考字版式 → **整页失败**（只认自家模板，外来图片一个字形也不产生）
   //   · 有参考字：优先**序列定位** —— 预置档位的纸连页脚都不用读，页号与整页 136 字一起确定；
   //     定位不上（自定义选字的纸不是任何全序的连续段）→ 退到"逐格识别的字 + 页脚页号"，
-  //     认不准的格记进 unsureCells 交界面复核
+  //     没认准的格只**计数**（`unsureCount`，进页记录与提示），不再逐格往界面上送 ——
+  //     那条「逐格复核」的操作 2026-10-15 已按用户拍板去掉，`unsureCells` 字段 2026-10-16 一并删除
   const orderChars = typeof opt.orderChars === 'string' && opt.orderChars.length ? opt.orderChars : ''
   // 候选全序（页级校验的反推要在它们里面逐页找指纹）：
   //   · file    = 目录里的字序文件（决策 一-18）
