@@ -7,7 +7,7 @@
 //   ③ **先看到模板第一页的真实预览**（pdf.js 渲染真实 PDF）④ 生成模板 PDF / 更正册并下载。
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
 // 数据来源：字表来自 src/lib/charset.js（8274 字 = 官方 8105 + 基础字符 169，决策 三-1、八-1、八-2）；
-//   字体来自 referenceFont.js（内置子集或本机字体）；试打短文来自 singlePageText.js。
+//   字体固定用内置楷体子集（referenceFont.js；2026-10-11 起界面不再提供"选本机字体"，见决策 五-9）；试打短文来自 singlePageText.js。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf, buildSamplePagePdf } from '../lib/templatePdf.js'
 import { getCharsetMeta } from '../lib/charset.js'
@@ -47,7 +47,8 @@ const commonPages = Math.ceil(commonCount / LAYOUT.perPage)
 //     改成一篇短文 —— 写一遍既确认了版式，又像写了一页作品，这些字还会直接进字体。短文来源见
 //     `lib/singlePageText.js`（选文三条标准与数据都写在那里）。
 //   common —— 常用 6500 字：一级 + 二级 + 基础字符全出（按当前排列方式）
-//   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量"（8274 字）等价
+//   custom —— 自定义选字：展开下面的选字面板，按已选的字出。**一个字都没选 = 没有字可排**（2026-10-16 修订：
+//     原来是"空 = 全量"，于是刚切到这一档就按 8274 字出纸、预览显示全量第一页，与"还没选字"的直觉相反）
 // 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
 // 三个档位都只"出一份纸"：模板不再记任何项目数据，只留一笔"生成过模板"的元信息（决策 五-9 ⑩）。
 const scope = ref('single')
@@ -63,43 +64,108 @@ const messageType = ref('info') // info | error | done
 const progress = ref({ done: 0, total: 0 })
 const lastResult = ref(null) // { name, pages, bytes }
 
-// 预览：存的是**真实生成的模板 PDF 字节**（与点「生成模板 PDF」得到的是同一份内容），
-// 交给 PdfPreview 用 pdf.js 渲染第 1 页 —— 用户下单前就能看到"打出来长什么样"
+// 预览：**按需只生成"当前这一页"**（2026-10-16 用户口径，决策 一-14 补注）。
+// 为什么改：原来是"一次生成整份 PDF"—— 全量档要画 61 字表页 + 1 自检页（约 1.5 秒），
+//   书写示意还要再画 61 页、每格画两次字（约 2.9 秒），切个档位要等 4~5 秒、界面像卡住。
+//   预览一次只看一页，所以现在只生成当前页（几十~几百毫秒），翻页时再生成那一页。
+//   **页码与页脚指纹照整份算**（见 lib/templatePdf.js 的 onlyPage），所以预览里的那一页与下载件里的
+//   同一页逐格一致；**下载走另一条路**（`buildCurrentPdf()` 不传 onlyPage、当场整份生成），
+//   与"预览翻到第几页"毫无关系。
 const previewBytes = ref(null)
 const previewBusy = ref(false)
+const previewPage = ref(1) // 模板预览当前页（1 起；最后一页是打印自检页）
+const previewPages = ref(0) // 模板总页数 = 字表页 + 1 页自检；0 = 没有可预览的内容
 
 // 书写示意（用户 2026-10-07 要求，原名"填写示意"、2026-10-08 按用户要求改名）：与模板**同版式**的一页，
 // 但每个书写格里已经用工整手写体写好了那个字，让用户一眼看到"这个格子应该写成什么样"
 // （口径见《决策记录》一-13：笔画多的字撑满格、天生小的字居中写小）。
-// 三点约束：① **页数与当前范围一致**（2026-10-08 由"只出第 1 页"改成跟着范围逐页生成、可翻页，见一-14 ②）；
-//   ② **不进正式模板 PDF**（它是给人看的示范，不是打印件，也不画定位块与页脚编码）；
-//   ③ 参考字用当前选的字体，示范字固定用内置手写体子集（悠哉字体，OFL-1.1）。
+// 四点约束：① **页数与当前范围一致**（2026-10-08 由"只出第 1 页"改成跟着范围逐页生成、可翻页，见一-14 ②，
+//   2026-10-16 起改为**按需只生成当前页**）；② **不进正式模板 PDF**（它是给人看的示范，不画定位块、
+//   不印页脚编码、不参与识别）；③ 参考字用当前选的字体，示范字固定用内置手写体子集（悠哉字体，OFL-1.1）；
+//   ④ **印可见页码**（2026-10-16 用户要求）：与模板同一位置、同一个页号，打印出来当字帖时能与模板逐页对上。
 const sampleBytes = ref(null)
 const sampleBusy = ref(false)
 const sampleNote = ref('')
+const samplePage = ref(1)
+const samplePages = ref(0)
+// 每次"换设置 / 翻页"都递增：异步回来先核对它，**过期的那一轮不许落地**。
+// 这正是原来那个 bug 的根因：`refreshPreview` 开头 `if (previewBusy) return` 把新请求直接丢了，
+//   而在途的旧生成照样把结果写进预览 —— 于是"清空选字 → 立刻切单页试打"看到的是那次全量生成的第一页。
+let previewToken = 0
+let sampleToken = 0
+let previewPending = false
+let previewQueued = false
+
+// 当前档位的字序与页数（两块预览共用同一份推算，避免"字序一套、页数另一套"）
+function scopePlan() {
+  const chars = charsForScope()
+  const sheetPages = chars.length ? Math.max(1, Math.ceil(chars.length / LAYOUT.perPage)) : 0
+  return { chars, templatePages: sheetPages ? sheetPages + 1 : 0, samplePages: sheetPages }
+}
+
+// 生成模板预览的"当前页"（只一页）
+async function generatePreviewPage() {
+  const token = ++previewToken
+  const plan = scopePlan()
+  previewPages.value = plan.templatePages
+  if (!plan.templatePages) {
+    // 自定义档一个字都没选：没有可排的字 → 预览空白（不再退回"全量"）
+    previewBytes.value = null
+    previewBusy.value = false
+    return
+  }
+  const p = Math.min(Math.max(1, previewPage.value), plan.templatePages)
+  previewPage.value = p
+  previewBusy.value = true
+  try {
+    const font = await resolveFont()
+    const out = await buildTemplatePdf({ chars: plan.chars, fontBytes: font.bytes, onlyPage: p })
+    if (token !== previewToken) return // 这一轮已过期（用户又改了设置或翻了页）：丢掉，别动新状态
+    previewBytes.value = out.bytes
+  } catch (e) {
+    if (token === previewToken) setMessage('预览生成失败：' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    if (token === previewToken) previewBusy.value = false
+  }
+}
+
 // 手写体子集 3.84MB：一个会话只 fetch 一次，之后所有示意页复用同一份字节
 let handwritingFont = null
 async function resolveHandwritingFont() {
   if (!handwritingFont) handwritingFont = await loadHandwritingFont()
   return handwritingFont
 }
-async function refreshSample(fontBytes, chars) {
+
+// 生成书写示意的"当前页"（只一页）
+async function generateSamplePage() {
+  const token = ++sampleToken
+  const plan = scopePlan()
+  samplePages.value = plan.samplePages
+  if (!plan.samplePages) {
+    sampleBytes.value = null
+    sampleBusy.value = false
+    return
+  }
+  const p = Math.min(Math.max(1, samplePage.value), plan.samplePages)
+  samplePage.value = p
   sampleBusy.value = true
   try {
+    const font = await resolveFont()
     const sampleFont = await resolveHandwritingFont()
-    // **不截断**：示意页与模板同页数（2026-10-07 用户拍板），全量时是 51 页，预览可以翻页看
     const out = await buildSamplePagePdf({
-      chars,
-      fontBytes,
-      sampleFontBytes: sampleFont
+      chars: plan.chars,
+      fontBytes: font.bytes,
+      sampleFontBytes: sampleFont,
+      onlyPage: p
     })
+    if (token !== sampleToken) return
     sampleBytes.value = out.bytes
     sampleNote.value = ''
   } catch (e) {
     // 示意页失败不影响模板预览与生成：只在这一块显示中文原因
-    sampleNote.value = '书写示意生成失败：' + (e && e.message ? e.message : e)
+    if (token === sampleToken) sampleNote.value = '书写示意生成失败：' + (e && e.message ? e.message : e)
   } finally {
-    sampleBusy.value = false
+    if (token === sampleToken) sampleBusy.value = false
   }
 }
 
@@ -218,6 +284,13 @@ function scopeLabelOf(key) {
 async function buildCurrentPdf(onStep) {
   const font = await resolveFont()
   const chars = charsForScope()
+  // 护栏：字序为空时**不许**往下走 —— buildTemplatePdf 对空数组会退回"全量"（那是库层的默认口径），
+  //   而"自定义选字里一个字都没选"绝不等于"出全量纸"（2026-10-16 口径）。调用方要先给中文提示。
+  if (!chars.length) {
+    const err = new Error('还没有选字：请先在下面「自定义选字」里挑几个字，或把「写哪些字」换成别的档位')
+    err.code = 'NO_CHARS'
+    throw err
+  }
   progress.value = { done: 0, total: Math.ceil(chars.length / LAYOUT.perPage) }
   const out = await buildTemplatePdf({
     chars,
@@ -227,31 +300,59 @@ async function buildCurrentPdf(onStep) {
   return { out, font, chars }
 }
 
-// 预览：防抖 300ms —— 连续切换范围 / 排列方式时不至于每点一下都重算一遍整份 PDF
+// 自定义档一个字都没选时的**常驻提示**（2026-10-16 用户反馈修）：
+//   原来只有"点下载"那一下才写一条消息，而消息行是"上一次操作的结果"、切档位时没人清它 ——
+//   于是切到别的档位之后那句"还没有选字…"还挂在那儿（用户实测报上来的）。
+//   现在把它做成**派生态**：条件成立就出现、不成立就消失（切档位 / 选字都会立刻跟着变），
+//   点下载时仍然照旧给一次明确反馈（护栏抛 NO_CHARS，见 buildCurrentPdf 与 generatePack）。
+const noChars = computed(() => scope.value === 'custom' && charsForScope().length === 0)
+
+// 预览：防抖 300ms —— 连续切换范围 / 排列方式时不至于每点一下都重算一遍
 let previewTimer = null
 function schedulePreview() {
   clearTimeout(previewTimer)
   previewTimer = setTimeout(() => { refreshPreview() }, 300)
 }
+// 换设置（档位 / 排列方式 / 选字数）→ 回到第 1 页，两块各出"当前页"。
+// **在跑也要接住**：跑的过程中又改了设置，就在这一轮结束后用最新状态再跑一次 ——
+//   原来这里是把新请求直接丢掉（`if (previewBusy) return`），于是在途的旧生成照样落地，
+//   界面停在上一次设置的结果上（"清空选字 → 立刻切单页试打 → 看到的还是全量第一页"就是这么来的）。
 async function refreshPreview() {
-  if (previewBusy.value) return
-  previewBusy.value = true
+  if (previewPending) {
+    previewQueued = true
+    return
+  }
+  previewPending = true
   try {
-    const { out, font, chars } = await buildCurrentPdf()
-    previewBytes.value = out.bytes
-    // 书写示意跟在模板预览之后生成：**同一批字、同一个参考字字体**（换本机字体时两块一起变），
-    // 页数与模板一致（2026-10-07 用户拍板），所以全量时这里会多花约 1 秒生成 51 页
-    await refreshSample(font.bytes, chars)
-  } catch (e) {
-    setMessage('预览生成失败：' + (e && e.message ? e.message : e), 'error')
+    do {
+      previewQueued = false
+      previewPage.value = 1
+      samplePage.value = 1
+      await generatePreviewPage()
+      await generateSamplePage()
+    } while (previewQueued)
   } finally {
-    previewBusy.value = false
-    progress.value = { done: 0, total: 0 }
+    previewPending = false
   }
 }
+// 翻页：只重出那一块的那一页（两块各自独立翻页，页码一一对应）
+function onPreviewPageChange(n) {
+  previewPage.value = n
+  generatePreviewPage()
+}
+function onSamplePageChange(n) {
+  samplePage.value = n
+  generateSamplePage()
+}
 onBeforeUnmount(() => { clearTimeout(previewTimer) })
-// 影响版面的输入一变就重出预览；打开这一步时先出一次（用户不用先点按钮才能看到东西）
-watch([scope, orderMode, () => store.selectedCount], () => { schedulePreview() })
+// 影响版面的输入一变就重出预览；打开这一步时先出一次（用户不用先点按钮才能看到东西）。
+// **同时清掉上一次操作的结论**（2026-10-16 用户反馈修）：消息行是"那一次点击的结果"——
+//   换了档位 / 改了选字之后它还原样挂着，就会出现"切到别的档位了、那句'还没有选字…'还在"。
+//   「最近产物」那一行（lastResult）是另一套数据、照旧留着（它说的是已经下到手的那份 zip）。
+watch([scope, orderMode, () => store.selectedCount], () => {
+  if (message.value) setMessage('', 'info')
+  schedulePreview()
+})
 onMounted(() => { schedulePreview() })
 
 // 生成这一轮的**模板压缩包**（决策 一-17）：模板 PDF + 空白更正册 + 完整说明 + 字序文件，
@@ -304,8 +405,8 @@ async function generatePack() {
       fileName: packed.names.zip
     })
     downloadBytes(packed.bytes, packed.names.zip, 'application/zip')
-    // 下载用的就是刚生成的那份模板，顺手把它给预览，省一次重算
-    previewBytes.value = out.bytes
+    // 下载用的是**整份**（与预览无关）：这里不再把它塞给预览 —— 预览是"按需单页"，
+    // 塞整份进去既白占内存，又会让"这一份里只有一页"的约定失效（翻页语义跟着变）。
     lastResult.value = {
       zip: packed.names.zip,
       folder: packed.names.folder,
@@ -327,7 +428,9 @@ async function generatePack() {
       guideHtml ? 'done' : 'info'
     )
   } catch (e) {
-    setMessage('生成失败：' + (e && e.message ? e.message : e), 'error')
+    // NO_CHARS 不是故障、是"还差一步操作"：直接用它的中文提示（不加"生成失败："前缀）
+    const noChars = !!(e && e.code === 'NO_CHARS')
+    setMessage(noChars ? e.message : '生成失败：' + (e && e.message ? e.message : e), noChars ? 'info' : 'error')
   } finally {
     busy.value = false
     progress.value = { done: 0, total: 0 }
@@ -420,21 +523,32 @@ async function generatePack() {
       <PdfPreview
         :bytes="previewBytes"
         :loading="previewBusy"
+        :page-no="previewPage"
+        :page-count="previewPages"
         :max-width="640"
         title="模板预览（与实际打印逐格一致，最后一页是打印自检页）"
+        empty-text="还没有可预览的字：换个档位，或在下面「自定义选字」里挑几个字"
+        @page-change="onPreviewPageChange"
       />
       <PdfPreview
         :bytes="sampleBytes"
         :loading="sampleBusy"
+        :page-no="samplePage"
+        :page-count="samplePages"
         :max-width="640"
         title="书写示意（按悠哉字体示意书写格式）"
         empty-text="书写示意还没生成出来"
+        @page-change="onSamplePageChange"
       />    </div>
     <p v-if="sampleNote" class="panel-message error">{{ sampleNote }}</p>
 
     <div class="panel-actions">
       <button class="primary" data-role="generate-pack" :disabled="busy" @click="generatePack">生成并下载模板压缩包</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
+      <!-- 自定义档一个字都没选：按钮旁常驻一行说明（切档位 / 选字都会立刻跟着变，见 noChars 的注释） -->
+      <span v-if="noChars" class="panel-hint" data-role="template-nochars">
+        还没有选字：在下面挑几个字，或把「写哪些字」换成别的档位
+      </span>
     </div>
 
     <!-- data-role：给自动化测试一个稳定锚点（本步还有一条"书写示意失败"的消息，同样用 .panel-message） -->

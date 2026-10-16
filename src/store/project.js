@@ -12,7 +12,7 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import { loadProject, saveProject, getStorageState, clearStorage } from '../lib/persist.js'
-import { getAllChars, countChars } from '../lib/charset.js'
+import { countChars } from '../lib/charset.js'
 import { normalizeSelection } from '../lib/frequency.js'
 import { collectGlyphStats } from '../lib/scanMeta.js'
 import { toggleSnapshotExcluded } from '../lib/glyphCheckup.js'
@@ -139,8 +139,12 @@ export const useProjectStore = defineStore('project', {
     // 上次关闭前有改动没写完、已从快照恢复：界面要提示一句，否则用户不知道"这次打开的数据是哪来的"
     recoveredFromSnapshot: (state) => state.loadSource === 'snapshot-newer' || state.loadSource === 'snapshot-only',
     selectedCount: (state) => countChars(state.selection.chars),
-    // 出模板时要排的字：没选字就是全量（默认体验：零配置也能直接打全量模板）
-    charsForTemplate: (state) => (state.selection.chars.length ? state.selection.chars : getAllChars().join('')),
+    // 出模板时要排的字：**没选字就是没字可排**（2026-10-16 用户口径）
+    //   原来这里是"没选字就退回全量 8274 字"（当时的默认体验：零配置也能直接打全量模板）——
+    //   但「自定义选字」是**主动选的档位**，一个字都没选却按全量出纸与直觉相反：刚切进这一档，
+    //   面板上就写着"将排 8274 字 ≈ 61 页"、预览里显示全量第一页（实测就是这么报上来的）。
+    //   全量仍有明确入口：选字面板里的「全选全部」（8274 字）。
+    charsForTemplate: (state) => state.selection.chars,
     // 这批识别结果能拿出多少字形（页数 / 写了多少格 / 可疑多少 / 被圈多少 / 去重字数）
     scanGlyphStats: (state) => collectGlyphStats(state.scan.pages),
     // 被剔除的字（数组形式，界面与构建都要用）
@@ -221,8 +225,10 @@ export const useProjectStore = defineStore('project', {
 
     /**
      * 设置选字（顺带做三件事：过滤字表外的字符、按字表字序（官方笔画序）排序、去重 —— 决策 八-6）
-     * 字序一变，**已打印的模板随即失效**（八-9）—— 界面上由调用方给一句提示，落盘数据这里不动
-     * （批次那一层已彻底删除，没有任何"作废"状态要维护）。
+     * 字序一变：**要出新的纸就得重新下载一份模板压缩包**（2026-10-16 修订：旧口径写的"已打印的模板
+     * 随即失效"是模板与识别脱钩之前的话 —— 现在识别端按纸面上认出来的字定"这一页写了哪些字"，
+     * 旧纸与新纸可以混着传，这里没有任何"作废"状态要维护）。界面上由调用方给一句提示，落盘数据不动。
+     * （批次那一层已彻底删除，也没有别的容器要跟着变。）
      * @param {string|string[]} chars
      * @returns {{changed: boolean, count: number, voided: number}} voided 恒为 0（历史字段，保留是为了不动调用方）
      */

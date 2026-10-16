@@ -3,7 +3,8 @@
 // 职责：按分类缩小范围 → 检索或用字网格挑字 → 得到一份"要写的字"清单，交给模板生成。
 // 数据来源：分类数据来自 lib/frequency.js（2026-10-08 换官方口径：规范三级 + 基础字符共四类 ——
 //   一级 3500 / 二级 3000 / 三级 1605 / 基础字符 169；原 GB2312 两套分级已删，修订决策 八-2）；
-//   已选清单存在 store.selection，模板生成时按它排版（空 = 全部 8274 字）。
+//   已选清单存在 store.selection，模板生成时按它排版（**一个字都没选 = 没有字可排**，
+//   2026-10-16 用户口径：不再退回全量 8274 字 —— 那会让"还没选字"看起来像"要打全量"，见 store 的 charsForTemplate）。
 // 界面形态（八-4）：左侧分类树 + 上方检索框 + 中间字网格 + 右侧已选清单；
 //   分类节点的「全选本类 / 取消本类」与「全选全部」**必须二次确认**（一次点击可能加入几千个字，
 //   全选全部是 8274 个 —— 点错一次要按 61 页纸重写）。
@@ -72,15 +73,17 @@ function setMessage(text, type) {
   messageType.value = type || 'info'
 }
 
-// 选字一改，**已打印的模板随即失效**（纸上的字与程序里的选字不再对应）—— 八-9 要求"必须提示"。
-// 2026-10-15：批次已彻底删除，所以不再有"作废了几个批次"这种说法；提示改成对用户真正有意义的那件事：
-//   改完要重新出模板、重印重写。
+// 选字一改要提示一句。**不是"作废"，而是"要出新的纸就重新下载一份压缩包"**（2026-10-16 修订）：
+//   旧口径写的是"已打印的模板随即失效 / 重印重写"，那是模板与识别脱钩之前的话（口径见《决策记录》五-9）——
+//   现在识别端按**纸面上认出来的字**定"这一页写了哪些字"，旧纸与新纸可以混着传，改选字不会让任何纸作废。
+// 2026-10-15：批次已彻底删除，所以也不再提"作废了几个批次"。
 function reportChange(result, what) {
   if (!result.changed) {
     setMessage(what + '：没有变化', 'info')
     return
   }
-  setMessage(what + '：当前已选 ' + result.count + ' 字；改过选字之后，之前打印的模板要重新生成、重印重写', 'done')
+  setMessage(what + '：当前已选 ' + result.count + ' 字；要出新的模板就重新下载一份压缩包（新的字序文件也在里面），' +
+    '已经写好、准备识别的那批纸照旧能用', 'done')
 }
 
 function onToggleChar(char) {
@@ -149,8 +152,10 @@ const selectedStats = computed(() => {
 })
 
 // 出模板的页数：按**码点**数已选字数（countChars）—— store.charsForTemplate 是字符串，
-// 直接用 .length 会被扩展 B 区汉字（代理对）多算一个
-const pageCount = computed(() => Math.max(1, Math.ceil(countChars(store.charsForTemplate) / 136)))
+// 直接用 .length 会被扩展 B 区汉字（代理对）多算一个。
+// **没选字时是 0 页**（2026-10-16 用户口径：没选字就是没字可排，不再退回全量 8274 字）
+const pickedTotal = computed(() => countChars(store.charsForTemplate))
+const pageCount = computed(() => (pickedTotal.value ? Math.ceil(pickedTotal.value / 136) : 0))
 </script>
 
 <template>
@@ -244,10 +249,11 @@ const pageCount = computed(() => Math.max(1, Math.ceil(countChars(store.charsFor
           <li v-for="item in selectedStats" :key="item.key">
             <span>{{ item.label }}</span><span>{{ item.count }}</span>
           </li>
-          <li v-if="!selectedStats.length" class="muted">（未选字时出模板 = 全部 8274 字）</li>
+          <li v-if="!selectedStats.length" class="muted">（还没选字）</li>
         </ul>
         <p class="panel-hint">
-          出模板将排 {{ countChars(store.charsForTemplate) }} 字 ≈ {{ pageCount }} 页（每页 136 格）。
+          <template v-if="pickedTotal">出模板将排 {{ pickedTotal }} 字 ≈ {{ pageCount }} 页（每页 136 格）。</template>
+          <template v-else>还没选字：挑几个字，或点左边的「全选全部」打全量（8274 字）。</template>
         </p>
         <button class="clear-button" :disabled="!store.selectedCount" @click="onClearAllLevels">清空已选</button>
       </aside>
@@ -257,8 +263,9 @@ const pageCount = computed(() => Math.max(1, Math.ceil(countChars(store.charsFor
 
     <p class="panel-hint">
       字序规则：出模板时按<strong>当前排列方式</strong>排版（按使用频率时为频序、笔画序时为《通用规范汉字表》的官方字序），
-      与您点选的先后无关，这样同一份选字每次都排成同一版，页码与格位可复现（决策记录 八-6）。
-      改动选字会让已打印的模板作废 —— 界面会提示，识别阶段也会拦下不匹配的扫描件。
+      与您点选的先后无关 —— 同一份选字每次都排成同一版，页码与格位可复现。
+      <strong>改选字不会让已经写好的纸作废</strong>：第 2 步识别是从纸面上认参考字、自己定出这一页写了哪些字，
+      所以旧纸与新纸可以混着传；要出新的纸，重新下载一份模板压缩包即可（新的字序文件也在包里）。
     </p>
   </section>
 </template>

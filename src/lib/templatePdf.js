@@ -1,6 +1,7 @@
 // 模板与更正册 PDF 生成（阶段一步骤 1.3）
 // 职责：把字表按版面参数排成可打印的 PDF —— 主区模板（参考字 + 书写格）与更正册（空白 + 格号）。
-// 数据来源：字表来自 src/lib/charset.js（顺序即模板字序）；参考字字体由调用方传入字节（内置子集或用户选的本机字体）。
+// 数据来源：字表来自 src/lib/charset.js（顺序即模板字序）；参考字字体由调用方传入字节 ——
+//   界面固定传**内置楷体子集**（2026-10-11 起不再提供"选本机字体"：纸上印的那套参考字必须能被认出来，见决策 五-9）。
 // 版式几何（页面 A4 横向、每行 17 格 / 1.6cm、每页 8 行、书写格 1cm、参考字楷体 14pt、线宽与表格居中）
 //   实测自做字体网标准模板 V4.0（**历史来源，不是必须对齐的基准**，见《决策记录》一-1~一-4）；
 //   其余为自研：四角定位块、页脚页码编码（一-9）、参考字区域 1.02em 与逐字居中、田字格辅助线、
@@ -254,7 +255,7 @@ function drawGrid(page) {
 // 参考字外框表：字符 → 墨迹四边（em 单位），供"把参考字放进参考字区域并居中"使用。
 // 为什么需要：每个字的墨迹在 em 框里占的位置不同（"一"很扁、"囊"很满、拉丁字母还往下伸），
 //   要做到"每个字都在同一块方形区域里视觉居中"，只能按各自的外框定位（2026-10-03 用户规则）。
-// 字体解析不了（本机字体格式异常等）时返回 null，调用方退回典型外框（等价于共用一条基线）。
+// 字体解析不了（字节异常等）时返回 null，调用方退回典型外框（等价于共用一条基线）。
 export function buildGlyphBoxTable(fontBytes) {
   try {
     const f = fontkit.create(fontBytes)
@@ -305,17 +306,26 @@ function drawReferenceChar(page, cell, char, font, glyphBoxes) {
  * @param {boolean} [options.includeSelfCheck] 是否在文末附一页打印自检页（默认附）
  * @param {number} [options.startPage] 起始页号（默认 1）。**重写模板 / 补写模板**用它把页号接在现有纸之后 ——
  *   页脚编的是"第几页"，接着编才不会与已经写过的纸撞号（撞号会被当成同一页覆盖掉）
+ * @param {number} [options.onlyPage] **只生成这一页**（绝对页号，1 起，`sheetPages+1` = 自检页）——
+ *   第 1 步预览按需生成用；不传 = 整份。页码与页脚指纹照整份算，所以与下载件里的同一页逐格一致
  * @param {(done:number,total:number)=>void} [options.onProgress] 进度回调（按字表页）
- * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, pageCodes:number[]}>}
+ * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, pageCodes:number[], onlyPage:number}>}
+ *   onlyPage = 0 表示整份，否则是这次生成的那一页；单页时 pageCodes 只含那一页（自检页为 [0]）
  *   pageCodes 是**每一页各自的 12 位校验码**（这一页那些字的指纹，印在页脚高 12 位）：
  *   识别端拿"猜出来的这一页的字"再算一遍比对，一致就说明页号与字序来源都对（决策 一-9 的 2026-10-15 修订）
  */
-export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, startPage = 1, onProgress }) {
+export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, startPage = 1, onlyPage, onProgress }) {
   const list = chars && chars.length ? chars : getAllChars()
   const perPage = LAYOUT.perPage
   const sheetPages = Math.max(1, Math.ceil(list.length / perPage))
   const selfCheck = includeSelfCheck !== false
   const pageCount = sheetPages + (selfCheck ? 1 : 0)
+  // **只生成一页**（2026-10-16 新增，第 1 步预览用；不传 = 整份，下载路径与既有测试的行为一个字不变）：
+  //   传的是**绝对页号**（1 起，含自检页）。为什么要有它：预览一次只看一页，而整份生成在全量档要
+  //   1.5 秒（书写示意还要 2.9 秒）—— 按需生成把"切档位等几秒"变成"等几十毫秒"。
+  //   **页码与页脚指纹照整份算**（页号由 p 推、指纹由这一页的字算，都不依赖"这一份里画了几页"），
+  //   所以预览里看到的那一页与下载件里的同一页逐格一致（test:template 比对同一页的指纹）。
+  const only = Number.isFinite(onlyPage) ? Math.min(Math.max(1, Math.trunc(onlyPage)), pageCount) : 0
 
   const pdf = await PDFDocument.create()
   pdf.setTitle('SxFontCreator 手写模板')
@@ -325,8 +335,8 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   // 参考字外框表：让每个字在"参考字区域"里按自己的墨迹外形居中（解析失败时为 null，退回典型外框）
   const glyphBoxes = buildGlyphBoxTable(fontBytes)
 
-  const pageCodes = []
-  for (let p = 0; p < sheetPages; p++) {
+  // 画一页字表页（第 p 页，0 起），返回这一页的页脚指纹
+  const drawSheetPage = (p) => {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     // 这一页的字：**先切出来、再算指纹、再用它印参考字** —— 三处必须用同一份，
     // 否则"印在纸上的字"与"页脚指纹描述的字"就会不是一回事（识别端永远对不上）
@@ -337,7 +347,6 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     //   **格位保留**（后面的字不前移）：页号 + 格号 → 字的映射与字序文件仍一一对应。
     const pageChars = slice.map((ch) => (isBlankChar(ch) ? null : ch))
     const pageCode = computePageCode(pageChars.filter((ch) => ch !== null))
-    pageCodes.push(pageCode)
     drawGrid(page)
     drawRegisterMarks(page, startPage + p, pageCode)
     drawVisiblePageNumber(page, startPage + p, font)
@@ -346,19 +355,35 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
       if (pageChars[i] === null) continue // 空白格：印出来什么都没有，跳过（指纹也把它排除了）
       drawReferenceChar(page, cellRect(i), pageChars[i], font, glyphBoxes)
     }
-    if (onProgress) {
-      onProgress(p + 1, sheetPages)
-      // 让出一次主线程：否则生成 51 页时界面完全卡住，进度条也不会刷新
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    return pageCode
   }
 
-  // 自检页放文末：不打乱字表页的编号（第 n 页编码 n−1 保持成立）。
-  // 它带上"页号 = 字表页数 + 1、指纹 = 0"这组标记，识别端据此判定"这不是字表页"（0 是专用值）
-  if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, 0)
+  const pageCodes = []
+  if (only) {
+    // 单页模式：只画请求的那一页（自检页 = sheetPages + 1，它的指纹是专用值 0）
+    if (only > sheetPages) {
+      if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, 0)
+      pageCodes.push(0)
+    } else {
+      pageCodes.push(drawSheetPage(only - 1))
+    }
+    if (onProgress) onProgress(1, 1)
+  } else {
+    for (let p = 0; p < sheetPages; p++) {
+      pageCodes.push(drawSheetPage(p))
+      if (onProgress) {
+        onProgress(p + 1, sheetPages)
+        // 让出一次主线程：否则生成 51 页时界面完全卡住，进度条也不会刷新
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+    }
+    // 自检页放文末：不打乱字表页的编号（第 n 页编码 n−1 保持成立）。
+    // 它带上"页号 = 字表页数 + 1、指纹 = 0"这组标记，识别端据此判定"这不是字表页"（0 是专用值）
+    if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, 0)
+  }
 
   const bytes = await pdf.save()
-  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes }
+  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes, onlyPage: only }
 }
 
 /**
@@ -456,11 +481,15 @@ function drawSampleChar(page, cell, char, font, glyphBoxes) {
  * @param {ArrayBuffer|Uint8Array} options.sampleFontBytes 示范手写体字节（内置悠哉字体子集）
  * @returns {Promise<{bytes:Uint8Array, pageCount:number, glyphCount:number, fontScale:number}>}
  */
-export async function buildSamplePdf({ chars, fontBytes, sampleFontBytes }) {
+export async function buildSamplePdf({ chars, fontBytes, sampleFontBytes, onlyPage, startPage = 1 }) {
   if (!sampleFontBytes) throw new Error('生成书写示意失败：没有手写示范字体')
   const list = chars && chars.length ? Array.from(chars) : getAllChars()
   // 按当前范围**逐页**生成（2026-10-07 用户拍板：与模板同页数、可翻页看）
   const pageCount = Math.max(1, Math.ceil(list.length / LAYOUT.perPage))
+  // **只生成一页**（2026-10-16 新增，与 buildTemplatePdf 的 onlyPage 同一口径）：第 1 步预览按需生成用；
+  //   不传 = 整份（原来的行为一个字不变）。示意页每格要画两次字（参考字 + 示范字），全量 61 页约 2.9 秒 ——
+  //   预览一次只看一页，按需生成把这块也压到几十~几百毫秒。
+  const only = Number.isFinite(onlyPage) ? Math.min(Math.max(1, Math.trunc(onlyPage)), pageCount) : 0
 
   const pdf = await PDFDocument.create()
   pdf.setTitle('SxFontCreator 书写示意')
@@ -471,22 +500,26 @@ export async function buildSamplePdf({ chars, fontBytes, sampleFontBytes }) {
   const glyphBoxes = buildGlyphBoxTable(fontBytes)
   const sampleBoxes = buildGlyphBoxTable(sampleFontBytes)
 
-  let glyphCount = 0
-  for (let p = 0; p < pageCount; p++) {
+  const from0 = only ? only - 1 : 0
+  const to0 = only ? only : pageCount
+  for (let p = from0; p < Math.min(to0, pageCount); p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
+    // **可见页码**（2026-10-16 用户要求）：与模板**同一画法、同一位置**（表格右侧空白带里居中、12pt、中深青），
+    //   页号也是同一个（示意第 p 页 ↔ 模板第 p 页）—— 这样把示意页打印出来当字帖时能一页页对上模板。
+    //   它与"页脚编码"是两回事：示意页**仍然不画定位块、不印页脚编码**，不参与识别（决策 一-14）。
+    drawVisiblePageNumber(page, startPage + p, font)
     const from = p * LAYOUT.perPage
     const slice = list.slice(from, from + LAYOUT.perPage)
     for (let i = 0; i < slice.length; i++) {
       const cell = cellRect(i)
       drawReferenceChar(page, cell, slice[i], font, glyphBoxes)
       drawSampleChar(page, cell, slice[i], sampleFont, sampleBoxes)
-      glyphCount++
     }
   }
 
   const bytes = await pdf.save()
-  return { bytes, pageCount, glyphCount, fontScale: SAMPLE_PAGE.fontScale }
+  return { bytes, pageCount, glyphCount: list.length, fontScale: SAMPLE_PAGE.fontScale, onlyPage: only }
 }
 
 // 兼容旧名（调用方与测试都用 `buildSamplePagePdf`）：现在它生成的是**多页**示意，名字保留不再改，

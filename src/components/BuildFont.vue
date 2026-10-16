@@ -482,7 +482,7 @@ async function downloadRewriteTemplate() {
     downloadBytes(out.bytes, '重写模板-' + dateStamp() + '.pdf', 'application/pdf')
     setMessage('已下载重写模板（' + chars.length + ' 个字、' + out.sheetPages + ' 页，页号 ' +
       (maxPage + 1) + ' 起）：照着写完后，把扫描件用第 2 步的「补传扫描件」丢进来 —— ' +
-      '它会按页号追加成新的页，不会覆盖你已经识别过的那些页；认不准的格可以在卡片上「逐格确认」过一眼', 'done')
+      '它会按页号追加成新的页，不会覆盖你已经识别过的那些页；补回来的字会自动移出重写清单', 'done')
   } catch (e) {
     setMessage('生成重写模板失败：' + (e && e.message ? e.message : e), 'error')
   } finally {

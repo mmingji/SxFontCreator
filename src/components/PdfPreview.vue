@@ -22,9 +22,15 @@ import { loadPdfjs } from '../lib/pdfjsLoader.js'
 
 const props = defineProps({
   // 模板 PDF 的字节（Uint8Array）；为空时显示占位提示
+  // **2026-10-16 起：约定传"只含当前这一页"的 PDF**（按需生成，见 TemplatePreview 的说明）——
+  //   传整份也能用（渲染文档的第 pageNo 页），两种输入都对。
   bytes: { type: Object, default: null },
   // 调用方是否正在生成 PDF（生成期间显示"正在生成预览"而不是"还没有预览"）
   loading: { type: Boolean, default: false },
+  // **当前页号与总页数由调用方给**（2026-10-16 改受控分页）：按需生成时"这一份 PDF 只有 1 页"，
+  //   页数不能再从文档里数 —— 总页数由调用方按字序算出来（模板 = 字表页 + 自检页、示意 = 字表页）。
+  pageNo: { type: Number, default: 1 },
+  pageCount: { type: Number, default: 0 },
   // 预览画布的最大宽度（px）；实际按容器宽度自适应，超过这个值就居中留白
   maxWidth: { type: Number, default: 900 },
   // 标题：第 1 步并排两块预览（模板 / 书写示意），各自要写清自己是什么
@@ -32,13 +38,15 @@ const props = defineProps({
   // 没有字节时的占位文案（如书写示意还没生成出来）
   emptyText: { type: String, default: '' }
 })
+// 翻页交给调用方（它才知道"第 N 页要什么"）：本组件只负责"渲染这一页的字节"
+const emit = defineEmits(['page-change'])
 
 const canvasRef = ref(null)
 const wrapRef = ref(null)
-const pageNo = ref(1)
-const pageCount = ref(0)
 const status = ref('idle') // idle | rendering | ready | error
 const errorText = ref('')
+// 页号与页数都是**调用方给的**（见 props 说明）；这里只保留一个"文档里有几页"用于渲染时的自我校验
+const docPageCount = ref(0)
 
 // pdf.js 的模块加载与 worker 落位抽在 lib/pdfjsLoader.js —— 那里是"pdf.js 怎么用"的唯一出处
 // （file:// 下 worker 只能走 Blob URL、必须用 legacy 构建、销毁要走加载任务这三条坑都记在它的文件头）
@@ -76,8 +84,7 @@ async function openDoc() {
   const previousTask = loadingTask
   loadingTask = null
   docRef.value = null
-  pageNo.value = 1
-  pageCount.value = 0
+  docPageCount.value = 0
   if (!props.bytes || !props.bytes.length) {
     status.value = 'idle'
     errorText.value = ''
@@ -100,7 +107,7 @@ async function openDoc() {
       return
     }
     docRef.value = doc
-    pageCount.value = doc.numPages
+    docPageCount.value = doc.numPages
     // 旧任务等新文档就绪之后再销毁（见文件头 ②）
     await disposeTask(previousTask)
     await renderPage(token)
@@ -115,6 +122,13 @@ async function openDoc() {
   }
 }
 
+// 要渲染**文档里的第几页**：约定传"只含当前页"的 PDF 时它恒为 1；传整份时它就是调用方要的那一页。
+// 用 clamp 保证越界不抛（按需生成刚切档位时，外部页号可能短暂大于文档页数）。
+function renderPageNo() {
+  const total = docPageCount.value || 1
+  return Math.min(Math.max(1, Math.round(props.pageNo || 1)), total)
+}
+
 async function renderPage(token) {
   const doc = docRef.value
   const canvas = canvasRef.value
@@ -123,7 +137,7 @@ async function renderPage(token) {
   status.value = 'rendering'
   try {
     cancelRender()
-    const page = await doc.getPage(pageNo.value)
+    const page = await doc.getPage(renderPageNo())
     if (token !== undefined && token !== openToken) return
     // 按容器宽度（不超过 maxWidth）算缩放：A4 横向 842pt 宽，容器 900px 时约 1.07 倍
     const base = page.getViewport({ scale: 1 })
@@ -154,10 +168,12 @@ async function renderPage(token) {
   }
 }
 
+// 翻页**只发意图**（2026-10-16 改受控分页）：要哪一页由调用方决定并生成，本组件不自己加页码
 function goto(delta) {
-  const next = pageNo.value + delta
-  if (next < 1 || next > pageCount.value) return
-  pageNo.value = next
+  const next = props.pageNo + delta
+  const total = Math.max(1, props.pageCount || 1)
+  if (next < 1 || next > total) return
+  emit('page-change', next)
 }
 
 // ── 点击放大 ───────────────────────────────────────────────────────────────
@@ -188,7 +204,7 @@ async function renderZoom() {
       }
       zoomTask = null
     }
-    const page = await doc.getPage(pageNo.value)
+    const page = await doc.getPage(renderPageNo())
     const base = page.getViewport({ scale: 1 })
     // 同时受视口宽与高约束：A4 横向放满宽度会超出屏幕高度，必须一起算
     const maxWidth = Math.min((window.innerWidth || 1280) * 0.94, 1600)
@@ -223,7 +239,8 @@ watch(zoomOpen, (open) => {
 })
 
 watch(() => props.bytes, () => { openDoc() }, { immediate: true })
-watch(pageNo, () => { renderPage(); if (zoomOpen.value) renderZoom() })
+// 页号一变就重渲染：按需生成时新字节与页号会一起更新（先拿到新字节、再渲染那一页）
+watch(() => props.pageNo, () => { renderPage(); if (zoomOpen.value) renderZoom() })
 onBeforeUnmount(() => {
   openToken++ // 让在途的那一轮作废，别在卸载后再改状态
   cancelRender()
@@ -238,7 +255,8 @@ onBeforeUnmount(() => {
   <div ref="wrapRef" class="pdf-preview" :data-pages="pageCount" :data-page-no="pageNo" :data-status="status">
     <div class="pdf-preview-head">
       <span class="pdf-preview-title">{{ title }}</span>
-      <!-- 翻页条**常驻渲染**（单页时按钮禁用）：页数是测试与排障都要看的量，不给它加 v-if -->
+      <!-- 翻页条**常驻渲染**（单页时按钮禁用）：页数是测试与排障都要看的量，不给它加 v-if。
+           页号与总页数都由调用方给（按需生成时这一份 PDF 只有一页，数不出来总页数） -->
       <span class="pdf-preview-pager">
         <button class="text" type="button" :disabled="pageNo <= 1 || status === 'rendering'" @click="goto(-1)">上一页</button>
         <span class="pdf-preview-page">第 {{ pageNo }} / {{ pageCount || 1 }} 页</span>
