@@ -1,16 +1,19 @@
 <script setup>
 // 第 1 步：选字与出模板（阶段一步骤 1.3 的界面；2026-10-04 按用户要求改造成向导的第一步）
 // 职责：① 选**写哪些字**（**一组三选**：单页试打 / 常用 6500 字 / 自定义选字，2026-10-07 由原来的
-//      「选字 + 生成范围」两组单选合并而来；2026-10-08 换官方字表后第二项由"全量字表"改为"常用 6500 字"）
+//      「选字 + 生成范围」两组单选合并而来；2026-10-08 换官方字表后第二项由"全量字表"改为"常用 6500 字"；
+//      **2026-10-16 单页试打改成印一篇短文**，来源 `lib/singlePageText.js`）
 //   ② 选排列方式与参考字体
 //   ③ **先看到模板第一页的真实预览**（pdf.js 渲染真实 PDF）④ 生成模板 PDF / 更正册并下载。
 // 版面：由 templatePdf.js 的 LAYOUT 统一控制（A4 横向、每页 136 格，见《决策记录》一-3、一-4）。
 // 数据来源：字表来自 src/lib/charset.js（8274 字 = 官方 8105 + 基础字符 169，决策 三-1、八-1、八-2）；
-//   字体来自 referenceFont.js（内置子集或本机字体）。
+//   字体来自 referenceFont.js（内置子集或本机字体）；试打短文来自 singlePageText.js。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf, buildSamplePagePdf } from '../lib/templatePdf.js'
-import { getAllChars, getCharsetMeta } from '../lib/charset.js'
-import { CHAR_RANK_META, getRankOrder, sortByRank } from '../lib/charRank.js'
+import { getCharsetMeta } from '../lib/charset.js'
+import { CHAR_RANK_META } from '../lib/charRank.js'
+import { singlePageCharCount } from '../lib/singlePageText.js'
+import { orderModeLabel, scopePreset, charsForScope as charsForScopeLib } from '../lib/templateScope.js'
 import { getLevelChars } from '../lib/frequency.js'
 import {
   CHARSET_STANDARD_TITLE,
@@ -23,7 +26,6 @@ import { buildOrderFile, dateStamp } from '../lib/orderFile.js'
 import { CORRECTION_BOOK_PAGES, packTemplateZip, templatePackNames } from '../lib/templatePack.js'
 import { loadGuideHtml } from '../lib/guideHtml.js'
 import { downloadBytes } from '../lib/download.js'
-import { orderModeLabel, scopePreset } from '../lib/templateScope.js'
 import { useProjectStore } from '../store/project.js'
 import SelectionPanel from './SelectionPanel.vue'
 import PdfPreview from './PdfPreview.vue'
@@ -40,7 +42,10 @@ const commonCount = l1Count + l2Count + baseCount
 const commonPages = Math.ceil(commonCount / LAYOUT.perPage)
 
 // 写哪些字出模板：**一组三选**（2026-10-07 用户要求把原来的「选字 + 生成范围」两组单选合并成一组）。
-//   single —— 单页试打：只出第 1 页（前 136 字）+ 自检页，先确认版式与打印设置
+//   single —— 单页试打：只出**一篇短文**（《岳阳楼记》名句段，68 字符）+ 自检页，先确认版式与打印设置。
+//     **2026-10-16 用户口径（提高观感）**：原来排的是"频序前 136 字"（一页互不相干的常用字，像抄字帖），
+//     改成一篇短文 —— 写一遍既确认了版式，又像写了一页作品，这些字还会直接进字体。短文来源见
+//     `lib/singlePageText.js`（选文三条标准与数据都写在那里）。
 //   common —— 常用 6500 字：一级 + 二级 + 基础字符全出（按当前排列方式）
 //   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量"（8274 字）等价
 // 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
@@ -147,7 +152,9 @@ onBeforeUnmount(() => {
 // 三选一的提示：每一种都当场说清"这次会排哪些字、多少页"
 const scopeHint = computed(() => {
   if (scope.value === 'single') {
-    return '单页试打：只生成第 1 页（前 ' + LAYOUT.perPage + ' 字）+ 打印自检页，先确认版式与打印设置'
+    // 2026-10-16：试打页改成一篇短文（不再问"排列方式"——短文是固定顺序，那个选项对它没有意义）
+    return '单页试打：只印一篇短文（' + singlePageCharCount() + ' 字，' + LAYOUT.perPage + ' 格内放得下）+ 打印自检页，' +
+      '先确认版式与打印设置；这篇短文按它本身的顺序排'
   }
   if (scope.value === 'custom') {
     return store.selectedCount
@@ -163,11 +170,15 @@ const scopeHint = computed(() => {
 // 「笔画序」= 《通用规范汉字表》的官方字序（说明第八条：遵循《GB 13000.1 字符集汉字字序（笔画序）规范》）。
 // 两种顺序都能被识别 —— 页脚的**本页校验码按实际字序算**（每一页各自一个指纹），换顺序不影响识别
 // （换了顺序就是另一份纸：旧纸的字位与新字序对不上，页级校验会当场发现）。
+// **2026-10-16**：选了「单页试打」时这一项**置灰**（`orderDisabled`）—— 试打页是一篇固定顺序的短文，
+//   按频序/笔画序重排没有意义；置灰而不是"可选但无效"，避免让人以为"点了没反应"。
 const orderMode = computed({
   get: () => store.ui.orderMode,
   set: (value) => store.setOrderMode(value)
 })
+const orderDisabled = computed(() => scope.value === 'single')
 const orderHint = computed(() => {
+  if (orderDisabled.value) return '单页试打按短文本身的顺序排（这一项对试打页不适用）'
   if (orderMode.value === 'rank') {
     return '最常用的字在最前（前 2000 字覆盖语料 ' + CHAR_RANK_META.cumAt2000 + '%，约 ' +
       Math.ceil(2000 / LAYOUT.perPage) + ' 页即可日常使用）'
@@ -175,23 +186,11 @@ const orderHint = computed(() => {
   return '《通用规范汉字表》的官方字序'
 })
 
-// 实际要排的字：先按"排列方式"定全序，再按上面三选一取子集
-// （单页试打取前 136 字 —— 频序下就是最常用的 136 字；常用 6500 字取一级 + 二级 + 基础字符；
-//  自定义选字取已选的字，一个字都没选时按全量 8274 字）
+// 实际要排的字：**统一走 lib/templateScope.js 的 `charsForScope()`**（2026-10-16 抽出去：
+//   那是"档位 × 排列方式 → 一份确定字序"的唯一出口，抽到零依赖模块后单测能直接钉住它 ——
+//   试打档从"频序前 136 字"改成"一篇短文"这种改动，今后不会再出现"只有组件改了口径、测试看不见"。）
 function charsForScope() {
-  const wantRank = orderMode.value === 'rank'
-  const base = wantRank ? getRankOrder() : getAllChars()
-  if (scope.value === 'single') return base.slice(0, LAYOUT.perPage)
-  if (scope.value === 'common') {
-    const picked = [...getLevelChars('l1'), ...getLevelChars('l2'), ...getLevelChars('base')]
-    return wantRank ? sortByRank(picked) : picked
-  }
-  if (scope.value === 'custom') {
-    const picked = Array.from(store.charsForTemplate)
-    if (!picked.length) return base
-    return wantRank ? sortByRank(picked) : picked
-  }
-  return base
+  return charsForScopeLib(scope.value, orderMode.value, store.charsForTemplate)
 }
 
 function setMessage(text, type) {
@@ -385,7 +384,7 @@ async function generatePack() {
             <button class="text" type="button" @click="standardHelpOpen = false">关闭</button>
           </div>
         </span>
-        <span class="panel-hint">{{ scopeHint }}</span>
+        <span class="panel-hint" data-role="scope-hint">{{ scopeHint }}</span>
       </div>
     </div>
     <SelectionPanel v-if="pickerOpen" nested />
@@ -393,9 +392,11 @@ async function generatePack() {
     <div class="panel-row" data-role="order-mode-row">
       <div class="panel-field">
         <span class="field-label">排列方式</span>
-        <label class="radio"><input v-model="orderMode" type="radio" value="rank" :disabled="busy" />按使用频率</label>
-        <label class="radio"><input v-model="orderMode" type="radio" value="charset" :disabled="busy" />笔画序</label>
-        <span class="panel-hint">{{ orderHint }}</span>
+        <!-- 选了「单页试打」时这一项置灰（2026-10-16 用户口径）：试打页是一篇固定顺序的短文，
+             按频序 / 笔画序重排没有意义；置灰并在下面的说明里写明"试打按短文顺序" -->
+        <label class="radio"><input v-model="orderMode" type="radio" value="rank" :disabled="busy || orderDisabled" />按使用频率</label>
+        <label class="radio"><input v-model="orderMode" type="radio" value="charset" :disabled="busy || orderDisabled" />笔画序</label>
+        <span class="panel-hint" data-role="order-hint">{{ orderHint }}</span>
       </div>
     </div>
 

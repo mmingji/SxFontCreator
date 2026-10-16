@@ -105,7 +105,8 @@ function fillCovered() {
   touched.value = true
   text.value = defaultPreviewText(props.coveredChars)
 }
-// 换一句常用话（2026-10-15 用户口径）：从预置的唐诗宋词里**随机**取一句，并避开当前这一句
+// 「随机一句话」（2026-10-16 用户口径，原文案「换一句常用话」）：从**单页试打那篇短文**里随机取一句，
+// 并避开当前这一句（点一下还是同一句，用户会以为按钮坏了）
 function fillSample() {
   touched.value = true
   text.value = pickSampleSentence(text.value)
@@ -155,7 +156,10 @@ function clearText() {
           >{{ s }} 像素</button>
         </span>
         <button type="button" class="text" @click="fillCovered">填入收录的字</button>
-        <button type="button" class="text" @click="fillSample">换一句常用话</button>
+        <!-- 「随机一句话」（2026-10-16 用户口径：原文案「换一句常用话」改成这个）——
+             随机取的是**单页试打那篇短文里的句子**（`lib/singlePageText.js`），不是另一套陌生句子：
+             用户一眼能认出"这些字就是我刚写的那一页上的" -->
+        <button type="button" class="text" @click="fillSample">随机一句话</button>
         <button type="button" class="text" @click="clearText">清空</button>
         <!-- 工具条**最右侧**：查看字形总览 / 查看网页预览（2026-10-15 用户口径：从标题行挪到这里，
              与"看预览"这一组操作放在一起；下载 zip 仍留在标题行最右） -->

@@ -8,42 +8,33 @@
 //   在 Word 里会显示成方框（清单 三-4 的装机实测结论）。不标出来，用户会以为预览里的样子就是安装后的样子。
 // 数据来源：收录清单 = `store.font.coverage.chars`（生成字体时算出来的，下载包里的使用说明与 preview.html 同源）。
 // 为什么独立成文件：①② 是纯函数，直接在 Node 里断言，不必起浏览器；③ 用 typeof 探测环境，缺 FontFace 时给中文错误。
+import { SINGLE_PAGE_SENTENCES, pickSinglePageSentence } from './singlePageText.js'
 
 // 预览字号三档（像素）：小字看字距与整体匀称、大字看笔画细节与起收笔（用户 2026-10-07 拍板）
 export const PREVIEW_SIZES = [24, 36, 56]
 
-// 「换一句常用话」的示例句库（2026-10-15 用户口径：**预置几句经典唐诗宋词、每点一次随机换一句**）。
-// 选句标准：① 都是耳熟能详的名句；② **尽量用笔画简单、日常常见的字** —— 这样做出来的手写体里
-//   命中率高、认读也容易（生僻字会让预览里满屏回退，反而看不出自己写的字）。
-export const SAMPLE_SENTENCES = [
-  '床前明月光，疑是地上霜。', // 李白《静夜思》
-  '白日依山尽，黄河入海流。', // 王之涣《登鹳雀楼》
-  '春眠不觉晓，处处闻啼鸟。', // 孟浩然《春晓》
-  '锄禾日当午，汗滴禾下土。', // 李绅《悯农》
-  '空山不见人，但闻人语响。', // 王维《鹿柴》
-  '千山鸟飞绝，万径人踪灭。', // 柳宗元《江雪》
-  '明月几时有，把酒问青天。', // 苏轼《水调歌头》
-  '大江东去，浪淘尽，千古风流人物。' // 苏轼《念奴娇·赤壁怀古》
-]
+// 「换一句常用话」的句库（2026-10-16 用户口径：**改成"单页试打那篇短文里的句子"**）。
+// 出处与试打正文同一个模块（`lib/singlePageText.js`）—— 改一处，试打页与预览两处一起变。
+// 为什么换掉原来那 8 句唐诗宋词：试打页现在写的就是这篇短文，预览里接着用它，用户一眼能认出
+//   "这些字是我刚写的那一页上的"，而不是另一套陌生句子。
+export const SAMPLE_SENTENCES = SINGLE_PAGE_SENTENCES
 
 // 兼容旧名字（示例句从"一句"变成"一组"）：仍导出第一句，测试与旧引用不受影响
 export const SAMPLE_SENTENCE = SAMPLE_SENTENCES[0]
 
 /**
- * 随机取一句示例诗（2026-10-15 用户口径：「每点一次换一句」）。
+ * 随机取一句示例（2026-10-15 用户口径：「每点一次换一句」）。
  * 传入上一句时会**避开它**（点一下却还是同一句，用户会以为按钮坏了）；只有一句可选时原样返回。
  * @param {string} [current] 当前这一句
  * @returns {string}
  */
 export function pickSampleSentence(current) {
-  const list = SAMPLE_SENTENCES
-  if (list.length <= 1) return list[0] || ''
-  const rest = list.filter((s) => s !== current)
-  return rest[Math.floor(Math.random() * rest.length)]
+  return pickSinglePageSentence(current)
 }
 
-// 默认预览文本 = 已收录的前 40 个字：保证 100% 命中，第一眼就看到自己写的字
-export const DEFAULT_PREVIEW_CHARS = 40
+// 默认预览文本 = 已收录的前 50 个字（2026-10-16 用户口径：原来是 40）：
+// 保证 100% 命中，第一眼就看到自己写的字；试打那批字少于一页时按实际数量给。
+export const DEFAULT_PREVIEW_CHARS = 50
 export function defaultPreviewText(coveredChars, limit = DEFAULT_PREVIEW_CHARS) {
   const list = Array.isArray(coveredChars) ? coveredChars : []
   return list.slice(0, Math.max(0, limit)).join('')

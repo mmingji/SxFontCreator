@@ -7,7 +7,10 @@
 //
 // 零依赖（只用字表 / 频序 / 分级 / 版面），可在 Node 侧直接断言。
 import { LAYOUT } from './layout.js'
+import { getAllChars } from './charset.js'
+import { getRankOrder, sortByRank } from './charRank.js'
 import { getLevelChars } from './frequency.js'
+import { SINGLE_PAGE_TEXT, singlePageCharCount } from './singlePageText.js'
 
 // 排列方式（与第 1 步界面上的两个选项一一对应）
 export const ORDER_MODES = [
@@ -21,7 +24,13 @@ const L2 = getLevelChars('l2').length
 const BASE = getLevelChars('base').length
 
 export const SCOPE_PRESETS = [
-  { key: 'single', label: '单页试打', note: '只写第 1 页（前 ' + LAYOUT.perPage + ' 字）' },
+  {
+    key: 'single',
+    label: '单页试打',
+    // 2026-10-16：试打页改成印**一篇短文**（原来排"频序前 136 字"）—— 写起来像作品、字也都能进字体。
+    // 字数从 lib/singlePageText.js 现算，不写死（换短文时这里自动跟着变）。
+    note: '只印一篇短文（' + singlePageCharCount() + ' 字）+ 打印自检页'
+  },
   { key: 'common', label: '常用 6500 字', note: '一级 ' + L1 + ' + 二级 ' + L2 + ' + 基础字符 ' + BASE + ' = ' + (L1 + L2 + BASE) + ' 字' },
   { key: 'full', label: '全量字表', note: '《通用规范汉字表》' + (L1 + L2 + getLevelChars('l3').length) + ' + 基础字符 ' + BASE + ' = ' + (L1 + L2 + getLevelChars('l3').length + BASE) + ' 字' }
 ]
@@ -38,6 +47,37 @@ export function scopeLabel(key) {
 export function orderModeLabel(key) {
   const o = ORDER_MODES.find((m) => m.key === key)
   return o ? o.label : key
+}
+
+/**
+ * 「档位 × 排列方式 → 一份确定字序」的**唯一出口**（2026-10-16 从 `TemplatePreview.vue` 抽到这里）。
+ * 为什么抽出来：这段口径原来写在组件里、单测够不到 —— 而它决定的正是"纸上排的是哪些字、什么顺序"，
+ *   最该被断言钉住。抽出来的直接动因：试打档从"频序前 136 字"改成"一篇短文"时，只有组件改了口径，
+ *   没有任何测试能发现（`test:template` 测的是 `buildTemplatePdf({chars})` 这个库函数，与档位无关）。
+ * 口径：
+ *   · `single`（单页试打）—— **就是那篇短文本身**（固定顺序，与排列方式无关，见 lib/singlePageText.js）；
+ *   · `common`（常用 6500 字）—— 一级 + 二级 + 基础字符，按排列方式排序；
+ *   · `custom`（自定义选字）—— 已选的字（空 = 全量），按排列方式排序；
+ *   · 其它值按全量表。
+ * @param {string} scope 'single' | 'common' | 'custom' | 其它
+ * @param {string} orderMode 'rank' | 'charset'
+ * @param {string|string[]} [selectedChars] 自定义选字（custom 档用）
+ * @returns {string[]} 字序
+ */
+export function charsForScope(scope, orderMode, selectedChars) {
+  const wantRank = orderMode === 'rank'
+  const base = wantRank ? getRankOrder() : getAllChars()
+  if (scope === 'single') return Array.from(SINGLE_PAGE_TEXT)
+  if (scope === 'common') {
+    const picked = [...getLevelChars('l1'), ...getLevelChars('l2'), ...getLevelChars('base')]
+    return wantRank ? sortByRank(picked) : picked
+  }
+  if (scope === 'custom') {
+    const picked = Array.from(selectedChars || '')
+    if (!picked.length) return base
+    return wantRank ? sortByRank(picked) : picked
+  }
+  return base
 }
 
 // 2026-10-13：`charsForPreset()` 也一并删了 —— 它本来只被上面的 `presetPlan()` 调用，而后者已随
