@@ -9,18 +9,17 @@ import { PDFDocument } from 'pdf-lib'
 // 注意是**实例方法**（pdf-lib 1.17 的 PDFDocument 上没有静态 registerFontkit）：每个文档创建后注册一次。
 import fontkit from '@pdf-lib/fontkit'
 import { getAllChars } from './charset.js'
-// 批次校验码抽在 lib/batchCode.js（零依赖纯函数）：store 给批次记账时也用它，若留在本文件里，
-// store 就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
-import { computeBatchCode } from './batchCode.js'
-import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode } from './layout.js'
+// 页级校验码抽在 lib/pageCode.js（零依赖纯函数）：识别端也要用同一个算法，若留在本文件里，
+// 识别链路就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
+import { computePageCode } from './pageCode.js'
+import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, correctionPageNumber } from './layout.js'
 
 // 版面常量（LAYOUT、格位换算、页脚编码）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
-// 但不能为此把 pdf-lib + fontkit（构建后约 1.16MB）拖进首屏 —— 与 computeBatchCode 抽到 lib/batchCode.js
+// 但不能为此把 pdf-lib + fontkit（构建后约 1.16MB）拖进首屏 —— 与 computePageCode 抽到 lib/pageCode.js
 // 是同一个理由。这里 import 后再导出，保持既有引用（测试、界面、切格模块）不变。
 // 注意 `export { x } from './y'` 是再导出、不会在当前模块创建绑定，本文件内部要用就必须先 import（踩过这个坑）。
-// computeBatchCode 一并再导出：它是"生成端印在页脚、切格端拿去比对"的同一个算法，
-// 调用方（store、测试）历来从这里取，保持引用不变。
-export { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, computeBatchCode }
+// computePageCode 一并再导出：它是"生成端印在页脚、识别端拿去自证"的同一个算法，调用方从这里取。
+export { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, computePageCode }
 
 // 参考字的基线：字在**参考字区域内居中** —— 按该字自己的墨迹外框（glyphBox）算，
 // 所以不同字的基线会上下浮动（这正是"外形居中"的必然结果，2026-10-03 用户规则）。
@@ -34,8 +33,9 @@ export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize, gl
 }
 
 // 画一页的公共部分：四角定位块 + 页脚编码标记
-// batchCode：该批次的校验码（低 12 位进页脚）；更正册这类还没有清单的产物传 0
-function drawRegisterMarks(page, pageNumber, batchCode = 0) {
+// pageCode：**本页校验码**（这一页那些字的 12 位指纹，见 lib/pageCode.js）——
+//   主区字表页按这一页实际印的字算；更正册与打印自检页传 0（它们没有"这一页的字"，0 是专用值）
+function drawRegisterMarks(page, pageNumber, pageCode = 0) {
   const { markSize, markOffset, pageWidth, pageHeight, markColor, pageMark } = LAYOUT
   const corners = [
     { x: markOffset, y: markOffset },
@@ -48,7 +48,7 @@ function drawRegisterMarks(page, pageNumber, batchCode = 0) {
   }
 
   // 编码标记：锚点方块（识别时的基准）+ 20 个数据位方块（bit=1 才画）
-  const bits = encodePageCode(pageNumber, batchCode)
+  const bits = encodePageCode(pageNumber, pageCode)
   const { anchorSize, bitSize, bitGap, anchorGap, y, startX } = pageMark
   page.drawRectangle({ x: startX, y, width: anchorSize, height: anchorSize, color: markColor })
   const bitsStart = startX + anchorSize + anchorGap
@@ -62,6 +62,32 @@ function drawRegisterMarks(page, pageNumber, batchCode = 0) {
       color: markColor
     })
   }
+}
+
+/**
+ * 右侧中间的**可见页码**（2026-10-15 用户口径）。
+ * 为什么要有它：页脚那串方块是给机器读的，人一眼看不出这一页是第几页；而写更正册时要按
+ *   "主区页号的先后顺序"写圈出来的字（一-7 / 二-13），没有可见页码就只能靠人自己记 —— 顺序一乱，
+ *   整册更正就全错位。所以纸面上必须有一个**人一眼能看懂的页码**。
+ * 位置口径（用户原话："模板的右侧中间（方向口径：说明文字那一边为上）"）：说明文字印在表格上方，
+ *   所以"右侧" = A4 横向的右边距空白，"中间" = 页面竖向正中 —— 上下两个右角定位块都在角上，
+ *   中间这一段不会撞上它们（左下 / 右下的页脚编码带也在页脚，不在中部）。
+ * 颜色用 markColor（中深青 #2E6E7E）：与定位块同色，红圈识别（红度 R − max(G,B)）不会把它误判，
+ *   灰度约 93 也远深于格线，扫描后看得清。
+ */
+function drawVisiblePageNumber(page, pageNumber, font) {
+  const { pageWidth, pageHeight, tableLeft, tableWidth, markColor, visiblePageNumber } = LAYOUT
+  const text = String(pageNumber)
+  const size = visiblePageNumber.size
+  const width = font.widthOfTextAtSize(text, size)
+  const bandLeft = tableLeft + tableWidth // 表格右边 → 纸边的空白带
+  page.drawText(text, {
+    x: bandLeft + (pageWidth - bandLeft - width) / 2,
+    y: (pageHeight - size) / 2,
+    size,
+    font,
+    color: markColor
+  })
 }
 
 // 印在 PDF 上的所有文案集中在这里：**每个字符都必须落在字表 8274 字内**，
@@ -93,7 +119,7 @@ export const PAGE_HINT = PAGE_HINT_LINES.join('')
 // 留空的格表示"这个字保留主区原字形"，写坏的格用红笔圈掉后该字进补写队列、在册子后面按顺序补写。
 // 注意：文案只能用字表内的字符（旧口径下半角空格、% 、/ 都不在表里、会印成方块，清单四-7 踩过三次；
 //   换成官方字表 + 基础字符 169 之后它们都在表内了 —— 但断言保留，防止将来又写进表外的字）
-export const CORRECTION_HINT = '按被圈字的顺序从第1格起每格写一个字；写坏的格用红笔圈掉，在后面按顺序补写；留空的格表示这个字不更正。'
+export const CORRECTION_HINT = '按主区页码的顺序、每页按格子先后，把红笔圈出的字从第1格起每格写一个字；写坏的格用红笔圈掉，在后面按顺序补写；留空的格表示这个字不更正。'
 export const SELF_CHECK_TEXTS = {
   title: '打印自检',
   boxLabel: '此处方框应为1cm',
@@ -141,10 +167,10 @@ function drawCenteredText(page, text, centerX, y, size, font, color) {
 
 // 打印自检页：放在文末，用户拿尺子量方框与标尺即可自证"打印缩放 = 100%"，
 // 黑白激光或按"适合页面"打印这类错误，能在浪费 51 页纸之前发现（决策记录 一-12）
-function drawSelfCheckPage(page, pageNumber, font, batchCode = 0) {
+function drawSelfCheckPage(page, pageNumber, font, pageCode = 0) {
   const { pageWidth, pageHeight, markColor, gridColor } = LAYOUT
   const centerX = pageWidth / 2
-  drawRegisterMarks(page, pageNumber, batchCode)
+  drawRegisterMarks(page, pageNumber, pageCode)
   drawCenteredText(page, SELF_CHECK_TEXTS.title, centerX, pageHeight - 70, 18, font, markColor)
 
   // 1cm 标准方框
@@ -275,11 +301,12 @@ function drawReferenceChar(page, cell, char, font, glyphBoxes) {
  * @param {string[]} [options.chars] 要排入模板的字符（默认全量 8274 字，按官方笔画序分页）
  * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（TTF）
  * @param {boolean} [options.includeSelfCheck] 是否在文末附一页打印自检页（默认附）
- * @param {number} [options.startPage] 起始页号（默认 1）。**重写模板**用它把页号接在现有纸之后 ——
- *   页脚编的是"第几页"，接着编才不会与已经写过的纸撞号（撞号会被当成重复页去重掉）
+ * @param {number} [options.startPage] 起始页号（默认 1）。**重写模板 / 补写模板**用它把页号接在现有纸之后 ——
+ *   页脚编的是"第几页"，接着编才不会与已经写过的纸撞号（撞号会被当成同一页覆盖掉）
  * @param {(done:number,total:number)=>void} [options.onProgress] 进度回调（按字表页）
- * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, batchCode:number}>}
- *   batchCode 是这一批选字清单的 12 位校验码：它同时印在页脚，识别时用来发现"扫描件与所选批次不匹配"（决策记录 八-10）
+ * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, pageCodes:number[]}>}
+ *   pageCodes 是**每一页各自的 12 位校验码**（这一页那些字的指纹，印在页脚高 12 位）：
+ *   识别端拿"猜出来的这一页的字"再算一遍比对，一致就说明页号与字序来源都对（决策 一-9 的 2026-10-15 修订）
  */
 export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, startPage = 1, onProgress }) {
   const list = chars && chars.length ? chars : getAllChars()
@@ -287,8 +314,6 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   const sheetPages = Math.max(1, Math.ceil(list.length / perPage))
   const selfCheck = includeSelfCheck !== false
   const pageCount = sheetPages + (selfCheck ? 1 : 0)
-  // 校验码由"这一批要写的字"决定：改了选字清单，码就变，旧模板印出来的扫描件会被识别端拦下（八-9、八-10）
-  const batchCode = computeBatchCode(list)
 
   const pdf = await PDFDocument.create()
   pdf.setTitle('SxFontCreator 手写模板')
@@ -298,12 +323,18 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   // 参考字外框表：让每个字在"参考字区域"里按自己的墨迹外形居中（解析失败时为 null，退回典型外框）
   const glyphBoxes = buildGlyphBoxTable(fontBytes)
 
+  const pageCodes = []
   for (let p = 0; p < sheetPages; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
-    drawGrid(page)
-    drawRegisterMarks(page, startPage + p, batchCode)
-    drawHint(page, font, PAGE_HINT_LINES)
+    // 这一页的字：**先切出来、再算指纹、再用它印参考字** —— 三处必须用同一份，
+    // 否则"印在纸上的字"与"页脚指纹描述的字"就会不是一回事（识别端永远对不上）
     const slice = list.slice(p * perPage, (p + 1) * perPage)
+    const pageCode = computePageCode(slice)
+    pageCodes.push(pageCode)
+    drawGrid(page)
+    drawRegisterMarks(page, startPage + p, pageCode)
+    drawVisiblePageNumber(page, startPage + p, font)
+    drawHint(page, font, PAGE_HINT_LINES)
     for (let i = 0; i < slice.length; i++) {
       drawReferenceChar(page, cellRect(i), slice[i], font, glyphBoxes)
     }
@@ -314,17 +345,21 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     }
   }
 
-  // 自检页放文末：不打乱字表页的编号（第 n 页编码 n−1 保持成立，切格模块只需忽略超出字表页数的页）
-  // 它属于同一份模板 PDF，所以带上同一批次校验码；页号超出字表页数，识别端据此判定"这不是字表页"
-  if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, batchCode)
+  // 自检页放文末：不打乱字表页的编号（第 n 页编码 n−1 保持成立）。
+  // 它带上"页号 = 字表页数 + 1、指纹 = 0"这组标记，识别端据此判定"这不是字表页"（0 是专用值）
+  if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, 0)
 
   const bytes = await pdf.save()
-  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, batchCode }
+  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes }
 }
 
 /**
  * 生成更正册 PDF（空白册：只有书写格与格号，用于按顺序重写写错的字）
  * 格号跨页连续，便于人工核对"更正册第 k 格 → 主区哪个字"（决策记录 一-6、清单四-4）
+ * 页脚页号用**更正册专用区间**（第 n 页编 128+n−1，见 layout.js 的 CORRECTION_PAGE_BASE），
+ *   件类型因此靠页号区分、不再靠"校验码 0"；指纹一律 0（这一册没有"这一页的字"）。
+ * **可见页码从 1 起、独立编号**（2026-10-15 用户确认）：更正册是另一本册子，页码接着主区编会让人
+ *   以为"第 63 页"是模板的第 63 页；它自己的第 1 页就印 1。
  * @param {object} options
  * @param {number} [options.pageCount] 页数（默认 5 页，够写 680 个错字）
  * @param {number} [options.startIndex] 起始格号（默认 1）
@@ -342,9 +377,8 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
   for (let p = 0; p < pageCount; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
-    // 更正册暂不带批次校验码（0）：它的字序要等红圈识别给出"被圈字清单"才确定，
-    // 到那时才能算出属于它的校验码并在界面上与主区并排核对（决策记录 一-6、一-7）
-    drawRegisterMarks(page, p + 1)
+    drawRegisterMarks(page, correctionPageNumber(p + 1), 0)
+    drawVisiblePageNumber(page, p + 1, font)
     drawHint(page, font, CORRECTION_HINT)
     for (let i = 0; i < LAYOUT.perPage; i++) {
       const label = String(startIndex + p * LAYOUT.perPage + i)

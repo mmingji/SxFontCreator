@@ -26,7 +26,7 @@ export function clearLastBuild() {
  * @param {Array} items 字形计划 `[{ char, source, fileIndex, cellIndex }]`
  * @returns {Promise<{inputs:Array, missing:Array, masks:Map, fromStore:boolean}>}
  */
-export async function collectGlyphInputs(items, { batchId, onStage } = {}) {
+export async function collectGlyphInputs(items, { onStage } = {}) {
   const inputs = []
   const missing = []
   const masks = new Map()
@@ -43,7 +43,7 @@ export async function collectGlyphInputs(items, { batchId, onStage } = {}) {
     if (!found) {
       if (!storeMasks) {
         if (onStage) onStage('正在从字形库读回落盘的掩膜…')
-        const list = await loadGlyphs({ batchId })
+        const list = await loadGlyphs()
         storeMasks = new Map(list.map((g) => [g.fileIndex + ':' + g.cellIndex, g]))
         for (const [k, v] of storeMasks) if (!masks.has(k)) masks.set(k, v)
         fromStore = true
@@ -78,7 +78,7 @@ export async function collectGlyphInputs(items, { batchId, onStage } = {}) {
  * @param {(text:string)=>void} [input.onStage] 阶段文案
  * @returns {Promise<object>} glyphBuilder 的产物 + `missing`（缺原料的字形）+ `checkup`（体检快照）+ `excluded`
  */
-export async function buildFontFromPlan({ items, meta, batchId, woff2WasmUrl, excluded, onProgress, onStage }) {
+export async function buildFontFromPlan({ items, meta, woff2WasmUrl, excluded, onProgress, onStage }) {
   if (!items || !items.length) {
     const err = new Error('没有可用的字形：先在第 2 步识别扫描件，并在第 2 步确认更正对应')
     err.code = 'NO_GLYPHS'
@@ -86,7 +86,7 @@ export async function buildFontFromPlan({ items, meta, batchId, woff2WasmUrl, ex
   }
   const excludedSet = excluded instanceof Set ? excluded : new Set(excluded || [])
   const planned = items.filter((it) => !excludedSet.has(it.char))
-  const { inputs, missing, masks, fromStore } = await collectGlyphInputs(planned, { batchId, onStage })
+  const { inputs, missing, masks, fromStore } = await collectGlyphInputs(planned, { onStage })
   if (!inputs.length) {
     const err = new Error('一个字形原料都没取到：请回到第 2 步重新识别一次（落盘的掩膜可能已被清空）')
     err.code = 'NO_INPUTS'

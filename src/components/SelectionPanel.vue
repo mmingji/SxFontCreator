@@ -28,7 +28,7 @@ const message = ref('')
 const messageType = ref('info') // info | warn | done
 
 // 排序（2026-10-08 用户要求）：与"排列方式"（模板那一块）**共用一份状态** —— 在这里切换之后，
-// 出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"。切换它不动已建批次（批次自己记了 order）
+// 出模板的字序也跟着变，不会出现"看的是一种、排的是另一种"。切换它不动已经印出去的纸
 const orderMode = computed({
   get: () => store.ui.orderMode,
   set: (value) => store.setOrderMode(value)
@@ -72,14 +72,15 @@ function setMessage(text, type) {
   messageType.value = type || 'info'
 }
 
-// 选字一改，已打印的模板随即失效；把作废情况明确说出来（八-9 要求"必须提示"）
+// 选字一改，**已打印的模板随即失效**（纸上的字与程序里的选字不再对应）—— 八-9 要求"必须提示"。
+// 2026-10-15：批次已彻底删除，所以不再有"作废了几个批次"这种说法；提示改成对用户真正有意义的那件事：
+//   改完要重新出模板、重印重写。
 function reportChange(result, what) {
   if (!result.changed) {
     setMessage(what + '：没有变化', 'info')
     return
   }
-  const voidNote = result.voided ? '；已作废 ' + result.voided + ' 个批次，原模板需要重印重写' : ''
-  setMessage(what + '：当前已选 ' + result.count + ' 字' + voidNote, result.voided ? 'warn' : 'done')
+  setMessage(what + '：当前已选 ' + result.count + ' 字；改过选字之后，之前打印的模板要重新生成、重印重写', 'done')
 }
 
 function onToggleChar(char) {

@@ -1,17 +1,11 @@
 // 扫描识别的"轻量元数据"纯逻辑（阶段一「界面串联」B2）
-// 为什么单独一个零依赖模块（与 lib/batchCode.js 同一套路）：store 需要按识别结果算"能拿出多少字形"、
+// 为什么单独一个零依赖模块（与 lib/pageCode.js 同一套路）：store 需要按识别结果算"能拿出多少字形"、
 //   以及"页内格号 → 字"的映射，但 store 是被首屏加载的 —— 不能为了这几个纯函数把 gridDetector /
 //   scanPreprocessor 那些模块拖进首屏包（决策 六-9 的同一条理由）。
-// 这里只依赖 layout（版面契约）与 charset（字表），没有任何浏览器 API。
+// 这里只依赖 layout（版面契约）与 correctionMapper（配对），没有任何浏览器 API。
+// **2026-10-15**：`resolveBatchChars`（按批次字序兜底）随"批次"一起删除 —— 字序只来自字序文件或纸面参考字。
 import { LAYOUT } from './layout.js'
-import { getAllChars } from './charset.js'
 import { buildCorrectionCells, continuousIndex, mapCorrections } from './correctionMapper.js'
-
-/** 这一批要写的字（字序即批次里的 chars）；没有批次信息时退回全量表 */
-export function resolveBatchChars(batch) {
-  if (batch && typeof batch.chars === 'string' && batch.chars.length) return batch.chars
-  return getAllChars().join('')
-}
 
 // 字符串 → 码点数组，带**单槽缓存**。两件事一起解决：
 //   ① **正确性**：字表里有 196 个扩展 B 区汉字（UTF-16 代理对），字符串下标 chars[i] 按码元取，
@@ -28,7 +22,7 @@ function toCharList(chars) {
   return cachedList
 }
 
-/** 页内格号 → 字（决策 二-8 ⑤：全量字序 = (页码−1)×136 + 格号）；页码未知（页脚读不出且未手选）时返回 null */
+/** 页内格号 → 字（决策 二-8 ⑤：全量字序 = (页码−1)×136 + 格号）；页码没定出来时返回 null */
 export function charAtCell(chars, pageNumber, cellIndex) {
   if (!chars || !pageNumber) return null
   const list = toCharList(chars)
@@ -37,7 +31,7 @@ export function charAtCell(chars, pageNumber, cellIndex) {
 }
 
 /**
- * 某一页能不能继续用于字形识别（页脚读不出的页，只要用户手选了页序也算能收 —— 决策 二-7）。
+ * 某一页能不能继续用于字形识别（要求整页成功、且页号已经定出来）。
  * **2026-10-14 补**：重复页里**没被采用**的那些也不算可用（去重的结果落在 `duplicateOf` 上，
  * 见 `dedupeDuplicatePages`）—— 这一处判据是统计、更正配对、字形计划、字体构建共同的分叉点，
  * 所以只在这里加一条，下游全都跟着生效。
@@ -64,7 +58,7 @@ export function usableForGlyphs(page) {
  *   ② 再比"能用的字形数"（写出格数 − 可疑格数）多的：不同来源的曝光不同，写出多不等于写得准，
  *      扣掉可疑格之后更接近"这一份好不好用"。
  *   ③ 再比四角误差小的；④ 最后按文件顺序（结果可复现）。
- * 不参与去重的情形：更正册（它是另一类件）、没有页号的页（手选页序之后才谈得上判重）。
+ * 不参与去重的情形：更正册（它是另一类件）、没有页号的页（页号没定出来就谈不上判重）。
  * @param {Array} pages 页记录（store.scan.pages）
  * @returns {{groups:Array, ignored:Map<number,number>}} groups 供界面/文案说明，ignored 是 fileIndex → 采用的 fileIndex
  */
@@ -112,16 +106,9 @@ export function dedupeDuplicatePages(pages) {
 /**
  * 单页重传 / 补传能不能收下这一页（清单 一-8，决策 八-14 ③；**2026-10-15 用户口径后收敛为一条判据**）。
  *
- * **只拒绝"整页没能识别"**（没有四角定位块、校正超限……）—— 把失败原因原样带出来，让用户知道重扫要注意什么。
- *
- * 为什么不再拿页脚校验码拦（2026-10-15 用户原话："重传有批次校验码？应该识别到是同一张纸就可以，
- *   批次校验的意义是啥，只要模板是我们提供的，模板内的字都是一样的"）：
- *   · 码的用途本来只有一个 —— 认出"这一页属于哪一批纸"（决策 八-10）。而**补传 / 重传是一个人拿着
- *     刚扫好的那一张纸、在那一张卡片上点的**，意图已经明确；此时拿码拦人，拦住的是"用户自己"；
- *   · 真出错的情形（拿错纸）由更硬的两道闸兜着：页脚读出的**页号**决定这 136 格对应哪些字，认错纸
- *     一眼就能在结果里看出来；而且模板与字表都是本程序给的，格子与字的对应关系不会因为批次不同而变。
- *   所以校验码降为**提示**：识别记录里的 `batchMatch` 照旧保留、卡片 hover 里照旧显示，只是不再拦写入。
- * 更正册页（kind === 'correction'，页脚校验码 0）同样直接接受（与 八-10 的分拣口径一致）。
+ * **只拒绝"整页没能识别"** —— 把失败原因原样带出来，让用户知道重扫要注意什么。
+ * 这里不再做任何校验码比对：页脚那 12 位现在是"这一页那些字的指纹"（lib/pageCode.js），
+ *   它的自证发生在识别内部（对不上就整页失败，见 scanFlow 的 ③.6）—— 走到这一步的记录已经自证过了。
  * @param {object} input
  * @param {object|null} input.record 新识别出来的页记录（recognizePage 的产物）
  * @returns {{accept: boolean, reason: 'ok'|'page-failed', message: string}}
@@ -134,10 +121,7 @@ export function evaluateRescanAccept({ record } = {}) {
       message: '这一页没能识别：' + ((record && record.reason) || '原因未知') + '。原来的结果与字形都没动，可以重扫一页再试'
     }
   }
-  const note = record.batchMatch === false
-    ? '（页脚校验码与这一批不一致：多半是不同一批纸，若结果里的字不对，就用这一页上的「手选页序」定一下页号）'
-    : ''
-  return { accept: true, reason: 'ok', message: '已收下这一页' + note }
+  return { accept: true, reason: 'ok', message: '已收下这一页' }
 }
 
 /** 汇总"这批能拿出多少字形"：给流程状态（lib/flow.js）与后续字体构建用 */
@@ -168,40 +152,18 @@ export function collectGlyphStats(pages) {
 }
 
 /**
- * 用户手选页序后重新算"每格是哪个字"（决策 二-7：页脚读不出时由用户排定页序）。
- * 只重算字与页号，**不重新识别** —— 掩膜与页序无关。
- * @param {Array} pages 页记录数组
- * @param {object} overrides `{ [fileIndex]: pageNumber }`
- * @param {string} chars 这一批的字序
- */
-export function reorderPages(pages, overrides, chars) {
-  if (!overrides || Object.keys(overrides).length === 0) return pages
-  return pages.map((p) => {
-    const forced = overrides[p.fileIndex]
-    if (typeof forced !== 'number' || forced <= 0) return p
-    const pageNumber = forced | 0
-    return {
-      ...p,
-      pageNumber,
-      orderFromUser: true,
-      cells: (p.cells || []).map((c) => ({ ...c, char: charAtCell(chars, pageNumber, c.index) }))
-    }
-  })
-}
-
-/**
  * 收批闸门：这批识别结果能不能进入下一步（更正核对 / 字体构建）。
- * 规则（《决策记录》二-6、二-7、五-9、六-14）：
- *   · **单页失败**（找不到四角定位块、校正超限）→ **跳过并标红**，不拦整批（二-6 的口径是让那一页重扫）
- *   · **页脚读不出的页** → 字序优先从纸面参考字 / 字序文件定位得到；定位不出来的那一页手选页序
- *     （手选本身即确认）。页脚的批次码只作自校验，**不再当闸门**（五-9 ⑥）
- *   · **整批拦下**只剩两条：页脚校验码与所选批次不符、同一页被重复上传；「批次作废」这一态已删（六-14）
+ * 规则（《决策记录》二-6、五-9 的 2026-10-15 口径）：
+ *   · **单页失败**（找不到四角定位块、校正超限、页脚校验码与字序对不上）→ **跳过并标红**，不拦整批
+ *   · **页脚读不出的页** → 页号与字序由纸面参考字序列定位定；定不出来时那一页会自己整页失败
+ *     （"手选页序"这条界面兜底已去掉 —— 页级校验码让识别端能自证，不必让用户填数字）
+ *   · **整批拦下**只剩一条：同一页被重复上传（页号重复）；「批次校验码不符」与「批次作废」都已删
  *   · 缺页只是提醒（warn），不拦 —— 用户可以先把已经写好的页做完
  * 判据全部来自 summarizeBatch 的 rows（按"种类"分拣），**不靠匹配提示文案** —— 文案会改，种类不会。
  * @param {object} input
  * @param {object} input.summary summarizeBatch 的结果（rows 在 summary.pages 里）
  * @param {Array} input.pages 页记录（含 ok / pageNumber / footerOk）
- * @returns {{canProceed:boolean, blockers:Array<string>, skipped:Array<object>, notes:Array<string>, usablePages:number, needsConfirm:boolean}}
+ * @returns {{canProceed:boolean, blockers:Array<string>, skipped:Array<object>, notes:Array<string>, usablePages:number}}
  */
 export function evaluateScanGate(input = {}) {
   const pages = input.pages || []
@@ -211,8 +173,6 @@ export function evaluateScanGate(input = {}) {
   const notes = []
   const skipped = []
   let usablePages = 0
-  let needsConfirm = false
-  let batchMismatch = 0
   let footerlessFailed = 0 // 页脚读不出、且整页失败的页数（见下面失败分支的注释）
   let duplicatePages = 0 // 重复页里**没被采用**的页数（去重结果，见 dedupeDuplicatePages）
 
@@ -227,7 +187,6 @@ export function evaluateScanGate(input = {}) {
     return {
       ok: !!page.ok,
       footerOk: !!page.footerOk,
-      batchMatch: page.batchMatch === undefined ? null : page.batchMatch,
       pageNumber: page.pageNumber === undefined ? null : page.pageNumber,
       kind: page.kind || 'unknown'
     }
@@ -244,36 +203,25 @@ export function evaluateScanGate(input = {}) {
       duplicatePages++
       continue
     }
-    // 页脚校验码与当前批次不一致：**只记一笔提示**，这一页照常按"能不能用"来数
-    // （2026-10-15 口径，与重传 / 补传一致 —— 用户原话："批次校验的意义是啥，只要模板是我们提供的，
-    //   模板内的字都是一样的"）。原来这里 `continue`（把这一页当成不可用），后果是：重传收下一张
-    //   别的批次的纸之后，闸门会把整批判成"没有任何一页可用（全部识别失败）"—— 与"校验码不拦人"直接打架
-    //   （冒烟里抓到的真缺陷）。判断"这一页到底是哪些字"靠页号与参考字，不靠这个码。
-    if (row.batchMatch === false) batchMismatch++
+    // 单页失败：跳过并标红（决策 二-6：明确失败、提示重扫那一页）。
+    // 2026-10-15 起这里不再有任何"校验码比对"的分支 —— 页脚那 12 位改成本页指纹，识别端在
+    // scanFlow 里已经拿它自证过（对不上就整页失败），走到这一步的记录都是自证通过的。
     if (!row.ok || !page.ok) {
-      // 单页失败：跳过并标红（决策 二-6：明确失败、提示重扫那一页）
       skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: page.reason || '这一页没能识别' })
-      // 2026-10-13 修（子代理实测发现的真缺陷）：**失败的页不再计入"需要手选页序"** ——
-      //   它没有「手选页序」入口（`needsManualOrder` 要求整页成功），原来这里也置 needsConfirm，
-      //   于是提示让用户"在它的结果卡片上点「手选页序」"，而那张卡片上根本没有那个按钮。
-      //   这类页（页脚读不出 → 方向判据不成立 → 整页失败）单独数出来，下面给一条说清出路的提示。
       if (!row.footerOk) footerlessFailed++
       continue
     }
     if (!row.footerOk) {
-      // 页脚读不出：新模型下不再要求"显式确认批次" —— 字序优先由纸面参考字定位得到（决策 五-9）；
-      // 定位不出来的页才需要手选页序（手选本身即确认）
+      // 页脚读不出：页号与字序由纸面参考字序列定位定（决策 五-9）；定不出来的页在识别里就会整页失败，
+      //   所以走到这里而 pageNumber 为空的极罕见（例如序列定位给了页号、页脚却坏）——只提示，不拦
       if (page.pageNumber) {
         if (isCorrection) correctionPages++
         else usablePages++
-        // 页号的来源要说准（2026-10-13）：序列定位定出来的页号不是"手选"，说成手选会让人以为要他去确认
         notes.push(label + ' 的页脚读不出：页序按' +
-          (page.pageNumberSource === 'sequence' ? '纸面参考字序定位得到' : '手选定为') +
+          (page.pageNumberSource === 'sequence' ? '纸面参考字序定位得到' : '沿用原页') +
           '第 ' + page.pageNumber + ' 页')
       } else {
-        // 真的需要用户定页序：这时卡片上才有「手选页序」入口（与 needsManualOrder 同一判据）
-        needsConfirm = true
-        skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: '页脚读不出、也还没手选页序' })
+        notes.push(label + ' 的页脚读不出，页号也没定出来：这一页不进字形，请重扫一次')
       }
       continue
     }
@@ -281,13 +229,6 @@ export function evaluateScanGate(input = {}) {
     else usablePages++
   }
 
-  // 2026-10-11（决策 六-14 ③）：页脚校验码不符**降为提示**，不再拦批 ——
-  // 批次对用户不可见，界面上没有"改选批次"这条出路，拦下来就是死路；码本身仍照常解、照常显示，
-  // 认错了字在识别结果里看得见（逐格复核 + 更正核对那两道闸还在）。
-  if (batchMismatch > 0) {
-    notes.push('有 ' + batchMismatch + ' 页的页脚校验码与当前批次不一致：多半不是同一批纸（或用的是旧模板），' +
-      '请对照结果里的"字序来源"确认这几页认得对不对')
-  }
   if (duplicatePages > 0) {
     // 2026-10-14 用户拍板：重复页**自动去重**（采用效果最好的一份），这里如实说清采用了哪一份
     const adoptedIndexes = new Set()
@@ -300,23 +241,11 @@ export function evaluateScanGate(input = {}) {
       (adoptedNames.length ? '（' + adoptedNames.join('、') + '）' : '') +
       '，其余 ' + duplicatePages + ' 页已忽略、不计入结果；想换用另一份，就在「看文件清单」里去掉不想要的那张再识别一遍')
   }
-  // 2026-10-11（决策 五-9）：界面上「确认这批扫描件属于所选批次」「我知道这是作废模板」两个勾选框
-  // 已随"批次对用户不可见"一起去掉，所以这两条**不能再拦人** —— 用户无从勾选，拦下来就是死路。
-  // 页脚的码仍照常解、照常显示（自校验用）；作废的批次也不再拦（字序由纸面参考字定位得到）。
-  if (needsConfirm) {
-    // 2026-10-13 用户口径：提示得说清**操作在哪**（原来只说"在结果里手选页序"，用户找了半天）——
-    // 卡片上现在直接有「手选页序」入口（点了打开这一页的格子弹窗，底部就是填页号的框）。
-    // 2026-10-13 再改：这句只在**真的需要用户定页序**时出现（needsConfirm 的置真条件已收窄），
-    //   所以它说的入口一定存在 —— 整页失败的页另有下面那条说明。
-    notes.push('有扫描件的页脚没读出：字序会优先从纸面参考字定位得到；定位不出来的那一页，' +
-      '在它的结果卡片上点「手选页序」填上第几页（也可以把卡片拖到另一张上交换）')
-  }
+  // 2026-10-15：「手选页序」这条界面操作已去掉，所以这里不再有"请去手选页序"的提示。
+  //   页脚读不出时页号与字序由纸面参考字序列定位定；定不出来时识别本身就会把那一页判为失败。
   if (footerlessFailed > 0) {
-    // 2026-10-13（子代理真件实测发现的真缺陷）：页脚读不出 → **方向纠正的判据也不成立** → 整页失败，
-    //   这种页没有「手选页序」入口（那要求整页成功）。原来提示把用户指向一个不存在的按钮，
-    //   这里改成说清它为什么没得选、以及出路是什么。
     notes.push('有 ' + footerlessFailed + ' 页的页脚没读出来、方向也就认不准：整页没能识别 —— ' +
-      '把纸按横向放正重拍或重扫这一页（这几页没法在结果里指定页序）')
+      '把纸按横向放正重拍或重扫这一页')
   }
   for (const m of summary.problems || []) {
     if (m.level === 'warn') notes.push(m.text)
@@ -328,7 +257,7 @@ export function evaluateScanGate(input = {}) {
       ? '只有更正册可用、没有任何一页主区扫描件：请把主区（写了字的那些页）也一起上传'
       : '没有任何一页可用（全部识别失败）：请确认扫描件是我们生成的模板、纸面平整、按实际大小打印')
   }
-  return { canProceed: blockers.length === 0 && usablePages > 0, blockers, skipped, notes, usablePages, correctionPages, needsConfirm }
+  return { canProceed: blockers.length === 0 && usablePages > 0, blockers, skipped, notes, usablePages, correctionPages }
 }
 
 // ── 更正核对（阶段一步骤 1.8 的输入组装）────────────────────────────────

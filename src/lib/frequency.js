@@ -53,7 +53,7 @@ export const SELECTION_META = {
   levels: SELECTION_LEVELS.map((level) => ({ key: level.key, label: level.label, count: level.chars.length }))
 }
 
-// 按分类取字（返回字符数组，顺序即字表顺序 = 批次字序）。返回副本，避免调用方改到分类表
+// 按分类取字（返回字符数组，顺序即字表顺序）。返回副本，避免调用方改到分类表
 export function getLevelChars(levelKey) {
   const level = SELECTION_LEVELS.find((item) => item.key === levelKey)
   return level ? level.chars.slice() : []
@@ -64,7 +64,7 @@ export function findLevelOf(char) {
   return SELECTION_LEVELS.find((level) => level.chars.includes(char)) || null
 }
 
-// 把任意字符列表过滤成"字表内的字"，并按字表顺序排序 —— 批次字序的统一出口（决策记录 八-6）
+// 把任意字符列表过滤成"字表内的字"，并按字表顺序排序 —— 选字的统一出口（决策记录 八-6）
 export function normalizeSelection(list) {
   const wanted = new Set(Array.from(list || '').filter((ch) => ALL_SET.has(ch)))
   return ALL.filter((ch) => wanted.has(ch))

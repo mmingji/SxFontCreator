@@ -19,9 +19,20 @@ const store = useProjectStore()
 // **内容必须是整份项目数据**（store.projectData()）：曾经这里手写了 `{ rev, meta, template }`，
 //   漏掉 selection / batches / scan / correction / font —— 于是"改完选字立刻刷新"会把选字丢成空
 //   （2026-10-07 冒烟的三处诊断数据抓到）。字段清单只留在 store 那一处。
-window.addEventListener('pagehide', () => {
+// **2026-10-16 加固（清单 四-52：冒烟里兜底偶发失败过一次）**：
+//   ① **两条事件都挂**（pagehide + visibilitychange(hidden)）—— 页切到后台时浏览器保证先发后者，
+//      而 pagehide 在"先进后台、再回来、再关"这类路径上不一定按预期到达；
+//   ② 写入失败**不再静默**（markPendingSnapshot 返回布尔，这里留一条 warn）。
+//   两条事件幂等：重复写最多多一份同 rev 的快照，不会写坏数据（读取时按 rev 取大者）。
+function flushSnapshot(reason) {
   if (!store.dirty) return
-  markPendingSnapshot(store.projectData())
+  if (!markPendingSnapshot(store.projectData())) {
+    console.warn('关页兜底快照没有写成（' + reason + '）：改动仍在内存里，刷新后会退回上一次落盘的数据')
+  }
+}
+window.addEventListener('pagehide', () => flushSnapshot('pagehide'))
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushSnapshot('visibilitychange')
 })
 
 // 首屏加载层（写在 index.html 里，纯 HTML + CSS）：挂在 Vue 挂载完成后移除。

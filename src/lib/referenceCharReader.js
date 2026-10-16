@@ -15,12 +15,12 @@
 //      **注意边界**：自定义选字的纸是"某个全序的子序列"而非连续段，连续段假设不成立 →
 //      此时 located 为 null，走 ① 的复核路径（不要把 located 的结果硬套上去）。
 //
-// 与识别链路的关系：本模块只"读字"，不碰笔迹；它读出的字序用来**建批次**，之后仍走原有的
-//   上传识别 / 更正配对 / 落盘分片流程（决策 五-9 的第二步口径）。
+// 与识别链路的关系：本模块只"读字"，不碰笔迹；它读出的**整页字序**（located）既用来定"这一页是哪些字"，
+//   也用来算**页级校验码**（`printedChars` → computePageCode，与纸面页脚比一遍 = 每页自证）。
+//   批次这一层已彻底删除（2026-10-15）：字序只来自目录里的字序文件或纸面参考字。
 import { LAYOUT, cellRect } from './layout.js'
 import { getAllChars } from './charset.js'
 import { getRankOrder } from './charRank.js'
-import { computeBatchCode } from './batchCode.js'
 
 // 设计坐标系（与 gridDetector.DESIGN 同一套：300dpi、PDF 的 pt 原点在左下）
 const DPI = 300
@@ -429,11 +429,13 @@ export function locateInSequence(cells, seq, options = {}) {
 }
 
 /**
- * 一页的完整读取：逐格识别 + 两份全序各试一次定位。
- * @returns {{cells:object, located:object|null, chars:string|null, batchCode:number|null,
+ * 一页的完整读取：逐格识别 + 候选全序各试一次定位。
+ * @returns {{cells:object, located:object|null, chars:string|null, printedChars:string[],
  *            sureCount:number, unsureCells:number[], emptyCells:number[], source:string}}
  *   located 命中时 `chars` 就是**整页字序**（认错的格与没有参考字的格都由它补上）；
  *   没命中（自定义选字 / 不是模板页）时 `chars` 为 null，请走逐格复核。
+ *   `printedChars` = **这一页实际印了参考字的那些格的字**（按格号升序）—— 它就是页脚校验码的输入，
+ *   识别端拿它算一遍与纸面比（见 scanFlow 的页级校验），所以必须与生成端的切法完全一致。
  */
 export function readPage(designGray, library, options = {}) {
   const opt = { ...REFCHAR_DEFAULTS, ...options }
@@ -451,11 +453,19 @@ export function readPage(designGray, library, options = {}) {
   }
   const unsureCells = read.cells.filter((c) => !c.empty && !c.sure).map((c) => c.index)
   const emptyCells = read.cells.filter((c) => c.empty).map((c) => c.index)
-  let chars = null
-  let batchCode = null
-  if (located) {
-    chars = located.chars.join('')
-    batchCode = computeBatchCode(located.chars)
+  const chars = located ? located.chars.join('') : null
+  // 指纹的输入：**这一页实际印了参考字的那些格的字**，按"最后一个有参考字的格"截断
+  //   （生成端是把这一页的字顺序印在前 N 格，空格只在末尾）。
+  // 为什么不用"逐格非空直接收"：参考字淡、被红笔糊住、或纸面有污渍时，中间某一格会被判成 empty ——
+  //   那样就少收一个字，指纹必然对不上（整页白白失败）。序列定位命中时整页的字是现成的，
+  //   按上面的截断把它补齐即可；没命中时只有逐格认出来的字，认不出的格仍然会缺席（那是实情）。
+  let lastPrinted = -1
+  for (let i = 0; i < read.cells.length; i++) if (!read.cells[i].empty) lastPrinted = i
+  const locatedChars = located ? located.chars : null
+  const printedChars = []
+  for (let i = 0; i <= lastPrinted; i++) {
+    const ch = (locatedChars && locatedChars[i]) || read.cells[i].char
+    if (ch) printedChars.push(ch)
   }
   return {
     cells: read.cells, // 136 项：{ index, empty, char, score, margin, sure, candidates }
@@ -468,7 +478,7 @@ export function readPage(designGray, library, options = {}) {
     inkRatio: 1 - read.emptyCount / LAYOUT.perPage,
     located,
     chars,
-    batchCode,
+    printedChars,
     // ready 的口径：定位成功（字序完全确定），或"认准的格足够多、剩下靠人过一眼"
     ready: !!located || read.sureCount >= Math.round(LAYOUT.perPage * 0.6)
   }

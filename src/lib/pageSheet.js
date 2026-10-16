@@ -84,16 +84,15 @@ export function blobToDataUrl(blob) {
  * 从**落盘的字形分片**重建某一页的格子拼图（内存缓存丢失时的兜底，见本文件顶部的两条来源）。
  * 口径：落盘只存"有笔迹"的格，所以重建出来的拼图里空白格就是浅灰底 —— 与识别时那张图观感一致。
  * @param {object} input
- * @param {string} input.batchId 批次（分片键的一半）
- * @param {number} input.fileIndex 第几个文件（分片键的另一半）
+ * @param {number} input.fileIndex 第几个文件（分片键）
  * @param {number} [input.cellThumbSize] 每格像素边长，与识别时保持一致
  * @param {number[]} [input.markedCells] 这一页被红笔圈掉的格号（**落盘的掩膜里没有这个信息**，
  *   由调用方从页记录里取，否则重建的图会丢掉红框）
  * @returns {Promise<{ok:boolean, sheet:string|null, count:number, reason:string}>}
  */
-export async function buildPageSheetFromStore({ batchId, fileIndex, cellThumbSize = 96, markedCells = [] }) {
+export async function buildPageSheetFromStore({ fileIndex, cellThumbSize = 96, markedCells = [] }) {
   try {
-    const page = await loadGlyphPage({ batchId, fileIndex })
+    const page = await loadGlyphPage({ fileIndex })
     if (!page || !(page.glyphs || []).length) {
       return { ok: false, sheet: null, count: 0, reason: '这一页没有落盘的字形（可能已被清空识别结果）' }
     }

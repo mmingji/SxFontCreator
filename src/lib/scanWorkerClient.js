@@ -1,4 +1,4 @@
-﻿// 识别链路的 Worker 客户端（决策 六-15）：界面只跟它打交道，不再直接调 recognizeBatch / recognizePage。
+// 识别链路的 Worker 客户端（决策 六-15）：界面只跟它打交道，不再直接调 recognizeBatch / recognizePage。
 //
 // 它做四件事：
 //   ① **把 File 读成字节再 transfer**（零拷贝）：File 直接 postMessage 会被结构化克隆整份复制，
@@ -248,7 +248,7 @@ function runTask(payload, hooks = {}) {
  * 整批识别（界面的主路径）。
  * @param {File[]} files 扫描件（按文件名自然序，由调用方排好）
  * @param {object} options 与 lib/scanFlow.recognizeBatch 同名同义（chars / orderChars / orderPages /
- *   expectedBatchCode / sheetPages），另加三个回调：`onStage`（阶段中文文案）、
+ *   extraSequences / sheetPages），另加三个回调：`onStage`（阶段中文文案）、
  *   `onPageStart(pageNo, total)`、`onPageIndex(record, index, cache)`（每页完成，可 async —— 客户端会等它）
  * @returns {Promise<{pages:Array, caches:Map, summary:object|null, stopped:boolean}>}
  *   pages 是按文件顺序的页记录；caches 是 fileIndex → { thumb, sheet, masks }
@@ -262,7 +262,7 @@ export async function recognizeBatchInWorker(files, options = {}) {
     chars: options.chars || '',
     orderChars: options.orderChars || '',
     orderPages: typeof options.orderPages === 'number' ? options.orderPages : undefined,
-    expectedBatchCode: typeof options.expectedBatchCode === 'number' ? options.expectedBatchCode : null,
+    extraSequences: Array.isArray(options.extraSequences) ? options.extraSequences : undefined,
     sheetPages: typeof options.sheetPages === 'number' ? options.sheetPages : undefined
   }, options)
 }
@@ -272,6 +272,7 @@ export async function recognizeBatchInWorker(files, options = {}) {
  * @returns {Promise<{record:object, cache:object}>}
  */
 export async function recognizePageInWorker(file, options = {}) {
+  const fileIndex = typeof options.fileIndex === 'number' ? options.fileIndex : 0
   const res = await runTask({
     type: 'page',
     files: [],
@@ -281,13 +282,19 @@ export async function recognizePageInWorker(file, options = {}) {
     chars: options.chars || '',
     orderChars: options.orderChars || '',
     orderPages: typeof options.orderPages === 'number' ? options.orderPages : undefined,
-    expectedBatchCode: typeof options.expectedBatchCode === 'number' ? options.expectedBatchCode : null,
-    fileIndex: typeof options.fileIndex === 'number' ? options.fileIndex : 0,
+    extraSequences: Array.isArray(options.extraSequences) ? options.extraSequences : undefined,
+    fileIndex,
     pageNumberOverride: typeof options.pageNumberOverride === 'number' ? options.pageNumberOverride : undefined
   }, options)
   const record = res.pages[0]
   if (!record) throw new Error('识别线程没有返回这一页的结果')
-  return { record, cache: res.caches.get(options.fileIndex) || reviveCache(null) }
+  // 取 cache：单页任务**只可能有一条**，所以按 fileIndex 取不到时退回那唯一一条
+  // （2026-10-15 修一个真缺陷：这条兜底原来没有，而 Worker 的单页消息曾经不带 index ——
+  //   取不到就 `reviveCache(null)` 给一个空 cache，调用方拿它落盘就把分片覆盖成 0 格，
+  //   字形与缩略图一起丢，且**不报错**。现在消息必带 index，这里只是第二道保险。）
+  const cache = res.caches.get(fileIndex) || res.caches.values().next().value || reviveCache(null)
+  if (!cache || !cache.masks) throw new Error('识别线程没有回传这一页的笔迹数据（掩膜为空）—— 请重试一次这一页')
+  return { record, cache }
 }
 
 /** 请求中止当前任务：**当前这一页处理完就停**（与旧口径一致）；已识别的页保留 */

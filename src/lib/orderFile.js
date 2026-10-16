@@ -39,8 +39,11 @@ export function dateStamp(date) {
  * @param {string} input.order 排列方式 key：rank / charset
  * @param {string} input.orderLabel 排列方式中文名
  * @param {number} [input.perPage] 每页格数（默认取版面常量）
- * @param {number} [input.batchCode] 12 位校验码
  * @param {string} [input.generatedAt] 生成时间（ISO 串）
+ *
+ * **2026-10-15（页级校验码落地）**：文件里不再带任何校验码 —— 页脚那 12 位改成"每页自证"
+ *   （这一页那些字的指纹，见 lib/pageCode.js），字序文件只负责**给字**，不再参与校验。
+ *   旧文件里可能还留着 `batchCode` 字段：解析时忽略它（多一个字段不影响），也不再显示。
  */
 export function buildOrderFile(input = {}) {
   const chars = Array.isArray(input.chars) ? input.chars.join('') : String(input.chars || '')
@@ -57,7 +60,6 @@ export function buildOrderFile(input = {}) {
     perPage,
     pageCount: Math.max(1, Math.ceil(charCount / perPage)),
     charCount,
-    batchCode: typeof input.batchCode === 'number' ? input.batchCode : null,
     chars
   }
 }
@@ -111,7 +113,7 @@ export function parseOrderFile(text, options = {}) {
       perPage,
       pageCount: Number(raw.pageCount) || Math.max(1, Math.ceil(charCount / perPage)),
       charCount,
-      batchCode: typeof raw.batchCode === 'number' ? raw.batchCode : null,
+      // 旧文件里的 batchCode 字段**忽略**（2026-10-15 起校验码改成每页自证，见文件头）
       chars: raw.chars,
       charList: Array.from(raw.chars)
     }
@@ -125,6 +127,5 @@ export function describeOrderFile(file) {
   if (file.scopeLabel) parts.push(file.scopeLabel)
   if (file.orderLabel) parts.push(file.orderLabel)
   parts.push(file.charCount + ' 字 / ' + file.pageCount + ' 页')
-  if (typeof file.batchCode === 'number') parts.push('校验码 ' + file.batchCode)
   return parts.join(' · ')
 }

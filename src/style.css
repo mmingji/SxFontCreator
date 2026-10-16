@@ -1,4 +1,4 @@
-﻿* {
+* {
   box-sizing: border-box;
 }
 
@@ -853,7 +853,7 @@ label.text-file input {
   color: var(--text-2);
 }
 
-/* 批次判定与收批闸门：error 是"整批拦下"，warn 是"跳过某页"，info 是提醒 */
+/* 收批闸门与逐页提示：error 是"整页失败/被拦下"，warn 是"跳过某页"，info 是提醒 */
 .scan-summary {
   margin: 10px 0;
   padding: 10px 12px;
@@ -949,22 +949,6 @@ label.text-file input {
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.scan-card-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* 命中区放大（2026-10-13）：原来可拖区域就是 12×18 的图标本身，鼠标很难稳稳按上去。
-     图标尺寸不变，用 padding 把它撑到约 24×32，负外边距抵消对布局的影响 */
-  padding: 7px 6px;
-  margin: -7px -2px;
-  color: #c3cad6;
-}
-
-.scan-card-handle.draggable {
-  color: var(--text-2);
-  cursor: grab;
 }
 
 .scan-card-name {
@@ -1075,24 +1059,6 @@ label.text-file input {
   max-width: 940px;
 }
 
-/* 页脚读不出的页：手选页序（在「看格子」弹窗里） */
-.scan-order {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  color: var(--text-2);
-}
-
-.scan-order input {
-  width: 64px;
-  font-family: inherit;
-  font-size: 12px;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
 /* 格级视图（在「看格子」弹窗里）：格子拼图当背景，136 个覆盖层按百分比定位（与图片分辨率无关） */
 .scan-grid-wrap {
   position: relative;
@@ -1174,117 +1140,8 @@ label.text-file input {
   min-width: 0;
 }
 
-/* ── 逐格复核（第 2 步的下级弹窗，CharReview.vue）────────────────────────────
-   纸面版式是 17 列 × 8 行，这里照抄一份同样的网格（列数由组件按 lib/layout.js 现算）：
-   每格显示认出来的字（认不出「？」），认不准的格加浅黄底 —— 复核时一眼就能找到要看哪几格。
-   弹窗沿用「项目备份」那套骨架（.backup-overlay / .backup-modal），只补网格与底部一条操作区。
-   字号一律 ≥12px（通用版 四-4）。 */
-.char-review-modal {
-  width: min(980px, 100%);
-}
-
-.char-review-sub {
-  margin-left: 6px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-2);
-}
-
-.char-review-count {
-  margin: 6px 0 0;
-  font-size: 13px;
-}
-
-.char-review-grid {
-  display: grid;
-  gap: 2px;
-  margin: 8px 0;
-}
-
-.char-review-cell {
-  height: 40px;
-  padding: 0;
-  font-family: inherit;
-  font-size: 18px;
-  line-height: 1;
-  color: var(--text-1);
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.char-review-cell.blank {
-  background: #f7f8fa;
-  color: var(--text-2);
-}
-
-/* 浅黄底 = 认不准（判定与页级行的"需要确认 K 格"是同一批格） */
-.char-review-cell.unsure {
-  background: #fef9c3;
-  border-color: #facc15;
-}
-
-.char-review-cell.picked {
-  border: 2px solid var(--primary);
-}
-
-/* 底部固定区：当前格的候选 + 手输 */
-.char-review-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-height: 46px;
-  margin-top: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
-  background: #fafbfd;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.char-review-current {
-  font-size: 13px;
-}
-
-.char-review-cand {
-  min-width: 34px;
-  padding: 4px 6px;
-  font-family: inherit;
-  font-size: 16px;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.char-review-cand:hover {
-  color: var(--primary);
-  border-color: var(--primary);
-}
-
-.char-review-input {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-.char-review-input input {
-  width: 96px;
-  padding: 5px 7px;
-  font-family: inherit;
-  font-size: 14px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-/* 「完成」靠在底部操作区最右：看完这一页就从这儿收工（复核结果已逐格写回） */
-.char-review-done {
-  margin-left: auto;
-}
+/* 2026-10-15：「逐格确认」整条界面操作已去掉（页级校验码让每页自证），
+   CharReview.vue 与它这一整组 .char-review-* 样式一并删除。需要时从 git 历史取回。 */
 
 /* ── 更正核对（第 2 步）：并排核对表 ───────────────────────────────────── */
 

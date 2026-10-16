@@ -1,4 +1,4 @@
-﻿// 识别链路的 Web Worker（决策 六-15：把四段重计算搬出主线程）
+// 识别链路的 Web Worker（决策 六-15：把四段重计算搬出主线程）
 //
 // 职责：收下「图片字节 + 参数」，在 Worker 里跑完一页的
 //   预处理 → 切格（含方向自动纠正）→ 认参考字与定字序 → 红圈识别 → 字形提取 → 缩略图 PNG，
@@ -96,13 +96,17 @@ async function handlePage(msg) {
       library: lib,
       orderChars: msg.orderChars,
       orderPages: msg.orderPages,
-      expectedBatchCode: typeof msg.expectedBatchCode === 'number' ? msg.expectedBatchCode : null,
+      extraSequences: msg.extraSequences,
       fileIndex: msg.fileIndex,
       pageNumberOverride: msg.pageNumberOverride,
       onStage: (text) => post({ type: 'stage', rid, text })
     })
-    // **单页只发这一条**（没有 done）：主线程收到它就结束这一轮（见 scanWorkerClient 的说明）
-    post({ type: 'page', rid, record, cache: toMessage(cache) }, transferablesOf(cache))
+    // **单页只发这一条**（没有 done）：主线程收到它就结束这一轮（见 scanWorkerClient 的说明）。
+    // `index` 必须带上（2026-10-15 修一个真缺陷）：主线程按它把 cache 存进 `caches`，而取回时是按
+    //   fileIndex 取的 —— 不带 index 时它只能退回 `pages.length - 1`（单页恒为 0），于是重传 / 补传
+    //   只要 fileIndex ≥ 1 就取到空 cache：掩膜与缩略图全丢、落盘分片被写成 0 格
+    //   （真机表现：作废更正册再重传之后生成字体，少的就是更正册那 9 个字形）。与整批那条同一契约。
+    post({ type: 'page', rid, index: msg.fileIndex, record, cache: toMessage(cache) }, transferablesOf(cache))
   } catch (e) {
     post({ type: 'error', rid, message: e && e.message ? e.message : String(e) })
   }
@@ -128,7 +132,7 @@ async function handleBatch(msg) {
       library: lib,
       orderChars: msg.orderChars,
       orderPages: msg.orderPages,
-      expectedBatchCode: typeof msg.expectedBatchCode === 'number' ? msg.expectedBatchCode : null,
+      extraSequences: msg.extraSequences,
       sheetPages: typeof msg.sheetPages === 'number' ? msg.sheetPages : undefined,
       // 中止：`recognizeBatch` 在每页开始前问一次 —— 与"当前这一页处理完就停"的口径一致
       shouldStop: () => cancelled,

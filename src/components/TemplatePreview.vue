@@ -44,7 +44,7 @@ const commonPages = Math.ceil(commonCount / LAYOUT.perPage)
 //   common —— 常用 6500 字：一级 + 二级 + 基础字符全出（按当前排列方式）
 //   custom —— 自定义选字：展开下面的选字面板，按已选的字出；一个字都没选时与"全量"（8274 字）等价
 // 默认单页试打（用户 2026-10-04 拍板）：先打一页确认版式，再打正式的。
-// 正式范围（常用 6500 字 / 自定义选字）出模板时会记一个批次，单页试打不记。
+// 三个档位都只"出一份纸"：模板不再记任何项目数据，只留一笔"生成过模板"的元信息（决策 五-9 ⑩）。
 const scope = ref('single')
 const pickerOpen = computed(() => scope.value === 'custom')
 // 参考字字体：**只有内置楷体一条路**（2026-10-11 去掉"选本机字体"，决策 五-9）——
@@ -161,7 +161,8 @@ const scopeHint = computed(() => {
 // 排列方式：默认**按使用频率** —— 最常用的字排在最前，前 2000 字覆盖日常语料 97.13%（约 15 页）、
 // 前 6500 字覆盖 99.99%（约 48 页），频序本身也把同偏旁的字打散了（笔画序会让同偏旁的字挨在一起，很疲劳）。
 // 「笔画序」= 《通用规范汉字表》的官方字序（说明第八条：遵循《GB 13000.1 字符集汉字字序（笔画序）规范》）。
-// 两种顺序都能被识别 —— 批次记的是实际字序，页脚校验码也按字序算（决策 八-6、八-10），换顺序不影响比对。
+// 两种顺序都能被识别 —— 页脚的**本页校验码按实际字序算**（每一页各自一个指纹），换顺序不影响识别
+// （换了顺序就是另一份纸：旧纸的字位与新字序对不上，页级校验会当场发现）。
 const orderMode = computed({
   get: () => store.ui.orderMode,
   set: (value) => store.setOrderMode(value)
@@ -283,8 +284,7 @@ async function generatePack() {
       scopeLabel: scopeLabelOf(scope.value),
       order: orderMode.value,
       orderLabel: orderModeLabel(orderMode.value),
-      perPage: LAYOUT.perPage,
-      batchCode: out.batchCode
+      perPage: LAYOUT.perPage
     })
     const packed = await packTemplateZip({
       templateBytes: out.bytes,
@@ -315,7 +315,6 @@ async function generatePack() {
       selfCheck: out.selfCheck,
       correctionPages: book.pageCount,
       charCount: order.charCount,
-      batchCode: out.batchCode,
       font: font.label,
       withGuide: !!guideHtml
     }
@@ -442,7 +441,7 @@ async function generatePack() {
     <p v-if="lastResult" class="panel-hint" data-role="template-result">
       最近产物：{{ lastResult.zip }} —— 解压得到「{{ lastResult.folder }}」文件夹：模板 {{ lastResult.sheetPages }} 字表页<span
         v-if="lastResult.selfCheck"
-      > + 1 自检页</span>、更正册 {{ lastResult.correctionPages }} 页、字序文件（{{ lastResult.charCount }} 字 · 校验码 {{ lastResult.batchCode }}）<span
+      > + 1 自检页</span>、更正册 {{ lastResult.correctionPages }} 页、字序文件（{{ lastResult.charCount }} 字）<span
         v-if="lastResult.withGuide"
       >、完整说明</span>；共 {{ (lastResult.bytes / 1024 / 1024).toFixed(2) }} MB，参考字字体：{{ lastResult.font }}
     </p>

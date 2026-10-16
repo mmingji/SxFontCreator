@@ -28,7 +28,7 @@ const DB_KEY = 'sxfont.project.v1'
 // 2026-10-11（决策 五-10）：原来这里还有一个导入保底键（`sxfont.backup.before-import.v1`）——
 // 随"导出 / 导入项目包"一起去掉了；库里若还留着那个键也不再有人读它。
 
-// 字形数据（掩膜）另存分片键：`sxfont.glyphs.v1.<批次>.<页序>`（见 lib/glyphStore.js）。
+// 字形数据（掩膜）另存分片键：`sxfont.glyphs.v2.<页序>`（见 lib/glyphStore.js）。
 // 为什么不塞进上面那个项目对象：字形量大（全量 8274 字 = 61 页 × 136 格 ≈ 8300 格掩膜），
 // 而 persist 每次改动都会重写整份对象 —— 塞进去会让"改一个族名"也写十几 MB；分片之后小改动只写元信息。
 // 口径的权威处是 lib/glyphStore.js 的文件头（决策 二-16）。
@@ -164,6 +164,9 @@ export function saveProject(project) {
  * 下次启动时会因为快照 rev 更大而被认定为较新的一份，并被固化回 IndexedDB —— 这正是兜底能生效的原因。
  * 只在"确实有未落盘的改动"时调用（否则每次刷新都会写一份多余的快照，下次启动还会多一次恢复固化）。
  * @param {object} project 内存中的项目数据（含当前 rev）
+ * @returns {boolean} 快照是否真的写成了 —— **失败不再静默**（2026-10-16，清单 四-52）：
+ *   原来这里是 `catch {}`，于是"兜底没写成"这件事在测试与真机上都看不出来（冒烟里偶发红过一次，
+ *   无从定性）。改动本身仍在内存里、IndexedDB 里的上一次数据也不受影响，但调用方要能知道并留痕。
  */
 export function markPendingSnapshot(project) {
   try {
@@ -172,8 +175,10 @@ export function markPendingSnapshot(project) {
     clean.rev = (Number(clean.rev) || 0) + 1
     clean.savedAt = Date.now()
     localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(clean))
-  } catch {
-    /* 超限或不可写：忽略，IndexedDB 里的上一次数据仍在 */
+    return true
+  } catch (e) {
+    console.warn('关页快照写入失败：改动仍在内存里，IndexedDB 里的上一次数据不受影响', e)
+    return false
   }
 }
 

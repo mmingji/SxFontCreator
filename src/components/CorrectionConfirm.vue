@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 // 第 2 步：更正核对（阶段一「界面串联」B3b；规则见《决策记录》一-7、二-13）
 // 职责：把「第 k 个被圈字 ↔ 更正册第 m 格」并排摆出来，允许**改派 / 删除 / 补录**，确认后交给字体构建。
 // 为什么必须有这一步：红圈识别与顺序配对都只是初值 —— 配对错一个字，整套字体就有一个字对错人。
@@ -241,7 +241,6 @@ async function ensureMissingSheets() {
     try {
       const page = pages.value.find((p) => p.fileIndex === fileIndex)
       const res = await buildPageSheetFromStore({
-        batchId: store.scan.batchId,
         fileIndex,
         cellThumbSize: SCAN_DEFAULTS.cellThumbSize,
         // 红框（被红笔圈掉）不进掩膜，得从页记录取；否则重建的图会丢掉这个记号
@@ -377,7 +376,7 @@ function cellThumbStyle(fileIndex, cellIndex) {
 
       <p v-if="!hasCorrectionBook && (store.correction.circled || []).length" class="step-note">
         主区有被圈掉的字，但没上传更正册：这些字会保留主区原字形（写错的那个）。
-        要更正的话，把第 1 步压缩包里的更正册（空白 5 页那张，页脚校验码 0）写好、和主区放进同一个文件夹，再识别一次。
+        要更正的话，把第 1 步压缩包里的更正册（空白 5 页那张）写好、和主区放进同一个文件夹，再识别一次。
       </p>
 
       <ul v-if="(store.correction.messages || []).length" class="scan-problems">

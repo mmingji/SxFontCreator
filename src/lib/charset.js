@@ -44,7 +44,7 @@ export function getCharsetMeta() {
 
 // 按**码点**数一份选字清单有多少字。
 // 为什么不能用 text.length：字表里有 196 个扩展 B 区汉字（UTF-16 里是代理对），字符串的 .length
-//   按码元算，会把这些字各多算一个 —— 实测"二级次常用字"会显示成 3003、批次字数与页数也跟着虚高。
+//   按码元算，会把这些字各多算一个 —— 实测"二级次常用字"会显示成 3003、选字计数与模板页数也跟着虚高。
 //   Array.from 与 for...of 都按码点迭代，取前者是因为这里只需要个数、写法更直白。
 export function countChars(text) {
   return Array.from(String(text || '')).length

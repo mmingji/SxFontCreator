@@ -1,7 +1,7 @@
 // 自动切格（阶段一步骤 1.5）—— 本项目的核心难点
-// 职责：把"一页扫描件"变成"页码 + 批次校验码 + 136 个格子的像素"：
+// 职责：把"一页扫描件"变成"页号 + 本页校验码 + 136 个格子的像素"：
 //   ① 在二值图上找四角定位块 → ② 用 4 组对应点解 3×3 透视矩阵 → ③ 把整页校正到设计坐标系
-//   → ④ 解码页脚 20 位编码（低 8 位页号 + 高 12 位批次校验码）→ ⑤ 按**已知网格坐标**切格。
+//   → ④ 解码页脚 20 位编码（低 8 位页号 + 高 12 位本页校验码）→ ⑤ 按**已知网格坐标**切格。
 // 与相邻模块的边界：算子（连通域 / 单应 / 重采样 / 阈值）全在 imageOps.js，本模块只做业务几何与判定；
 //   1.4 的 scanPreprocessor 负责把图弄干净并给中文质量提示（本模块吃它的**灰度图**）；
 //   1.6 字形提取吃本模块切出来的格子切片（写进 store 的 glyphs）。
@@ -24,7 +24,7 @@
 import {
   adaptiveThreshold, connectedComponents, globalThreshold, invert3x3, rotateQuarterTurns, solveHomography, warpGray
 } from './imageOps.js'
-import { LAYOUT, cellRect, writingBoxRect, decodePageBits } from './layout.js'
+import { LAYOUT, cellRect, writingBoxRect, decodePageBits, classifyFooterPage } from './layout.js'
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
@@ -328,12 +328,13 @@ function darkCentroid(gray, rect, pad, threshold) {
 }
 
 /**
- * 解码页脚 20 位编码（低 8 位页号 + 高 12 位批次校验码）。
- * 判定**宁严勿宽**：读不准的位会让整页页序不可信，而页序错 = 整批字形对错字（决策 八-10）。
+ * 解码页脚 20 位编码（低 8 位页号 + 高 12 位本页校验码）。
+ * 判定**宁严勿宽**：读不准的位会让整页页序不可信，而页序错 = 整页字形对错字。
  * @param {{data:Uint8ClampedArray,width:number,height:number}} designGray 校正到设计坐标系的灰度图
- * @returns {{ok:boolean, reason:string|null, pageNumber:number|null, batchCode:number|null,
+ * @returns {{ok:boolean, reason:string|null, pageNumber:number|null, pageCode:number|null,
  *   bits:number[], fills:number[], anchorFill:number, offset:{dx:number,dy:number},
  *   uncertain:number[], message:string}}
+ *   pageCode = 本页校验码（这一页那些字的 12 位指纹；0 表示"这一页没有字"）；读不出时两个字段都是 null
  */
 export function decodeFooterCode(designGray, options = {}) {
   const opt = { ...DETECT_DEFAULTS, ...options }
@@ -368,44 +369,22 @@ export function decodeFooterCode(designGray, options = {}) {
 
   if (!centroid || anchorFill < opt.anchorMinFill) {
     return {
-      ...base, ok: false, reason: 'anchor', pageNumber: null, batchCode: null,
+      ...base, ok: false, reason: 'anchor', pageNumber: null, pageCode: null,
       message: '页脚那排编码没读到（定位用的锚点方块不在预期位置）：可能是页脚被裁掉、被手指或阴影挡住、或扫描分辨率太低。' +
-        '字序会优先由纸面印的参考字定位得到；定位不出来的话，在它的结果卡片上点「手选页序」填上第几页'
+        '这一页的页号与字序会改由纸面印的参考字定；两样都定不出来时，只能把这一页重扫一次'
     }
   }
   if (uncertain.length) {
     return {
-      ...base, ok: false, reason: 'uncertain', pageNumber: null, batchCode: null,
+      ...base, ok: false, reason: 'uncertain', pageNumber: null, pageCode: null,
       message: '页脚编码有 ' + uncertain.length + ' 位读不准（第 ' + uncertain.map((i) => i + 1).join('、') +
-        ' 位）：可能是扫描分辨率低、纸面有污渍或页脚被裁。字序会优先由纸面参考字定位得到，不影响识别；定位不出来时再手选页序'
+        ' 位）：可能是扫描分辨率低、纸面有污渍或页脚被裁。这一页的页号与字序会改由纸面参考字定'
     }
   }
-  const { pageNumber, batchCode } = decodePageBits(bits)
+  const { pageNumber, pageCode } = decodePageBits(bits)
   return {
-    ...base, ok: true, reason: null, pageNumber, batchCode,
-    message: '页脚解码成功：页号 ' + pageNumber + '，批次校验码 ' + batchCode
-  }
-}
-
-/**
- * 页脚校验码与"期望的批次码"比对（决策 八-10 的机制；**2026-10-11 起不再当闸门** —— 见决策 五-9：
- * 字序由纸面参考字定位决定，批次是自动建的容器，两者的码本来就可能不同。现在它的用途是**自校验**：
- * 把"识别出的字序算出的码"与纸面码对一下（scanFlow 的 footerSelfCheck），对不上只提示复核、不拦）
- * @returns {{match:boolean|null, message:string}} match 为 null 表示没给可比的对象
- */
-export function verifyBatchCode(decodedBatchCode, expectedBatchCode) {
-  if (expectedBatchCode === null || expectedBatchCode === undefined) {
-    return { match: null, message: '页脚校验码未做批次比对（这一页的字序由纸面参考字定位得到）' }
-  }
-  const scanned = decodedBatchCode | 0
-  const expected = expectedBatchCode | 0
-  if (scanned === expected) {
-    return { match: true, message: '页脚校验码与所选批次一致（' + scanned + '）' }
-  }
-  return {
-    match: false,
-    message: '这批扫描件不是当前选字清单生成的模板：扫描件上的校验码是 ' + scanned + '，所选批次是 ' + expected +
-      '。已整批拦下 —— 请确认批次选对了，或者重新生成模板、重印重写（改过选字清单的模板一律作废）'
+    ...base, ok: true, reason: null, pageNumber, pageCode,
+    message: '页脚解码成功：页号 ' + pageNumber + '，本页校验码 ' + pageCode
   }
 }
 
@@ -428,7 +407,8 @@ export function sliceWritingBoxes(designGray, options = {}) {
       '）的灰度图，实际拿到 ' + designGray.width + ' × ' + designGray.height)
   }
   const padPt = typeof opt.cellPadPt === 'number' ? opt.cellPadPt : CELL_PAD_PT
-  // 页脚读不出时上层传 0：表示"页码未知、等界面手选"，不要在这里退回 1（那等于编造页序）
+  // 页脚读不出时上层传 0：表示"页码未知"，不要在这里退回 1（那等于编造页序）——
+  // 页号只由页脚或纸面参考字序列定位给出（2026-10-15 起不再有"手选页序"这条界面操作）
   const pageNumber = typeof opt.pageNumber === 'number' ? opt.pageNumber : 1
   // 附加图层：只接受与设计坐标灰度同尺寸的层，尺寸对不上的直接跳过（宁缺勿错位）
   const layers = (opt.layers || []).filter((l) => l && l.gray && l.gray.width === designGray.width &&
@@ -562,10 +542,9 @@ function analyzeOrientation(gray, opt) {
 
 /**
  * 处理一页扫描件：方向纠正 → 找四角 → 透视校正 → 页脚解码 → 切格。
- * 注意 ok 的含义是"这一页被机器可靠处理了"（含页脚解码成功、校正误差在限内）；
- *   批次是否匹配单独放在 batch 字段 —— 整批拦下的判定在 summarizeBatch 里做（决策 八-10）。
+ * 注意 ok 的含义是"这一页被机器可靠处理了"（含页脚解码成功、校正误差在限内）。
  * @param {{data:Uint8ClampedArray,width:number,height:number}} gray 预处理后的灰度图（已去噪）
- * @param {object} [options] DETECT_DEFAULTS + { expectedBatchCode, slice, verifyRectified, keepDesignGray }
+ * @param {object} [options] DETECT_DEFAULTS + { slice, verifyRectified, keepDesignGray }
  */
 export function analyzePage(gray, options = {}) {
   const opt = { ...DETECT_DEFAULTS, ...options }
@@ -611,7 +590,7 @@ export function analyzePage(gray, options = {}) {
   if (picked.stage === 'marks' || picked.stage === 'transform') {
     return {
       ok: false, stage: picked.stage, marks: picked.marks, matrix: null, cornerErrors: null,
-      designGray: null, footer: null, batch: null, boxes: [], orientation,
+      designGray: null, footer: null, boxes: [], orientation,
       messages: [{ level: 'error', text: picked.reason }], timings
     }
   }
@@ -644,7 +623,8 @@ export function analyzePage(gray, options = {}) {
   if (!footer.ok) {
     messages.push({
       level: 'info',
-      text: '这一页仍会照常切格，但页序要靠你手选；页序错会让整批字形对错字，务必在界面上核对后再确认'
+      text: '这一页仍会照常切格：页号与字序改由纸面印的参考字定（序列定位能定出来就照常出字形）；' +
+        '参考字也定不出来时这一页只能重扫'
     })
   }
 
@@ -652,9 +632,6 @@ export function analyzePage(gray, options = {}) {
   const sliced = opt.slice === false ? { boxes: [], padPt: CELL_PAD_PT, sliceSize: null }
     : sliceWritingBoxes(designGray, { ...opt, pageNumber: footer.ok ? footer.pageNumber : 0 })
   timings.slice = Math.round(now() - tSlice)
-
-  const batch = footer.ok ? verifyBatchCode(footer.batchCode, opt.expectedBatchCode) : null
-  if (batch && batch.match === false) messages.push({ level: 'error', text: batch.message })
 
   const geometryOk = !cornerErrors || cornerErrors.max <= opt.cornerErrorLimit
   timings.total = Math.round(now() - t0)
@@ -666,7 +643,6 @@ export function analyzePage(gray, options = {}) {
     cornerErrors,
     designGray: opt.keepDesignGray === false ? null : designGray,
     footer,
-    batch,
     boxes: sliced.boxes,
     padPt: sliced.padPt,
     sliceSize: sliced.sliceSize,
@@ -680,16 +656,15 @@ export function analyzePage(gray, options = {}) {
 
 /**
  * 把多页的处理结果汇总成"这一批能不能收"的判定。
- * 规则（《决策记录》八-9、八-10、二-7）：
- *   - 任一处页脚校验码与所选批次不符 → **整批拦下**（error）
- *   - 页脚读不出的页 → 需手选页序并显式确认批次（error，因为它让校验码失效）
- *   - 页号重复 → error；页号超出字表页数 → info（打印自检页 / 更正册，不参与字形识别）
- *   - 字表页有缺 → warn（不拦下：用户可以先识别已有的页）
+ * 规则（《决策记录》一-9 的 2026-10-15 修订，替代原"批次校验码不符即整批拦下"那套）：
+ *   - 页脚读不出的页 → 只提示（页号与字序改由纸面参考字定；定不出来时那一页整页失败）
+ *   - 页号重复 → error；非字表页（指纹 0 的打印自检页）→ info，不参与字形识别
+ *   - 字表页有缺 → warn（不拦下：用户可以先识别已有的那几页）
  * @param {Array} pages analyzePage 的结果数组
- * @param {{expectedBatchCode:number, sheetPages:number}} [options]
+ * @param {{sheetPages:number}} [options]
  */
 export function summarizeBatch(pages, options = {}) {
-  const { expectedBatchCode, sheetPages } = options
+  const { sheetPages } = options
   const problems = []
   const duplicates = []
   const seen = new Map() // `${件类型}:${pageNumber}` → 第几个文件（1 起）
@@ -697,79 +672,72 @@ export function summarizeBatch(pages, options = {}) {
     const file = i + 1
     const footer = p && p.footer
     const footerOk = !!(footer && footer.ok)
-    const pageNumber = footerOk ? footer.pageNumber : null
-    const batchCode = footerOk ? footer.batchCode : null
-    // 件类型（决策 一-9、二-13）：**更正册的页脚校验码为 0**、主区是批次校验码；页脚读不出时未知。
-    // 分清件类型是必须的：更正册与主区都从第 1 页开始编号，混在一起会把"更正册第 1 页"当成
-    // "主区第 1 页重复上传"，也会让它的校验码 0 被判成"与所选批次不符"而整批拦下。
-    const kind = !footerOk ? 'unknown' : (batchCode === 0 ? 'correction' : 'main')
+    const rawPageNumber = footerOk ? footer.pageNumber : null
+    const pageCode = footerOk ? footer.pageCode : null
+    // 件类型与页号：**优先用识别时已经解释好的那一份**（`footer.kind` / `footer.pageNumber`，
+    // 由 scanFlow 的 footerShape 经 layout.classifyFooterPage 得出，并且包含"旧纸宽容"那条口径）——
+    // 两处各判一次必然会走样：实测踩到过旧口径印的更正册在这里被判成"非字表页"、于是既不算更正册、
+    // 又被算进"可用页"。只有拿不到 footer.kind 时（手工构造的页记录 / 老数据）才自己判一次。
+    const cls = footerOk
+      ? (footer.kind
+          ? { kind: footer.kind, pageNumber: footer.pageNumber }
+          : classifyFooterPage(rawPageNumber, pageCode))
+      : { kind: 'unknown', pageNumber: null }
     const row = {
       file,
       ok: !!(p && p.ok),
-      pageNumber,
-      batchCode,
+      pageNumber: cls.pageNumber, // 人读页号（更正册还原成它自己的第 n 页）
+      rawPageNumber,
+      pageCode,
       footerOk,
-      kind,
-      isCorrection: kind === 'correction',
-      isSheetPage: null,
-      batchMatch: null
+      kind: cls.kind,
+      isCorrection: cls.kind === 'correction',
+      isSheetPage: null
     }
     if (row.pageNumber !== null) {
-      const dupKey = kind + ':' + row.pageNumber
+      const dupKey = row.kind + ':' + row.pageNumber
       if (seen.has(dupKey)) {
         duplicates.push(row.pageNumber)
         problems.push({
           level: 'error',
           text: '第 ' + seen.get(dupKey) + ' 个文件与第 ' + file + ' 个文件的页脚都写着' +
-            (kind === 'correction' ? '更正册第 ' : '第 ') + row.pageNumber + ' 页，请确认有没有重复上传同一页'
+            (row.kind === 'correction' ? '更正册第 ' : '第 ') + row.pageNumber + ' 页，请确认有没有重复上传同一页'
         })
       } else {
         seen.set(dupKey, file)
       }
       // 非字表页判定只对主区有意义：更正册的页号是它自己的（1 起），与字表页数无关
-      if (kind === 'main' && typeof sheetPages === 'number') row.isSheetPage = row.pageNumber <= sheetPages
+      if (row.kind === 'main') row.isSheetPage = typeof sheetPages !== 'number' || row.pageNumber <= sheetPages
     }
     if (footer && !footer.ok) {
-      problems.push({ level: 'error', text: '第 ' + file + ' 个文件：' + footer.message })
+      // 页脚读不出**只提示**（2026-10-15 口径）：页号与字序由纸面参考字序列定位定，定不出来时
+      //   那一页自己会整页失败（扫描件那一层）。原来这里推 error，于是"被参考字救回来、照常可用的页"
+      //   与"这一批被拦下"会同时出现在一屏上（两处结论打架，子代理实测指出）。
+      problems.push({ level: 'warn', text: '第 ' + file + ' 个文件：' + footer.message })
     }
     return row
   })
 
-  // 批次校验：只统计**主区**的"字表页" —— 更正册的校验码本就是 0，打印自检页也不参与
-  const codeRows = rows.filter((r) => r.kind === 'main' && r.isSheetPage !== false)
-  if (typeof expectedBatchCode === 'number' && codeRows.length) {
-    for (const r of codeRows) r.batchMatch = r.batchCode === (expectedBatchCode | 0)
-    const bad = codeRows.filter((r) => !r.batchMatch)
-    if (bad.length) {
-      problems.push({
-        level: 'error',
-        text: '有 ' + bad.length + ' 页的页脚校验码与所选批次不符（第 ' + bad.map((r) => r.file).join('、') +
-          ' 个文件，扫描件上的码是 ' + bad[0].batchCode + '，所选批次是 ' + (expectedBatchCode | 0) +
-          '）。已整批拦下：请确认批次选对了，或重新生成模板、重印重写'
-      })
-    }
-  } else if (codeRows.length === 0 && rows.some((r) => r.kind !== 'correction')) {
-    // 只有"非更正册的件"全都读不出页脚时才提醒手选页序：全是更正册的话本来就没有主区批次码可比
+  // 页脚读不出：只提示 —— 页号与字序会改由纸面参考字定（决策 五-9 的新模型），
+  //   不再要求"手选页序 + 显式确认批次"（那条界面操作已去掉）
+  const noFooter = rows.filter((r) => r.kind === 'unknown')
+  if (noFooter.length) {
     problems.push({
       level: 'warn',
-      text: '所有扫描件的页脚都没能读出页序：字序会优先由每页的参考字定位得到；' +
-        '定位不出来的页，在它的结果卡片上点「手选页序」填上第几页'
+      text: '有 ' + noFooter.length + ' 页的页脚读不出（第 ' + noFooter.map((r) => r.file).join('、') +
+        ' 个文件）：这些页的页号与字序会由纸面参考字定；定不出来的页会整页失败，只能重扫'
     })
   }
 
   // 更正册的件数（下面的汇总文案要用）
   const correctionRows = rows.filter((r) => r.kind === 'correction')
-  // 2026-10-13（用户口径）：原来这里会为"哪些文件是更正册"单独出一条 info（"第 N 个文件是更正册
-  //   （页脚校验码 0）：它不参与批次校验码比对，用于覆盖被红笔圈掉的字"）——
-  //   结果卡片上已经写着「更正册」这个状态短词，再说一遍只是噪音，去掉（件数仍在汇总文案里）。
 
   if (typeof sheetPages === 'number') {
-    const extra = rows.filter((r) => r.isSheetPage === false)
+    const extra = rows.filter((r) => r.kind === 'notSheet')
     if (extra.length) {
       problems.push({
         level: 'info',
-        text: '第 ' + extra.map((r) => r.file).join('、') + ' 个文件的页号超出字表页数（' + sheetPages +
-          ' 页），已按"非字表页"处理（打印自检页不参与字形识别）'
+        text: '第 ' + extra.map((r) => r.file).join('、') + ' 个文件是打印自检页（没有字表内容），不参与字形识别'
       })
     }
     const missing = []

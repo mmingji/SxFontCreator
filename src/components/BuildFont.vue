@@ -122,7 +122,6 @@ async function build() {
     const built = await buildFontFromPlan({
       items: plan.value.items,
       meta: { ...store.meta },
-      batchId: store.scan.batchId,
       // 排除两类字（八-8）：**已剔除**（这个字不要了）与**待重写**（先不进字体、以后补上）——
       // 构建时一视同仁地排除，区别只在清单与提示上（收录数说明会分别写出来）
       excluded: [...store.excludedChars, ...store.rewriteChars],

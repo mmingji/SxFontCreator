@@ -59,8 +59,7 @@ const sheetPageCount = computed(() => {
   return max
 })
 const progress = computed(() => ({
-  // 生成过模板（第 1 步的完成判据）——2026-10-11 起不再看批次：第 1 步不记批次了，
-  // 改读 store.template 那笔元信息（决策 五-9 的收尾）
+  // 生成过模板（第 1 步的完成判据）——读 store.template 那笔元信息（第 1 步从不记任何"批次"类容器）
   templatePages: store.template && store.template.sheetPages ? store.template.sheetPages : 0,
   templateChars: store.template && store.template.charCount ? store.template.charCount : 0,
   uploadedPages: scanStats.value.pagesUsable,

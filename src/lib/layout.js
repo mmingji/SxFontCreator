@@ -3,7 +3,7 @@
 //   四角定位块、页脚编码位宽与排布，以及"页内第 n 格在哪"的换算。
 // 为什么单独一份、且**零依赖**：这两端（pdf-lib 生成 PDF、切格解码扫描件）必须逐字对得上
 //   （《决策记录》一-9 的页脚编码契约）；而 templatePdf.js 依赖 pdf-lib + fontkit（构建后约 1.16MB），
-//   切格模块不能为了几个常量把它拖进首屏 —— 与 computeBatchCode 抽到 lib/batchCode.js 是同一个理由。
+//   切格模块不能为了几个常量把它拖进首屏 —— 与 computePageCode 抽到 lib/pageCode.js 是同一个理由。
 // 注意：下面全是"取值型参数"（颜色、尺寸、行列数、页脚编码位宽）。**改任何一个值，都要全文搜索旧值并同步
 //   文档**（本项目规则见《决策记录》六-8），五处参数位置：① 本文件；② 《决策记录》一-3 / 一-4 / 一-9；
 //   ③ 《实施计划》步骤 1.3 的"关键参数"与步骤 1.5 的切格参数；④ 《需求与技术方案》5.1 / 5.4；
@@ -66,22 +66,25 @@ export const LAYOUT = (() => {
   const blockHeight = referenceLineHeight + writingBox
 
   // 页脚编码标记：一个锚点方块 + 20 个数据位方块（位置对应二进制位）
-  // 20 位 = 低 8 位页号 + 高 12 位批次校验码（《决策记录》八-10 把一-9 原来的 8 位扩成了 20 位）：
-  //   页号告诉识别端"这是第几页"；校验码**2026-10-11 起降为自校验**（决策 五-9 ⑥ / 六-14）——
-  //   原来它当闸门（不符即整批拦下），现在批次是内部容器、字序由纸面参考字定位决定，
-  //   识别出的字序算出的码与纸面码对不上**只提示复核**，不再拦批。位宽与排布不变。
+  // 20 位 = 低 8 位页号 + 高 12 位**本页校验码（本页指纹）**（《决策记录》一-9 的 2026-10-15 修订，
+  //   取代八-10 原来"整批共用一个批次校验码"的口径）：
+  //   · 低 8 位页号：主区第 n 页编 n−1（1~127）；**更正册第 n 页编 128+n−1**（件类型改用页号区间表示，
+  //     不再用"校验码 0"这种特殊值 —— 0 现在专门表示"这一页没有字"）。
+  //   · 高 12 位指纹：这一页实际印了参考字的那些字的 FNV-1a 低 12 位（见 lib/pageCode.js）；
+  //     识别端拿"猜出来的这一页的字"再算一遍比对 —— 一致就说明页号与字序来源都对。
   //   总宽 = 8pt 锚点 + 4pt 间隙 + 20×6pt 方块 + 19×5pt 间隔 = 227pt ≈ 8.01cm，
-  //   A4 横向（可用宽 27.2cm）放得下，也不碰左右下角的定位块。
+  //   A4 横向（可用宽 27.2cm）放得下，也不碰左右下角的定位块。**物理排布与位宽这次没有改**
+  //   （改的只是这 20 位各自的语义），识别端的采样几何因此一行都不用动。
   const pageBits = 8
-  const batchBits = 12
+  const codeBits = 12
   const pageMark = {
     anchorSize: 8,
     bitSize: 6,
     bitGap: 5,
     anchorGap: 4,
-    pageBits, // 低 8 位：页号
-    batchBits, // 高 12 位：批次校验码
-    bits: pageBits + batchBits,
+    pageBits, // 低 8 位：页号（含件类型区间）
+    codeBits, // 高 12 位：本页校验码（本页指纹）
+    bits: pageBits + codeBits,
     y: markOffset + 4 // 距纸边约 0.63cm，落在可打印区内
   }
   pageMark.totalWidth = pageMark.anchorSize + pageMark.anchorGap +
@@ -110,6 +113,11 @@ export const LAYOUT = (() => {
     //   纸面上看得见又不抢眼。8pt 是"看得清又不占地方"的折中（需求里的最小字号约束针对界面，纸面另计）
     hintColor: rgb(0.502, 0.502, 0.502),
     hintFontSize: 8,
+    // 可见页码（2026-10-15 用户口径）：印在**右侧中间**、只印数字，12pt、用 markColor（中深青）——
+    //   写更正册要按主区页号的先后顺序写，纸面上没有一个人能看懂的页码就会写乱。
+    //   位置与颜色的实现只在 templatePdf.drawVisiblePageNumber 一处（它要拿 tableLeft / tableWidth 算空白带，
+    //   所以没有把坐标搬进来）；改版式时这两处一起看。
+    visiblePageNumber: { size: 12 },
     // #2E6E7E 中深青：定位块与页码标记用它，替代原来的纯黑 ——
     // ① 红度 R − max(G,B) = −80（负值），不会被红圈识别误判；② 灰度约 93，灰度扫描下仍远深于格线（166）
     markColor: rgb(0.18, 0.431, 0.494)
@@ -117,27 +125,64 @@ export const LAYOUT = (() => {
 })()
 
 // 页脚编码 → 20 位数组（bit0 在最左，与印在纸上的方块排布顺序一致）
-// 前 8 位是页号（第 n 页编码 n−1，保证第 1 页也有标记，支持 256 页），后 12 位是批次校验码。
+// 前 8 位是页号（主区第 n 页编码 n−1；更正册第 n 页编码 128+n−1，见 CORRECTION_PAGE_BASE），
+// 后 12 位是**本页校验码**（这一页那些字的指纹，见 lib/pageCode.js）。
 // **这是模板生成与切格识别之间的契约**：解码端（gridDetector.decodeFooterCode）按同样顺序读位；
-// 改这里就必须同步改解码端（《决策记录》一-9、八-10）。
-export function encodePageCode(pageNumber, batchCode = 0) {
-  const { pageBits, batchBits } = LAYOUT.pageMark
+// 改这里就必须同步改解码端（《决策记录》一-9）。
+export function encodePageCode(pageNumber, pageCode = 0) {
+  const { pageBits, codeBits } = LAYOUT.pageMark
   const page = Math.max(0, Math.min((1 << pageBits) - 1, (pageNumber | 0) - 1))
-  const batch = Math.max(0, Math.min((1 << batchBits) - 1, batchCode | 0))
+  const code = Math.max(0, Math.min((1 << codeBits) - 1, pageCode | 0))
   const bits = []
   for (let i = 0; i < pageBits; i++) bits.push((page >> i) & 1)
-  for (let i = 0; i < batchBits; i++) bits.push((batch >> i) & 1)
+  for (let i = 0; i < codeBits; i++) bits.push((code >> i) & 1)
   return bits
 }
 
-// encodePageCode 的逆：把 20 位读回页号与批次校验码（切格解码端用，与上面严格对称）
+// encodePageCode 的逆：把 20 位读回页号与本页校验码（切格解码端用，与上面严格对称）
 export function decodePageBits(bits) {
-  const { pageBits, batchBits } = LAYOUT.pageMark
+  const { pageBits, codeBits } = LAYOUT.pageMark
   let page = 0
   for (let i = 0; i < pageBits; i++) if (bits[i]) page |= 1 << i
-  let batch = 0
-  for (let i = 0; i < batchBits; i++) if (bits[pageBits + i]) batch |= 1 << i
-  return { pageNumber: page + 1, batchCode: batch }
+  let code = 0
+  for (let i = 0; i < codeBits; i++) if (bits[pageBits + i]) code |= 1 << i
+  return { pageNumber: page + 1, pageCode: code }
+}
+
+// ── 件的类型：靠页号区间区分，不靠校验码的特殊值（《决策记录》一-9 的 2026-10-15 修订）──────
+// 主区字表页的页号是 1~127（实际最多 62 页）；更正册从 128 起编 —— 这样：
+//   · 高 12 位的指纹位一位都不用让出来（仍是完整的 12 位，碰撞率 1/4096）；
+//   · "校验码 = 0" 这个特殊值腾出来表示**这一页没有字**（打印自检页），语义不再重叠。
+export const CORRECTION_PAGE_BASE = 128
+
+/** 更正册第 index 页（1 起）在页脚里编的页号 */
+export function correctionPageNumber(index) {
+  return CORRECTION_PAGE_BASE + Math.max(1, index | 0) - 1
+}
+
+/** 页脚读出的页号是不是更正册 */
+export function isCorrectionPage(pageNumber) {
+  return typeof pageNumber === 'number' && pageNumber >= CORRECTION_PAGE_BASE
+}
+
+/** 更正册页号 → 它是更正册的第几页（1 起；非更正册页号返回 0） */
+export function correctionIndexOf(pageNumber) {
+  return isCorrectionPage(pageNumber) ? pageNumber - CORRECTION_PAGE_BASE + 1 : 0
+}
+
+/**
+ * 把"页脚原样读到的页号 + 本页校验码"解释成件的类型与人读页号。
+ * **识别端只有这一处判定口径**（scanFlow 与 summarizeBatch 共用），避免两处各写一套：
+ *   · 页号 ≥ 128 → 更正册第 (页号−127) 页；
+ *   · 指纹 = 0  → 不是字表页（打印自检页 —— 它没有"这一页的字"，所以指纹是专用值 0）；
+ *   · 其余      → 主区第 n 页。
+ * @returns {{kind:'main'|'correction'|'notSheet'|'unknown', pageNumber:number|null}}
+ */
+export function classifyFooterPage(rawPageNumber, pageCode) {
+  if (typeof rawPageNumber !== 'number') return { kind: 'unknown', pageNumber: null }
+  if (isCorrectionPage(rawPageNumber)) return { kind: 'correction', pageNumber: correctionIndexOf(rawPageNumber) }
+  if (!pageCode) return { kind: 'notSheet', pageNumber: rawPageNumber }
+  return { kind: 'main', pageNumber: rawPageNumber }
 }
 
 // 某一页上第 index 个格子（从左到右、从上到下）的坐标；越界返回 null

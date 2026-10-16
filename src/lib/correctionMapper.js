@@ -4,8 +4,8 @@
 // 规则（决策 一-6、一-7 与 二-13，2026-10-04 拍板）：
 //   ① **严格顺序**：更正册主段第 k 格 ↔ 被圈字清单第 k 个字；**留空的格 = 这个字保留主区原字形**；
 //   ② **红圈作废**：用户在更正册上用红笔圈掉写坏的格 → 该格作废，对应的字进「待补写队列」；
-//      （红圈在主区模板上的语义是"这个字写错了"、在更正册上是"这一格作废"，靠件的类型区分 ——
-//        更正册页脚校验码为 0、主区是批次码，不会混，决策 八-10）
+//      （红圈在主区模板上的语义是"这个字写错了"、在更正册上是"这一格作废"，靠**件的类型**区分 ——
+//        更正册走页脚的 128+ 专用页号区间、主区是 1~127，不会混，决策 一-9 / 一-19）
 //   ③ **末尾补写**：补写区从第 N+1 格起（N = 被圈字数），按连续格号顺序取用；补写格又被圈掉就再进队列，
 //      所以"写到一半写坏一格"不必整册重写；
 //   ④ 配对只是**初始猜测**：界面可改派 / 删除 / 补录（决策 一-7 的最后一道闸），本模块只给初值。
@@ -21,8 +21,8 @@ export function continuousIndex(pageNumber, cellIndex, perPage = LAYOUT.perPage)
 /**
  * 把 1.6 的提取结果整理成配对用的格清单（按连续格号升序）。
  * @param {Array} cells extractPage 产出的 cells（带 index / pageNumber / verdict / inkPixels）
- * @param {{perPage?:number, fallbackPage?:number}} [options] fallbackPage 用于页脚读不出（pageNumber 为 0）时
- *   按上传顺序顶替 —— 页码读不出时由界面手选页序（决策 二-7），这里只做机械顶替，不猜
+ * @param {{perPage?:number, fallbackPage?:number}} [options] fallbackPage 用于页号没定出来（pageNumber 为 0）时
+ *   按机械顶替（调用方给什么用什么，本函数不猜；"手选页序"那条界面操作已于 2026-10-15 去掉）
  */
 export function buildCorrectionCells(cells, options = {}) {
   const perPage = options.perPage || LAYOUT.perPage

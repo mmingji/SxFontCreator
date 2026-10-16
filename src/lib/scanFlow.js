@@ -1,11 +1,11 @@
-﻿// 上传识别流程编排（阶段一「界面串联」B2）
+// 上传识别流程编排（阶段一「界面串联」B2）
 // 职责：一串扫描件 → 逐页「预处理 → 切格（含整页方向自动纠正）→ 红圈识别 → 字形提取（顺带剔除红圈像素）」
-//   → 页级 + 格级结果；再按《决策记录》八-9 / 八-10 / 二-7 给出"这一批能不能继续"的判定与中文说明。
+//   → 页级 + 格级结果；再给出"这一批能不能继续"的判定与中文说明（判据见本文件 ③.5 / ③.6 与 scanMeta.evaluateScanGate）。
 // 为什么单独成模块：这是界面与四个识别模块（1.4~1.7）之间**唯一的接缝** —— 界面只管渲染结果，
-//   流程顺序、参数、失败处置、页序与批次的判定都在这里，因此可以用真件夹具整条跑通（test/scan-flow.mjs）。
+//   流程顺序、参数、失败处置、页号与件类型的判定都在这里，因此可以用真件夹具整条跑通（test/scan-flow.mjs）。
 // 内存（决策 二-1、清单 三-5）：**必须串行、逐页释放** —— 单页彩色 8MB、全量 51 页约 400MB，
 //   所以每处理完一页就把灰度图 / 彩色像素 / 掩膜丢掉，只留下"能显示、能继续算"的压缩产物：
-//   · 页记录（计数、每格判定、被圈格、页号与批次）—— 进 store，落盘
+//   · 页记录（计数、每格判定、被圈格、页号与本页校验码）—— 进 store，落盘
 //   · 每页一张**格子缩略图**（136 格拼成一张 PNG）+ 一张**整页缩略图** + 每格的笔迹掩膜 —— 只放内存缓存
 //     （掩膜是后续字体合成（B3）的原料；两张图是"识别结果可视化"的原料。都不落盘：
 //      落盘会把整份项目对象撑到几 MB，每次改族名都要重写一遍，得不偿失 —— 见清单 四-27）
@@ -16,9 +16,10 @@ import { analyzePage, summarizeBatch, DESIGN } from './gridDetector.js'
 import { attachRedMarks, defaultCellRects } from './markRecognizer.js'
 import { extractPage } from './handwritingExtractor.js'
 import { rotateQuarterTurns } from './imageOps.js'
-import { LAYOUT } from './layout.js'
+import { LAYOUT, classifyFooterPage, CORRECTION_PAGE_BASE } from './layout.js'
+import { computePageCode, matchPageCode } from './pageCode.js'
 import { getAllChars } from './charset.js'
-import { charAtCell, dedupeDuplicatePages, reorderPages, resolveBatchChars, usableForGlyphs } from './scanMeta.js'
+import { charAtCell, dedupeDuplicatePages, usableForGlyphs } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
 // 格子拼图与 blob→dataURL 的画法在 lib/pageSheet.js 里（刷新后从落盘字形重建时也用它，两处必须同一种画法）
 import { blobToDataUrl, cellSheet } from './pageSheet.js'
@@ -34,21 +35,19 @@ export {
   evaluateRescanAccept,
   evaluateScanGate,
   pairCorrections,
-  reorderPages,
-  resolveBatchChars,
   usableForGlyphs
 } from './scanMeta.js'
 
-// 整批汇总判定（页号重复 / 批次码不符 / 缺页 / 闸门）在 gridDetector.js 里，这里再导出一次：
+// 整批汇总判定（页号重复 / 缺页 / 闸门）在 gridDetector.js 里，这里再导出一次：
 // 单页重传（清单 一-8）替换完一页后要重算整批，界面不该为此再记一个模块入口
 export { summarizeBatch }
 
 /**
  * 按页号给重复页打标（**就地**改 pages，返回 `{duplicates, groups}`）。
  *
- * 为什么要单独抽一份：这条判据有三个调用方 —— 整批识别收尾（`recognizeBatch`）、手选页序后重算
- *   （`applyPageOrder`）、以及界面侧的「补传扫描件」（补进来的件可能与已有的页同号）。
- *   三处必须**同一套判据**，否则卡片标记 / 统计 / 更正配对 / 字形计划会各说一套。
+ * 为什么要单独抽一份：这条判据有两个调用方 —— 整批识别收尾（`recognizeBatch`）与界面侧的
+ *   「补传扫描件 / 重传」（补进来的件可能与已有的页同号）。两处必须**同一套判据**，
+ *   否则卡片标记 / 统计 / 更正配对 / 字形计划会各说一套。
  *
  * `duplicates` 是给**主线程**用的（`[{fileIndex, duplicateOf}]`）：识别跑在 Worker 里时，逐页那一批
  *   消息早就发走了（结构化克隆发生在那一刻，那时还没有 duplicateOf）—— 结论只能随收尾消息带回，
@@ -102,18 +101,24 @@ export function markDuplicatePages(pages) {
 export const SCAN_DEFAULTS = {
   autoOrient: true, // 整页方向不对时自动纠正（决策 二-11）
   detectRedMarks: true, // 红圈识别 + 从笔迹里剔除（决策 二-12）
-  expectedBatchCode: null, // 所选批次的 12 位校验码（八-10；为 null 时不做批次比对）
   // 参考字候选库（lib/referenceCharReader.js 的 buildLibrary 产物）：**传了它才做"认参考字 + 定字序"**；
-  // 不传就退回旧口径（按批次的全局字序取字），供纯逻辑测试与没有字体可用的环境使用。
+  // 不传就退回旧口径（按字序切段取字），供纯逻辑测试与没有字体可用的环境使用。
   library: null,
   // 这一批的字序（**来自目录里的字序文件**，决策 一-18）：给了它就"文件说了算" ——
   //   序列定位只在这个全序里找起点；定位不上但页脚读出了页号时，直接按页号从它里面切一段。
   //   没给（目录里没有字序文件、或文件不合格式）才退回"两份预置全序去猜"，即认参考字那条退路。
   orderChars: '',
+  // **补写页的候选字序**（重写清单 / 未收录字清单，见决策 八-8 与八-19 ⑮⑲）：
+  //   这些字既不在字序文件里、也不是任何预置全序的连续段，所以单独作为"候选全序"传进来 ——
+  //   补写页的页号与字序校验（页级指纹）都在这几条候选里找。
+  extraSequences: null,
   // 这一页上"有参考字的格"占比低于它 → 判定**不是本程序生成的模板**，整页失败
   // （用户 2026-10-11 拍板：只认自家模板产出的纸，外来图片一个字形也不产生）。
   // 实测自家模板在这条上是 0.99~1.00（参考字是印上去的，即使模糊也能取到）。
+  // **补写页例外**（重写清单 / 未收录字模板，一页只印几个字）：闸门按件类型分档，见 minInkRatioRewrite。
   minInkRatio: 0.6,
+  // 补写页的闸门：一页只印几个字也照收，判据改成"认出的字 ≥ 1 且指纹一致"
+  minRewriteChars: 1,
   // 格子缩略图里每格的像素边长：96 够看清"这一格写了没、写得正不正"，又让整页拼图只有 1632×768
   cellThumbSize: 96,
   // 整页缩略图的宽度（高度按比例）：页级行里看一眼"这页长什么样"，300 够用
@@ -157,7 +162,8 @@ function grayThumb(gray, targetWidth) {
  *   （参考字仍在格内、只是倒着）—— 实测踩到过一次：转错 90° 的方向拿了满分，于是选中错方向、整页白跑。
  * 代价：这一段约等于把切格 + 认字跑四遍（单页切格实测约 0.6 秒），但**只在页脚全败时才跑** ——
  *   页脚读得出的件一次都不会走到这里（`tried` 里任何一个方向解出页脚就直接返回 null）。
- * 口径不变的地方：页脚仍然没读出来（`footerOk` 依旧 false）→ 页序该确认的照旧确认（决策 二-7）。
+ * 口径不变的地方：页脚仍然没读出来（`footerOk` 依旧 false）→ 页号只能靠序列定位反推；
+ *   参考字也定不出来时，这一页整页失败（"手选页序"这条界面兜底已按用户拍板去掉）。
  * @returns {object|null} 救回来时返回"按选定方向重新跑过"的页结果（orientation 已覆盖成真实方向），否则 null
  */
 function rescueOrientationByReference(gray, failedPage, options) {
@@ -170,11 +176,7 @@ function rescueOrientationByReference(gray, failedPage, options) {
   for (const t of tried) {
     const input = t.turns === 0 ? gray : rotateQuarterTurns(gray, t.turns)
     // 这一轮**不再让它自己转方向**（我们正在逐方向评分），四角 / 校正 / 切格照旧
-    const page = analyzePage(input, {
-      autoOrient: false,
-      keepDesignGray: true,
-      expectedBatchCode: options.expectedBatchCode
-    })
+    const page = analyzePage(input, { autoOrient: false, keepDesignGray: true })
     if (!page.designGray || !page.boxes || !page.boxes.length) continue
     const read = readReferenceChars(page.designGray, options.library, {})
     // 评分 = **序列定位有没有命中** > **认得出的格数** —— 这两个对方向敏感。
@@ -222,10 +224,9 @@ function rescueOrientationByReference(gray, failedPage, options) {
  * 识别一页扫描件。
  * @param {File} file 图片文件
  * @param {object} options
- * @param {string} options.chars 这一批要写的字（按字序；见 resolveBatchChars）
- * @param {number} [options.expectedBatchCode] 所选批次的校验码（用于页面级比对提示）
+ * @param {string} [options.chars] 这一轮的字序（**来自目录里的字序文件**；没有文件时为空串）
  * @param {number} [options.fileIndex] 第几个文件（0 起，仅用于展示与缓存键）
- * @param {number} [options.pageNumberOverride] 页脚读不出时由用户指定的页号（决策 二-7）
+ * @param {number} [options.pageNumberOverride] 页号兜底（重传时沿用原页的页号；页脚读不出时才用）
  * @returns {Promise<{record:object, cache:object}>} record 是可落盘的轻量记录，cache 是只放内存的图与掩膜
  */
 export async function recognizePage(file, options = {}) {
@@ -244,19 +245,14 @@ export async function recognizePage(file, options = {}) {
 
   // ② 切格（1.5）：方向纠正 → 找四角 → 透视校正 → 页脚解码 → 按已知网格切 136 格
   stage('正在切格（找四角、透视校正、读页脚）')
-  let page = analyzePage(gray, {
-    autoOrient: opt.autoOrient,
-    keepDesignGray: true,
-    expectedBatchCode: typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
-  })
+  let page = analyzePage(gray, { autoOrient: opt.autoOrient, keepDesignGray: true })
   // 页脚四个方向都解不出 → 再按"参考字覆盖率"试一遍四个方向（2026-10-13 用户拍板，见上面那个函数的注释）。
   // 页脚读得出的件一次都不会走到这里；只有"页脚被裁掉 / 污损"的纸才会真跑这四遍
   if (!page.ok) {
     stage('页脚读不出：正在按参考字试其它方向')
     const rescued = rescueOrientationByReference(gray, page, {
       library: opt.library,
-      minInkRatio: opt.minInkRatio,
-      expectedBatchCode: typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
+      minInkRatio: opt.minInkRatio
     })
     if (rescued) page = rescued
   }
@@ -267,10 +263,15 @@ export async function recognizePage(file, options = {}) {
     reason: '',
     pageNumber: null,
     footerOk: false,
-    batchCode: null,
-    batchMatch: null,
+    // 纸面页脚上的**本页校验码**（这一页那些字的 12 位指纹；0 表示"这一页没有字"）
+    pageCode: null,
+    // 这一页是不是**旧版本印的纸**（指纹 0 且页号落在主区范围）：旧更正册会被宽容地按更正册收下，
+    // 界面据此说明"这一页没有本页校验码"
+    legacyPaper: false,
+    // 页级校验的结论（见 ③.6）：{ code, agree, from, correctedPageNumber }
+    pageCheck: null,
     isSheetPage: null,
-    // **页脚的原始结果要一起带上**：summarizeBatch（整批判定）读的是 `p.footer.ok / pageNumber / batchCode`，
+    // **页脚的原始结果要一起带上**：summarizeBatch（整批汇总）读的是 `p.footer.ok / pageNumber / pageCode`，
     // 只给 footerOk 这些扁平字段的话，每页都会被当成"页脚读不出"（踩过：汇总里全是"页脚没读出"的警告，
     // 而页面记录明明读出了第 1 页与校验码 3362 —— 因为那种情形只产生 warn、ok 仍为 true，测试也没抓住）
     footer: null,
@@ -287,28 +288,51 @@ export async function recognizePage(file, options = {}) {
     counts: { written: 0, empty: 0, suspect: 0, marked: 0, uncertain: 0, inkPixels: 0 },
     // 参考字识别与定字序（2026-10-11 新模型）：
     //   pageChars 是**这一页 136 格各自的字**（认不出为 null）—— 定位成功时由序列给出（整页确定），
-    //   定位不上时是逐格识别结果（认不准的格记进 unsureCells，交界面复核）
+    //   定位不上时是逐格识别结果（2026-10-15 起不再往界面上送"哪几格认不准"：逐格确认已去掉，
+    //   页级校验码负责证明整页字序对不对）
     read: null,
     located: null,
-    // 页脚自校验（决策 五-9 ⑥：页脚码降为自校验）：{ footerCode, readCode, agree } —— 对不上只提示复核，不拦
-    footerSelfCheck: null,
     pageChars: null,
-    pageNumberSource: null, // sequence（序列定位反推）| footer（页脚读出）| user（手选）| unknown
-    // 这一页的字是**从哪儿来的**：file 目录里的字序文件 / sequence 纸面参考字序列定位 / cells 逐格认字。
-    // 界面要把它显示出来 —— "字序是文件给死的"与"是猜出来的"对用户的信任度完全不同（决策 一-18 ⑤）
+    pageNumberSource: null, // sequence（序列定位反推）| footer（页脚读出）| override（重传沿用原页页号）| code（指纹反推）| unknown
+    // 这一页的字是**从哪儿来的**：file 目录里的字序文件 / sequence 纸面参考字序列定位 / cells 逐格认字 /
+    // rewrite 补写清单。界面要把它显示出来 —— "字序是文件给死的"与"是猜出来的"对用户的信任度完全不同（一-18 ⑤）
     orderSource: null,
-    unsureCells: [],
-    // 复核用的候选（每格最多 5 个）：认不准的格在界面上让用户从候选里挑，或直接手输
-    charCandidates: null,
-    needReview: false,
     cells: [],
     messages: [],
     timings: page.timings ? { ...page.timings } : null
   }
-  // 页脚摘要（喂给 summarizeBatch 的最小形状）：读不出时给 ok:false 与原因，好让整批判定说得清是哪一页的问题
-  const footerShape = (footer) => (footer
-    ? { ok: !!footer.ok, pageNumber: footer.ok ? footer.pageNumber : null, batchCode: footer.ok ? footer.batchCode : null, message: footer.message || '' }
-    : { ok: false, pageNumber: null, batchCode: null, message: '这一页没有页脚结果（切格没走到页脚解码）' })
+  // 页脚摘要（喂给 summarizeBatch 的最小形状）：读不出时给 ok:false 与原因，好让整批判定说得清是哪一页的问题。
+  // **页号与件类型在这里就解释好**（layout.classifyFooterPage 是唯一口径）：更正册的页号要还原成
+  //   "更正册第 n 页"（页脚里编的是 128+n−1 的区间值），否则它会被当成主区的第 128 页。
+  const footerShape = (footer) => {
+    if (!footer) {
+      return { ok: false, pageNumber: null, pageCode: null, kind: 'unknown', message: '这一页没有页脚结果（切格没走到页脚解码）' }
+    }
+    if (!footer.ok) {
+      return { ok: false, pageNumber: null, pageCode: null, kind: 'unknown', message: footer.message || '' }
+    }
+    const cls = classifyFooterPage(footer.pageNumber, footer.pageCode)
+    // **旧纸的宽容（2026-10-15，有意为之）**：指纹 0 且页号落在主区范围 —— 这是**旧版本页脚**的形态
+    //   （那时高 12 位放的是"整批共用的校验码"，而更正册固定印 0）。这一档判成**更正册**比判成
+    //   "非字表页"对用户友好得多：更正册是空白册，收下它的唯一用途是给被圈的字当替代格子来源，
+    //   没有指纹不会造成任何错配（它没笔迹就配不到任何字）。而**主区的旧纸仍然照旧失败** ——
+    //   旧码与新指纹对不上，那部分作废是用户明确接受的（见《决策记录》一-19 的"代价"）。
+    //   打印自检页也会落进这一档（无害：它同样没有笔迹，卡片上会说明它可能是自检页）。
+    const isBlankFingerprint = cls.kind === 'notSheet' && footer.pageNumber < CORRECTION_PAGE_BASE
+    // 有字序文件时能认出**打印自检页**（它的页号是"字表页数 + 1"，必然超出声明页数）—— 那一档照旧不收；
+    // 没有字序文件时无从区分，就按上面说的宽容处理（自检页被当更正册也无害）。
+    const selfCheckPage = isBlankFingerprint && typeof opt.orderPages === 'number' && footer.pageNumber > opt.orderPages
+    const legacyPaper = isBlankFingerprint && !selfCheckPage
+    return {
+      ok: true,
+      pageNumber: legacyPaper ? footer.pageNumber : cls.pageNumber,
+      rawPageNumber: footer.pageNumber,
+      pageCode: footer.pageCode,
+      kind: legacyPaper ? 'correction' : cls.kind,
+      legacyPaper,
+      message: footer.message || ''
+    }
+  }
   record.footer = footerShape(page.footer)
 
   if (!page.ok || !page.boxes || !page.boxes.length) {
@@ -319,20 +343,17 @@ export async function recognizePage(file, options = {}) {
     return { record, cache: { thumb: null, sheet: null, masks: null } }
   }
 
-  record.footerOk = !!(page.footer && page.footer.ok)
-  record.pageNumber = page.footer && page.footer.ok ? page.footer.pageNumber : null
-  record.batchCode = page.footer && page.footer.ok ? page.footer.batchCode : null
-  // 件类型（决策 一-9、二-13）：更正册的页脚校验码为 0、主区是批次校验码、读不出时未知 ——
-  // 与 summarizeBatch 同一口径（那边按 row.kind 分拣重复页与批次比对）。
-  // **必须排在 batchMatch 之前**：下面要用它决定"这一页参不参与批次比对"。顺序写反过一次 ——
-  //   kind 此刻还是 undefined，于是更正册页的 batchMatch 被算成"码 0 vs 所选批次"的 false；
-  //   界面与收批闸门都按 kind 先分拣，用户看不到，所以这条只影响页记录本身（测试已钉住）。
-  record.kind = record.footerOk ? (record.batchCode === 0 ? 'correction' : 'main') : 'unknown'
-  record.batchMatch = record.kind === 'correction' ? null : (page.batch ? page.batch.match : null)
-  record.footer = footerShape(page.footer)
+  record.footerOk = record.footer.ok
+  // 件类型与页号：更正册靠页号区间（≥128）、非字表页靠指纹 0 —— 判定口径只在 classifyFooterPage 一处
+  record.kind = record.footer.kind
+  record.legacyPaper = !!record.footer.legacyPaper
+  record.pageNumber = record.footer.pageNumber
+  record.rawPageNumber = record.footer.rawPageNumber || null
+  record.pageCode = record.footer.pageCode
   if (record.pageNumber === null && typeof opt.pageNumberOverride === 'number') {
     record.pageNumber = opt.pageNumberOverride
-    record.orderFromUser = true // 页序是用户手选的（决策 二-7），界面要显式标出来
+    record.pageNumberSource = 'override'
+    record.orderFromUser = true // 页号沿用原页（重传），界面要显式标出来
   }
 
   // ③ 红圈（1.7）：颜色分离 + 形态过滤 → 被圈格清单 + 红掩膜；再把红掩膜作为附加图层切到每格
@@ -369,14 +390,34 @@ export async function recognizePage(file, options = {}) {
   //     定位不上（自定义选字的纸不是任何全序的连续段）→ 退到"逐格识别的字 + 页脚页号"，
   //     认不准的格记进 unsureCells 交界面复核
   const orderChars = typeof opt.orderChars === 'string' && opt.orderChars.length ? opt.orderChars : ''
+  // 候选全序（页级校验的反推要在它们里面逐页找指纹）：
+  //   · file    = 目录里的字序文件（决策 一-18）
+  //   · rewrite = 补写清单（重写模板 / 未收录字模板，决策 八-8、八-19 ⑮⑲）
+  //   · 一个都没有时，referenceCharReader 会拿两份预置全序（笔画序 / 频序）去定位
+  const candidates = []
+  if (orderChars) candidates.push({ key: 'file', label: '字序文件', chars: Array.from(orderChars) })
+  for (const extra of (opt.extraSequences || [])) {
+    if (extra && extra.chars && extra.chars.length) {
+      candidates.push({ key: extra.key || 'rewrite', label: extra.label || '补写清单', chars: Array.from(extra.chars) })
+    }
+  }
+  // 指纹为 0 的件：可能是打印自检页，也可能是**旧版本模板 / 旧更正册**印的纸
+  // （2026-10-15 起页脚高 12 位改成"本页指纹"，旧纸那一格里是整批共用的码或 0）。
+  // 走到这里说明它超出了字序文件声明的页数 —— 按打印自检页处理；两种可能都说清，
+  // 只说"这是自检页"对着一本旧更正册完全说不通。
+  if (record.kind === 'notSheet') {
+    record.reason = '这一页的页脚里没有本页校验码（指纹 0）、页号又超出字序文件声明的页数：' +
+      '它多半是模板文末的打印自检页（没有字表内容）；也可能是**旧版本模板**印的纸（页脚编码口径在 2026-10-15 换过）。' +
+      '请确认这一页是写了字的字表页；是的话请用最新下载的模板重新打印、重写这一页。'
+    record.messages = [{ level: 'error', text: record.reason }]
+    return { record, cache: { thumb: null, sheet: null, masks: null } }
+  }
   if (opt.library && record.kind !== 'correction' && page.designGray) {
     stage('正在认参考字、定字序')
-    // 有字序文件时**只试它那一个序列**：文件说了算，不能再拿两份预置全序去猜 ——
+    // 有候选字序（字序文件 / 补写清单）时**只试这几个序列**：文件说了算，不能再拿两份预置全序去猜 ——
     //   猜中的那一个可能是另一套字序（纸上的字确实按那个顺序排过），于是整页的字被换成另一套，
     //   而且"看起来还挺对"（这正是 一-18 要把字序显式落成文件的原因）。
-    const sequences = orderChars
-      ? [{ key: 'file', label: '字序文件', chars: Array.from(orderChars) }]
-      : undefined
+    const sequences = candidates.length ? candidates : undefined
     const read = readReferenceChars(page.designGray, opt.library, { redMask: designRedMask, sequences })
     record.read = {
       emptyCount: read.emptyCount,
@@ -385,14 +426,20 @@ export async function recognizePage(file, options = {}) {
       inkRatio: Math.round(read.inkRatio * 1000) / 1000,
       located: read.located ? { seqKey: read.located.seqKey, start: read.located.start, agree: read.located.agree } : null
     }
-    if (read.inkRatio < opt.minInkRatio) {
+    // 页级校验码的自证：把"这一页实际印了参考字的那些字"算一遍，与纸面页脚上的那 12 位比。
+    // 这是 2026-10-15 新口径的核心 —— 一致就说明"这一页是第几页、上面是哪些字"确定无疑。
+    const selfCode = computePageCode(read.printedChars)
+    const selfAgree = !!record.pageCode && selfCode === record.pageCode
+    const sparse = read.inkRatio < opt.minInkRatio
+    // 闸门分档（2026-10-15 用户拍板）：主区字表页要求"有参考字的格 ≥ 60%"（整版纸 136 格基本都印着字）；
+    //   补写页（重写清单 / 未收录字模板，一页只印几个字）改成"认出的字 ≥ 1 且页脚指纹对得上" ——
+    //   否则重写清单只有几个字时永远过不了 60% 那道闸，补写模板等于收不回来（真缺陷）。
+    if (sparse && !(read.printedChars.length >= opt.minRewriteChars && selfAgree)) {
       record.reason = '这不是本程序生成的模板：这一页 ' + LAYOUT.perPage + ' 格里有 ' + read.emptyCount +
         ' 格取不到模板的参考字。请确认用的是第 1 步「生成模板 PDF」下载的那份文件、按实际大小（100%）打印的纸。'
       record.messages = [{ level: 'error', text: record.reason }]
       return { record, cache: { thumb: null, sheet: null, masks: null } }
     }
-    record.unsureCells = read.unsureCells
-    record.charCandidates = read.cells.map((c) => (c.candidates || []).map((x) => x.char))
     if (read.located) {
       // 序列定位命中：整页 136 个字全部确定（含那几个认不出的格），页号由起点反推
       record.located = record.read.located
@@ -401,35 +448,15 @@ export async function recognizePage(file, options = {}) {
       // 序列定位用的候选序列就是字序文件时，这一页的字等于"文件给死的那一段"（不是猜出来的）
       record.orderSource = orderChars ? 'file' : 'sequence'
       record.pageChars = read.located.chars.slice()
-      record.batchCode = read.batchCode
-      // 整页已由序列确定 → **没有"需要人工确认"的格**（认不出的那几格的字同样已确定）
-      record.unsureCells = []
-      // 自校验（用户拍板：页脚码留作自校验 / 可信度提示，不当闸门）：识别出的字序算出的码 vs 纸面码。
-      // 实测两者一致（206 = 206）；对不上说明这一页多半不是按本程序模板写的，提示复核。
-      if (page.footer && page.footer.ok && typeof page.footer.batchCode === 'number') {
-        record.footerSelfCheck = {
-          footerCode: page.footer.batchCode,
-          readCode: read.batchCode,
-          agree: page.footer.batchCode === read.batchCode
-        }
-        if (!record.footerSelfCheck.agree) {
-          messages.push({
-            level: 'warn',
-            text: '这一页识别出的字序与纸面页脚对不上（纸面校验码 ' + page.footer.batchCode + '、识别出 ' +
-              read.batchCode + '）：请核对这一页是不是本程序模板印的纸，或在界面上逐格确认后再用'
-          })
-        }
-      }
     } else if (orderChars && record.pageNumber !== null) {
       // 字序文件在、页脚也读出了页号：直接按页号从文件字序里切一段。
       // 为什么这条路比"逐格认字"硬：文件给死的是**完整字序**，页号一确定，这一页 136 个字就全确定，
-      //   一个也不用猜、也不必人工复核（逐格认字的错会静默进成品，这里没有可猜的余地）。
+      //   一个也不用猜（逐格认字的错会静默进成品，这里没有可猜的余地）。
       const list = Array.from(orderChars)
       const start = (record.pageNumber - 1) * LAYOUT.perPage
       record.pageChars = list.slice(start, start + LAYOUT.perPage)
       record.pageNumberSource = 'footer'
       record.orderSource = 'file'
-      record.needReview = false
       messages.push({
         level: 'info',
         text: '这一页的字序取自目录里的字序文件：第 ' + record.pageNumber + ' 页 = 字序里的第 ' +
@@ -437,14 +464,57 @@ export async function recognizePage(file, options = {}) {
       })
     } else {
       record.pageChars = read.cells.map((c) => (c.empty ? null : c.char))
-      record.pageNumberSource = record.pageNumber !== null ? 'footer' : (record.orderFromUser ? 'user' : 'unknown')
+      record.pageNumberSource = record.pageNumber !== null ? 'footer' : (record.orderFromUser ? 'override' : 'unknown')
       record.orderSource = 'cells'
-      record.needReview = read.unsureCount > 0 || read.emptyCount > 0
       messages.push({
-        level: record.needReview ? 'warn' : 'info',
-        text: '这一页认不出是哪一段字序（多半是自定义选字的模板）：已按逐格识别取字' +
-          (record.needReview ? '，其中 ' + (read.unsureCount + read.emptyCount) + ' 格需要你在界面上确认' : '，且全部格都认准了')
+        level: 'info',
+        text: '这一页的字按纸面逐个认出来（不依赖字序文件）：认出 ' + read.printedChars.length + ' 格' +
+          (read.unsureCount + read.emptyCount > 0 ? '，另有 ' + (read.unsureCount + read.emptyCount) + ' 格没认准' : '') +
+          '；与页脚校验码一致才采用'
       })
+    }
+    // 补写页（一页只印了几个字的那种）：字来自逐格认字，界面要能说明这一页的来路
+    if (sparse) record.orderSource = 'rewrite'
+
+    // ③.6 页级校验（每页自证，2026-10-15 新口径）：纸面页脚那 12 位 = "这一页应当是哪些字"的指纹。
+    //   一致 → 这一页的字序确定无疑；不一致 → **先用指纹反推页号**（在候选字序里逐页试，
+    //   全量 61 页只要 61 次哈希），反推命中就纠正页号与字序；仍然对不上 → 整页失败。
+    //   为什么宁严勿宽：按错字序识别出来的是一整页"看着挺好、其实全是别的字"的字形（与二-6 同一条底线）。
+    if (record.pageCode) {
+      const check = { code: selfCode, agree: selfAgree, from: 'self' }
+      if (!selfAgree) {
+        let hit = null
+        let hitSeq = null
+        for (const cand of candidates) {
+          const m = matchPageCode(record.pageCode, cand.chars, LAYOUT.perPage)
+          if (m) { hit = m; hitSeq = cand; break }
+        }
+        if (hit) {
+          record.pageNumber = hit.pageNumber
+          record.pageNumberSource = 'code'
+          record.pageChars = hit.chars.slice()
+          record.orderSource = hitSeq.key
+          record.located = { seqKey: hitSeq.key, start: (hit.pageNumber - 1) * LAYOUT.perPage, agree: 0 }
+          check.agree = true // 已经通过校验（只是走的是"反推页号"这条路）
+          check.from = 'reverse'
+          check.correctedPageNumber = hit.pageNumber
+          check.seqKey = hitSeq.key
+          messages.push({
+            level: 'info',
+            text: '纸面页脚上的校验码与识别出的字序对不上，已按校验码反推：这一页是第 ' + hit.pageNumber +
+              ' 页（字序取自' + hitSeq.label + '）'
+          })
+        } else {
+          check.agree = false
+          record.pageCheck = check
+          record.reason = '这一页的页脚校验码与识别出的字序对不上（纸面 ' + record.pageCode + '、识别出 ' + selfCode +
+            '）：这张纸可能不是用最新模板印的（旧模板印的纸要重印），或者这一页的参考字没认对。' +
+            '若这一页本来就只印了很少几个字（重写模板 / 补写模板），请从第 3 步那一处重新下载模板再打一份。'
+          record.messages = [{ level: 'error', text: record.reason }]
+          return { record, cache: { thumb: null, sheet: null, masks: null } }
+        }
+      }
+      record.pageCheck = check
     }
   }
 
@@ -455,9 +525,9 @@ export async function recognizePage(file, options = {}) {
   const uncertainSet = new Set(record.uncertainCells || [])
   const items = []
   for (const cell of extracted.cells) {
-    // 更正册的格不按批次的字序映射：它是"第 k 个更正格"，字由更正核对（1.8）配对时决定（决策 二-13）
+    // 更正册的格没有"字"：它是"第 k 个更正格"，字由更正核对（1.8）配对时决定（决策 二-13）
     // 字序来源：**优先用这一页自己认出来的字**（新模型：范围由扫描件决定）；没有认字结果时才退回
-    // 批次的全局字序（旧口径，供没有候选库的环境使用）
+    // 按页号在字序文件里切段（`charAtCell`）—— 那条只有在"字序文件 + 页脚页号"都在时才有意义
     const char = record.kind === 'correction'
       ? null
       : ((record.pageChars && record.pageChars[cell.index]) || charAtCell(chars, record.pageNumber, cell.index))
@@ -551,20 +621,12 @@ export async function recognizePage(file, options = {}) {
  * @param {Function} [options.onPage] (record, index, total, cache) => void —— 每页处理完回调
  * @param {Function} [options.onPageStart] (pageNo, total) => void —— 开始处理某一页
  * @param {Function} [options.shouldStop] () => boolean —— 返回 true 就在这一页处理完后停下（已处理的页保留）
- * @param {object} [options.batch] 批次（内部容器）：只用来取**字序兜底**与**页数口径**；
- *   校验码不再由它决定 —— 要么走 `expectedBatchCode` 显式传，要么在 recognizePage 里做页脚自校验
  */
 export async function recognizeBatch(files, options = {}) {
   const opt = { ...SCAN_DEFAULTS, ...options }
-  const batch = opt.batch || null
   // 这一批的字序：**字序文件优先**（决策 一-18）—— 它给死的就是"这批纸的字序"；
-  // 没有文件时才用批次的全局字序兜底（认参考字那条退路里，"逐格认字 + 页脚页号"要用到它）
-  const chars = opt.orderChars || resolveBatchChars(batch)
-  // 新模型（决策 五-9）：**批次校验码不再当闸门** —— 字序由纸面参考字定位决定，而批次是自动建的容器
-  // （`store.ensureScanBatch()`），两者的码本来就可能不同，拿它拦批会误伤。页脚码改用**自校验**：
-  // recognizePage 把"识别出的字序算出的码"与"纸面读出的码"对一下（footerSelfCheck），对不上只提示复核。
-  // 这里把调用方显式给的 expectedBatchCode **原样转下去**（用于页面级比对提示），没有就不传。
-  const expectedBatchCode = typeof opt.expectedBatchCode === 'number' ? opt.expectedBatchCode : null
+  // 没有文件时字序完全由纸面参考字定（序列定位），再不行就逐格认字 + 页脚校验码自证
+  const chars = opt.orderChars || ''
   const pages = []
   const caches = new Map()
   let stopped = false
@@ -577,12 +639,7 @@ export async function recognizeBatch(files, options = {}) {
     // onPageStart 报"开始处理第几页"，页内的细阶段由 recognizePage 的 onStage 报（同一个回调透传下去）：
     // 界面据此显示"第 3 / 12 页 · 正在认参考字"这样的当前动作（决策 二-18 ④）
     if (opt.onPageStart) opt.onPageStart(i + 1, files.length)
-    const { record, cache } = await recognizePage(files[i], {
-      ...opt,
-      chars,
-      expectedBatchCode,
-      fileIndex: i
-    })
+    const { record, cache } = await recognizePage(files[i], { ...opt, chars, fileIndex: i })
     pages.push(record)
     caches.set(i, cache)
     // onPage 带上该页的内存缓存（缩略图 / 格子拼图 / 掩膜）：界面要**边跑边显示**，
@@ -597,33 +654,12 @@ export async function recognizeBatch(files, options = {}) {
   // **2026-10-14 修**：结论要一起回传主线程（见下面 duplicates 的注释）。
   const { duplicates, failedDuplicates } = markDuplicatePages(pages)
   const summary = summarizeBatch(pages, {
-    expectedBatchCode,
-    // 页数口径：有字序文件时以**文件声明的页数**为准（自检页的判据就靠它：页号超出字表页数即自检页）
-    sheetPages: typeof opt.orderPages === 'number' ? opt.orderPages : (batch ? batch.pageCount : undefined)
+    // 页数口径：有字序文件时以**文件声明的页数**为准（缺页统计与"非字表页"的提示都读它）
+    sheetPages: typeof opt.orderPages === 'number' ? opt.orderPages : undefined
   })
   return { pages, caches, summary, chars, stopped, duplicates, failedDuplicates }
 }
 
-/**
- * 用户手选页序后重新算"每格是哪个字"，并按新页序重新做批次汇总（决策 二-7）。
- * 只重算字与页号，**不重新识别** —— 掩膜与页序无关（scanMeta.reorderPages 是纯的那一半）。
- * @param {Array} pages record 数组
- * @param {object} overrides `{ [fileIndex]: pageNumber }`
- * @param {string} chars 这一批的字序
- * @returns {{pages:Array, summary:object}}
- */
-export function applyPageOrder(pages, overrides, chars, options = {}) {
-  const next = reorderPages(pages, overrides, chars).map((p) => ({
-    ...p,
-    isSheetPage: typeof options.sheetPages === 'number' && p.pageNumber
-      ? p.pageNumber <= options.sheetPages
-      : p.isSheetPage
-  }))
-  // 页号变了，"谁与谁同页"跟着变：去重必须重算（判据与整批识别那一处共用，见 markDuplicatePages）
-  const { duplicates, failedDuplicates } = markDuplicatePages(next)
-  const summary = summarizeBatch(next, {
-    expectedBatchCode: typeof options.expectedBatchCode === 'number' ? options.expectedBatchCode : null,
-    sheetPages: options.sheetPages
-  })
-  return { pages: next, summary, duplicates, failedDuplicates }
-}
+// 2026-10-15 用户拍板：「手选页序」这条界面操作已去掉，因此这里的 applyPageOrder（以及它依赖的
+//   scanMeta.reorderPages）一并删除。页脚读不出时页号与字序由纸面参考字序列定位定；定不出来就整页失败
+//   （页级校验码也帮不上 —— 它要求先猜出"这一页是哪些字"）。需要时从 git 历史取回。

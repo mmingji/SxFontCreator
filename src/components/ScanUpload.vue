@@ -1,17 +1,18 @@
 <script setup>
 // 第 2 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
-// 职责：① 取这一轮要用的批次（**用户不再选**：进这一步时自动复用最近一个仍有效的，或顺手建一个）
-//   ② 指定一个文件夹（系统文件夹对话框）→ 挑图片与字序文件 → 串行识别，边跑边显示、可中止
-//   ③ 批次判定与**收批闸门**（单页失败跳过、批次级问题整批拦下）
-//   ④ 结果**一页一张卡片**（状态 / 一行统计 / 看格子 / 重传 / 逐格确认；完整信息在 hover 里）
-//   ⑤ 格级视图与单格放大（收进「看格子」弹窗，点开才渲染）
-//   ⑥ 页脚读不出时手选页序（决策 二-7）与**逐格复核**（CharReview.vue）
+// 职责：① 指定一个文件夹（系统文件夹对话框）→ 挑图片与字序文件 → 串行识别，边跑边显示、可中止
+//   ② **收批闸门**（单页失败跳过；页脚读不出只提示，页号与字序由纸面参考字定）
+//   ③ 结果**一页一张卡片**（状态 / 一行统计 / 看格子 / 作废 / 重传；完整信息在 hover 里）
+//   ④ 格级视图与单格放大（收进「看格子」弹窗，点开才渲染）
+// 2026-10-15 用户拍板去掉的两条界面操作：**手选页序**（含拖动排序）与**逐格确认** ——
+//   前者把准确性交给用户填数字（顺序一错整批错字），后者在"每页自证"落地后已无必要：
+//   页脚那 12 位现在是"这一页那些字的指纹"，识别端能自己验出字序对不对（见 lib/pageCode.js）。
 // 数据来源：识别编排在 Worker 里（决策 六-15：预处理 / 切格 / 认参考字 / 提取四段重计算都搬过去了，
 //   主线程只收发消息，界面在几十页连跑时保持可滚动），客户端封装在 lib/scanWorkerClient.js；
 //   产物缓存（缩略图 / 掩膜）在 lib/scanCache.js，轻量页记录落盘在 store.scan —— 口径见 二-15 / 五-9。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
-import { SCAN_DEFAULTS, applyPageOrder, evaluateRescanAccept, evaluateScanGate, markDuplicatePages, resolveBatchChars, summarizeBatch } from '../lib/scanFlow.js'
+import { SCAN_DEFAULTS, evaluateRescanAccept, evaluateScanGate, markDuplicatePages, summarizeBatch } from '../lib/scanFlow.js'
 import { cancelTask, recognizeBatchInWorker, recognizePageInWorker } from '../lib/scanWorkerClient.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, deleteGlyphPage, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
@@ -21,7 +22,6 @@ import { clearScanDirHandle, loadScanDirHandle, requestScanDirPermission, saveSc
 import { setScanRunning } from '../lib/scanRunState.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { LAYOUT } from '../lib/layout.js'
-import CharReview from './CharReview.vue'
 import CorrectionConfirm from './CorrectionConfirm.vue'
 
 // ── 参考字候选库：现在归 Worker 所有（决策 六-15）────────────────────────────
@@ -135,14 +135,11 @@ const images = ref({}) // fileIndex → { thumb, sheet }（来自内存缓存，
 const IMAGE_HINT = IMAGE_EXTENSIONS.join(' / ')
 const openIndex = ref(null) // 展开格级视图的页
 const zoomIndex = ref(null) // 单格放大
-const reviewIndex = ref(null) // 打开逐格复核的页（fileIndex）
-const reviewOpen = ref(false)
 const message = ref('')
 const messageType = ref('info') // info | error | done
 // 按钮行里的提示（2026-10-14 用户口径）："还没有可识别的图片…"这类**与那一下点击直接相关**的话，
 // 放在「开始识别 / 重新识别」按钮后面，不再另占一行橙色提示条 —— 用户看到的就是"点了这里、为什么没动"
 const startNotice = ref('')
-const dragFrom = ref(null)
 const savedStats = ref(null) // 已落盘的字形统计（分片键里的字与体积）
 // 已请求中止、还在等这一页跑完（2026-10-15 用户口径："点中止第一次像没反应" —— 立即给按钮与进度行一个反馈）
 const stopping = ref(false)
@@ -169,8 +166,19 @@ const orderedPages = computed(() => pages.value
   .map((p, i) => ({ p, i }))
   .sort((a, b) => (cardGroupRank(a.p) - cardGroupRank(b.p)) || (a.i - b.i))
   .map((x) => x.p))
-const batch = computed(() => store.scanBatch)
-const chars = computed(() => store.scan.chars || resolveBatchChars(batch.value))
+// 这一轮的字序：**只来自目录里的字序文件**（决策 一-18）—— 批次已彻底删除（2026-10-15），
+//   没有文件时这一项为空，每页的字完全由纸面参考字定（序列定位）或逐格认字 + 页脚校验码自证。
+//   识别时把它透传给识别线程（scanFlow 的 orderChars）。
+const chars = computed(() => (orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : ''))
+
+// 补写清单（重写清单 / 未收录字）作为**候选全序**传给识别线程：重写模板与补写模板上的字既不在
+//   字序文件里、也不是任何预置全序的连续段（补写页的页号接在现有纸之后），所以单独带一份下去 ——
+//   补写页靠它 + 纸面参考字 + 页脚校验码自证（见 lib/scanFlow.js 的 ③.5 / ③.6）。一条都没有时返回 undefined。
+function rewriteExtraSequences() {
+  const text = store.rewriteChars.join('')
+  if (!text) return undefined
+  return [{ key: 'rewrite', label: '重写清单', chars: Array.from(text) }]
+}
 const stats = computed(() => store.scanGlyphStats)
 // 收批闸门：能不能进下一步（规则在 lib/scanMeta.js，这里只渲染结论）
 const gate = computed(() => evaluateScanGate({
@@ -247,32 +255,9 @@ function orderSourceLabel(page) {
   if (page.orderSource === 'sequence') {
     return sequenceLabel(page.located ? page.located.seqKey : '') + ' · 第 ' + locatedStartPage(page) + ' 页起'
   }
-  if (page.orderSource === 'cells') return '逐格认字（认不准的格需要人工确认）'
+  if (page.orderSource === 'rewrite') return '补写清单（重写模板 / 未收录字，靠纸面参考字与页脚校验码认）'
+  if (page.orderSource === 'cells') return '逐格认字'
   return ''
-}
-// 还要人工确认的格 = 认不准的格 ∪ 还没认出字的格（两者可能重叠，按格号去重）
-function reviewCount(page) {
-  const set = new Set(page.unsureCells || [])
-  const list = page.pageChars || []
-  for (let i = 0; i < LAYOUT.perPage; i++) if (!list[i]) set.add(i)
-  return set.size
-}
-const reviewPage = computed(() => pages.value.find((p) => p.fileIndex === reviewIndex.value) || null)
-function openReview(page) {
-  reviewIndex.value = page.fileIndex
-  reviewOpen.value = true
-  openIndex.value = null
-  zoomIndex.value = null
-}
-function closeReview() {
-  reviewOpen.value = false
-}
-
-// 页脚读不出的页才允许手选页序：页脚解出来的页序是权威的（决策 二-7）。
-// **序列定位成功的页除外**：那种页的页序是"纸面上的参考字"定死的（比页脚更硬），而且它的每格字
-// 已经由那一段全序给出 —— 再按批次的全局字序重排一次只会把对的改成错的（新模型下的字序来源变了）。
-function needsManualOrder(page) {
-  return !!(page.ok && !page.footerOk && page.pageNumberSource !== 'sequence')
 }
 function setMessage(text, type) {
   message.value = text
@@ -280,8 +265,6 @@ function setMessage(text, type) {
 }
 
 onMounted(() => {
-  // 批次是内部容器：进来就取一个（复用最近一个仍有效的，或自动补一个）—— 用户不必也不能再选它
-  store.ensureScanBatch()
   // 界面重挂载时把还活着的内存缓存接回来（缩略图与掩膜不落盘）
   const restored = {}
   for (const page of store.scan.pages) {
@@ -291,13 +274,6 @@ onMounted(() => {
   if (Object.keys(restored).length) images.value = restored
   // 字形是**落盘**的（分片键）：刷新后仍能拿去生成字体，所以这里把已落盘的量显示出来
   glyphStoreStats().then((s) => { savedStats.value = s }).catch(() => {})
-})
-
-// 批次为空时立刻补一个，让"在第 2 步就一定有批次"成为不变量 ——
-// 否则字形会落到 `default` 分片键上（既不属于任何批次、也没有入口能清掉，冒烟里踩到过）。
-// 什么情况下会变空：清空识别结果（决策 五-11 会把 batchId 置空）、或项目被清空后重新进来
-watch(() => store.scan.batchId, (id) => {
-  if (!id) store.ensureScanBatch()
 })
 
 // ── 目录选择：两条入口，同一套下游处理 ─────────────────────────────────────
@@ -519,21 +495,19 @@ async function start(options = {}) {
     restartOpen.value = true
     return
   }
-  // 批次是内部容器：再取一次（复用最近一个仍有效的，或自动补一个）—— 界面上已经无处可选它。
-  // 2026-10-11（决策 五-9）：这里原来还有一道"作废批次要显式放行"的拦截，随那个勾选框一起去掉了 ——
-  // 批次对用户不可见，也就没有"作废"这回事（改选字不再作废批次，见 store.setSelection）
-  const currentBatch = store.ensureScanBatch()
-  // 字序文件（有就用它，没有就走"认参考字"那条退路，决策 一-18 ⑤）
+  // 字序文件（有就用它，没有就走"认纸面参考字"那条路，决策 一-18 ⑤）
   const withOrderFile = !!(orderFile.value && orderFile.value.ok)
   const orderChars = withOrderFile ? orderFile.value.file.chars : ''
   const orderPages = withOrderFile ? orderFile.value.file.pageCount : undefined
+  // 补写清单（重写清单 / 未收录字，决策 八-8）：这些页的字既不在字序文件里、也不是任何预置全序的
+  //   连续段，所以作为**候选全序**单独传给识别线程 —— 闸门分档与页级校验码都靠它认这一页
+  const extraSequences = rewriteExtraSequences()
   running.value = true
   // 第 3 步的「生成字体」据此禁用（识别进行中不许生成：结果还在一页页进来，生成完也得再生成一次）
   setScanRunning(true)
   cancelled = false
   openIndex.value = null
   zoomIndex.value = null
-  closeReview()
   images.value = {}
   sheetError.value = {} // 新一轮识别会重新生成拼图，上一轮的"重建失败"不该留着
   rebuilding.value = {}
@@ -545,16 +519,15 @@ async function start(options = {}) {
     //    "这是不是自家模板印的纸"那条判据不变（决策 五-9 ④：参考字覆盖率不达标就整页失败）。
     setMessage('正在准备参考字识别…（首次约 2~3 秒，之后不用再等）', 'info')
     clearPageCache()
-    // 同一批重新识别：先把这批已落盘的字形清掉，避免旧页与新页混在一起（分片键是按批次 + 页序写的）
-    await clearGlyphs({ batchId: store.scan.batchId })
+    // 同一轮重新识别：先把已落盘的字形清掉，避免旧页与新页混在一起（分片键是按页序写的）
+    await clearGlyphs()
     savedStats.value = null
     // 把"这批结果来自哪里"记下来（文件夹名 / 图片名清单 / 字序文件摘要）：刷新之后界面靠它回显来源，
     // 而不是显示成"还没有选文件夹"（2026-10-13 用户口径：没有轮次概念，界面说的就是当前数据的状态）
     // 同时把"刚选完文件夹"这个状态收掉：从这一刻起，页面上显示的结果就是这一批的
     pendingPick.value = false
     store.beginScanRun({
-      batchId: store.scan.batchId,
-      chars: orderChars || resolveBatchChars(currentBatch),
+      chars: orderChars,
       source: {
         folderName: (scanInput.value && scanInput.value.folderName) || folderName.value || '',
         images: files.value.map((f) => f.name),
@@ -571,10 +544,11 @@ async function start(options = {}) {
     )
     const res = await recognizeBatchInWorker(files.value, {
       // 字序文件优先（决策 一-18）：给了它，序列定位只在文件那一个全序里找起点
-      chars: orderChars || resolveBatchChars(currentBatch),
+      chars: orderChars,
       orderChars,
       orderPages,
-      // 页数口径：有字序文件时以文件声明的页数为准（识别侧汇总自检页要用它）
+      extraSequences,
+      // 页数口径：有字序文件时以文件声明的页数为准（识别侧汇总与缺页统计要用它）
       sheetPages: orderPages,
       onPageStart: (pageNo, total) => {
         progress.value = { ...progress.value, currentPage: pageNo, total, stageIndex: 0 }
@@ -604,7 +578,6 @@ async function start(options = {}) {
         // 字形**逐页落盘**（掩膜存 PNG，分片键）：关掉浏览器或刷新后不用重扫，
         // 字体合成（下一步）直接从这里取原料 —— 口径见《决策记录》二-16
         const saved = await savePageGlyphs({
-          batchId: store.scan.batchId,
           fileIndex: index,
           pageNumber: record.pageNumber,
           glyphs: (cache.masks || []).map((m) => ({
@@ -700,9 +673,9 @@ function clearAll() {
 // 三条口径（2026-10-08 用户拍板，见《决策记录》八-14）：
 //   ① 入口在**每张结果卡片**上（2026-10-12 起卡片化，按钮名"重传"）—— 局部、明确，
 //      现有的"整批识别"流程一个字不改；
-//   ② **复用原页的 fileIndex**：分片键（`sxfont.glyphs.v1.<批次>.<fileIndex>`）与内存缓存都按它命名，
+//   ② **复用原页的 fileIndex**：分片键（`sxfont.glyphs.v2.<fileIndex>`）与内存缓存都按它命名，
 //      复用即"原地覆盖"，页序机制一行都不用动；
-//   ③ 整页失败、或页脚校验码与当前用的批次不符 → **明确失败、不写入**（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）。
+//   ③ 整页失败（含页级校验没通过）→ **明确失败、不写入**（静默拿错数据比拒绝处理糟得多，沿用二-6 的口径）。
 const rescanning = ref(null) // 正在重传 / 补传（同一时刻只允许一件在跑；'supplement' 表示补传那一批）
 
 /**
@@ -715,25 +688,31 @@ const rescanning = ref(null) // 正在重传 / 补传（同一时刻只允许一
  *     没有就追加成一页新的。
  * 收不收这一页只由 `evaluateRescanAccept` 判（2026-10-15 起**不再用页脚校验码拦**，只拒"整页没识别"）。
  *
+ * 2026-10-15 修三处真缺陷（都在这一条路上）：
+ *   ① **页记录的身份必须回写成落点**：补传不传 fileIndex，Worker 那边只能落成 0，而 target 是按页号
+ *      找出来的真实落点 —— 不回写的话页记录自称 0 号、字形却写在 target 的分片键上，凡是按 fileIndex
+ *      匹配的地方（去重 / 作废 / 替换 / 缩略图重建 / 字形取原料）全会认错页。
+ *   ② **拿不到笔迹掩膜时不许落盘**：`cache.masks` 为空（不是"这一页确实空白"的 `[]`，而是取不到）
+ *      时，原来会照样 `savePageGlyphs`，把这一页的分片**覆盖成 0 格** —— 字形与缩略图一起丢。
+ *   ③ **被圈字清单变化就作废更正配对**：这条原来只写在「重传」那条路上，补传没有 ——
+ *      补传一版重写过的纸之后，更正册里的旧配对会继续盖着这一页的新字形。
+ *
  * @param {File} file 新扫的那一张
  * @param {object} [opts]
  * @param {number|null} [opts.fileIndex] 指定落点（重传传原页的 fileIndex）
  * @param {number|null} [opts.fallbackPageNumber] 页脚读不出时的兜底页号（重传传原页的页号）
  * @returns {Promise<{ok:boolean, reason?:string, replaced?:boolean, target?:number,
- *   pageNumber?:number|null, written?:number, marked?:number, markedCells?:string}>}
+ *   pageNumber?:number|null, written?:number, marked?:number, saved?:number,
+ *   markedChanged?:boolean, markedCells?:string}>}
  */
 async function ingestOnePage(file, opts = {}) {
-  // 批次是内部容器：这里也取一次（复用最近一个，或自动补一个）—— 字形分片键是「批次 + 页序」，
-  // 批次为空会落成 `default` 键，之后既不属于任何批次、也没有入口能清掉（冒烟里踩到过）
-  const currentBatch = store.ensureScanBatch()
-  const expectedBatchCode = currentBatch && typeof currentBatch.batchCode === 'number' ? currentBatch.batchCode : null
   const { record, cache } = await recognizePageInWorker(file, {
     chars: chars.value,
     // 字序来源与整批识别一致：文件夹里有字序文件就按文件定（决策 一-18），没有才走"认纸面参考字"
-    // （否则这一页的字会退回按**批次的全局字序**取 —— 自定义选字的纸会被张冠李戴）
     orderChars: orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : '',
     orderPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined,
-    expectedBatchCode,
+    // 补写清单（重写清单 / 未收录字）作为候选全序：这类页的字不在字序文件里，靠它 + 页脚校验码认
+    extraSequences: rewriteExtraSequences(),
     fileIndex: opts.fileIndex === null || opts.fileIndex === undefined ? undefined : opts.fileIndex,
     pageNumberOverride: opts.fallbackPageNumber || undefined,
     onStage: (text) => setMessage('正在识别「' + file.name + '」：' + text, 'info')
@@ -749,22 +728,32 @@ async function ingestOnePage(file, opts = {}) {
       (p.kind === 'correction') === (record.kind === 'correction'))
     target = same ? same.fileIndex : store.scan.pages.reduce((m, p) => Math.max(m, p.fileIndex), -1) + 1
   }
+  // ① 身份回写：页记录里的 fileIndex 必须等于它真正的落点（见函数头注释）
+  record.fileIndex = target
+  // ③ 覆盖前的被圈字清单（重传与补传共用同一判据）
+  const previous = store.scan.pages.find((p) => p.fileIndex === target) || null
+  const markedBefore = ((previous && previous.markedCells) || []).join(',')
 
-  const saved = await savePageGlyphs({
-    batchId: store.scan.batchId,
-    fileIndex: target,
-    pageNumber: record.pageNumber,
-    glyphs: (cache.masks || []).map((m) => ({
-      char: m.char,
-      cellIndex: m.index,
-      mask: m.mask,
-      width: m.width,
-      height: m.height,
-      boxInSlice: m.boxInSlice
-    }))
-  })
-  if (!saved.ok) {
-    setMessage('这一页识别成功，但字形落盘失败（结果只在内存里，刷新会丢）：' + saved.error, 'error')
+  // ② 掩膜取不到（null）时**不落盘、不覆盖内存缓存**：宁可这一页保持原样并明确报错，
+  //    也不能把好端端的分片写成 0 格（那正是"作废后重传、再生成少字形"的成因）
+  const hasMasks = Array.isArray(cache.masks)
+  let saved = null
+  if (hasMasks) {
+    saved = await savePageGlyphs({
+      fileIndex: target,
+      pageNumber: record.pageNumber,
+      glyphs: cache.masks.map((m) => ({
+        char: m.char,
+        cellIndex: m.index,
+        mask: m.mask,
+        width: m.width,
+        height: m.height,
+        boxInSlice: m.boxInSlice
+      }))
+    })
+    if (!saved.ok) {
+      setMessage('这一页识别成功，但字形落盘失败（结果只在内存里，刷新会丢）：' + saved.error, 'error')
+    }
   }
 
   const nextPages = store.scan.pages.map((p) => (p.fileIndex === target ? record : p))
@@ -774,15 +763,27 @@ async function ingestOnePage(file, opts = {}) {
   //   ② 整批汇总（页号重复 / 缺页 / 收批闸门都读它）
   const { duplicates, failedDuplicates } = markDuplicatePages(nextPages)
   const summary = summarizeBatch(nextPages, {
-    expectedBatchCode,
-    sheetPages: batch.value ? batch.value.pageCount : undefined
+    sheetPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined
   })
-  putPageCache(target, cache)
-  images.value = { ...images.value, [target]: { thumb: cache.thumb, sheet: cache.sheet } }
+  // 掩膜拿不到时**保留内存里原有的那一份**（不拿空 cache 盖掉它）
+  if (hasMasks) {
+    putPageCache(target, cache)
+    images.value = { ...images.value, [target]: { thumb: cache.thumb, sheet: cache.sheet } }
+  }
   if (openIndex.value === target) openIndex.value = null
   zoomIndex.value = null
   const res = store.replaceScanPage({ fileIndex: target, record, summary })
   store.applyScanDuplicates(duplicates, failedDuplicates)
+  // ④ 新写的字形**自动移出重写清单**（2026-10-15 用户拍板）：重写清单的语义是"先不进字体、
+  //    以后补上"—— 补上了自然要回来（不自动移出的话，新字形会被 excluded 挡在字体外，补写白写）。
+  //    旧字形不会丢：主区那份仍在落盘分片里，只是排在前面、输给新写的（buildGlyphFont 后到优先）。
+  const writtenChars = (record.cells || [])
+    .filter((c) => c.char && c.verdict !== 'empty')
+    .map((c) => c.char)
+  const rewriteCleared = store.clearRewriteFor(writtenChars)
+  // ③ 被圈字清单变了 → 之前的更正配对失效（配对依赖被圈字清单，一-7 / 八-14 ④）
+  const markedChanged = markedBefore !== (record.markedCells || []).join(',')
+  if (markedChanged) store.resetCorrection()
   savedStats.value = await glyphStoreStats().catch(() => savedStats.value)
   return {
     ok: true,
@@ -791,6 +792,9 @@ async function ingestOnePage(file, opts = {}) {
     pageNumber: record.pageNumber,
     written: record.counts.written,
     marked: record.counts.marked,
+    saved: saved ? saved.count : 0,
+    markedChanged,
+    rewriteCleared,
     markedCells: (record.markedCells || []).join(',')
   }
 }
@@ -801,22 +805,22 @@ async function rescanPage(page, event) {
   event.target.value = '' // 清空，便于再选同一个文件
   if (!file || running.value || rescanning.value !== null) return
   rescanning.value = page.fileIndex
-  const markedBefore = (page.markedCells || []).join(',')
   try {
     const r = await ingestOnePage(file, { fileIndex: page.fileIndex, fallbackPageNumber: page.pageNumber })
     if (!r.ok) {
       setMessage(r.reason, 'error')
       return
     }
-    // 被圈字变了 → 之前的更正配对失效（配对依赖被圈字清单）：清掉并明确提示去下面的更正核对重来
-    const markedChanged = markedBefore !== r.markedCells
-    if (markedChanged) store.resetCorrection()
+    // 被圈字变了 → 配对已在 ingestOnePage 里作废（重传与补传共用同一判据），这里只负责说清楚
     setMessage(
       '已重传第 ' + (r.pageNumber || page.pageNumber || '?') + ' 页（' + file.name + '）：写出 ' +
-        r.written + ' 格 / 被圈 ' + r.marked + ' 个' +
-        (markedChanged ? '。这一页的被圈字有变化，之前的更正配对已作废，请在下面的「更正核对」里重新核对' : '') +
+        r.written + ' 格（' + r.saved + ' 格已落盘）/ 被圈 ' + r.marked + ' 个' +
+        (r.rewriteCleared && r.rewriteCleared.length
+          ? '；其中 ' + r.rewriteCleared.length + ' 个字已有新写的字形，已自动移出重写清单（' + r.rewriteCleared.join('、') + '）'
+          : '') +
+        (r.markedChanged ? '。这一页的被圈字有变化，之前的更正配对已作废，请在下面的「更正核对」里重新核对' : '') +
         '。这一页的字形已更新，字体要重新生成才生效',
-      markedChanged ? 'info' : 'done'
+      r.markedChanged ? 'info' : 'done'
     )
   } catch (e) {
     setMessage('重传失败：' + (e && e.message ? e.message : e), 'error')
@@ -837,6 +841,8 @@ async function supplementFiles(event) {
   rescanning.value = 'supplement'
   let added = 0
   let replaced = 0
+  let markedChanged = 0
+  const clearedRewrite = []
   const failed = []
   try {
     for (const file of list) {
@@ -848,12 +854,18 @@ async function supplementFiles(event) {
         }
         if (r.replaced) replaced++
         else added++
+        if (r.markedChanged) markedChanged++
+        for (const ch of r.rewriteCleared || []) clearedRewrite.push(ch)
       } catch (e) {
         failed.push(file.name + '：' + (e && e.message ? e.message : e))
       }
     }
     setMessage(
       '补传完成：新增 ' + added + ' 页' + (replaced ? '、覆盖 ' + replaced + ' 页' : '') +
+        (clearedRewrite.length
+          ? '；' + clearedRewrite.length + ' 个字已有新写的字形，已自动移出重写清单（' + clearedRewrite.join('、') + '）'
+          : '') +
+        (markedChanged ? '；有 ' + markedChanged + ' 页的被圈字与原来不同，更正配对已按新的结果重算' : '') +
         (failed.length ? '；' + failed.length + ' 张没能收下（' + failed.join('；') + '）' : '') +
         '。第 3 步的字体产物与体检清单已作废，回第 3 步点「生成字体」重新生成一次即生效',
       failed.length ? 'info' : 'done'
@@ -876,7 +888,7 @@ async function confirmVoid() {
   voidTarget.value = null
   if (!page || running.value) return
   // ① 落盘的字形按页删掉（不删的话下次生成字体还会把它当"这一页的字形"）
-  const removed = await deleteGlyphPage({ batchId: store.scan.batchId, fileIndex: page.fileIndex })
+  const removed = await deleteGlyphPage({ fileIndex: page.fileIndex })
     .catch(() => ({ ok: false, removed: 0 }))
   // ② 内存里的分片缓存与缩略图也清掉
   clearPageCache(page.fileIndex)
@@ -889,8 +901,7 @@ async function confirmVoid() {
   const preview = store.scan.pages.map((p) => (p.fileIndex === page.fileIndex ? { ...p, ok: false, voided: true } : p))
   const { duplicates, failedDuplicates } = markDuplicatePages(preview)
   const summary = summarizeBatch(preview, {
-    expectedBatchCode: batch.value ? batch.value.batchCode : undefined,
-    sheetPages: batch.value ? batch.value.pageCount : undefined
+    sheetPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined
   })
   store.voidScanPage({ fileIndex: page.fileIndex, summary })
   store.applyScanDuplicates(duplicates, failedDuplicates)
@@ -899,58 +910,12 @@ async function confirmVoid() {
     '点「重传」可以把这一页重新扫进来；第 3 步的字体要重新生成才生效' +
     (removed && removed.removed ? '' : '（这一页本来就没有落盘的字形）'), 'info')
 }
-// ── 手选页序（决策 二-7）：改数字或拖动都能改 ────────────────────────────
-function applyOrder(overrides, note) {
-  const next = applyPageOrder(pages.value, overrides, chars.value, {
-    sheetPages: batch.value ? batch.value.pageCount : undefined,
-    expectedBatchCode: batch.value ? batch.value.batchCode : undefined
-  })
-  store.setScanPageOrder({ overrides, pages: next.pages, summary: next.summary })
-  // 改了页序，"谁与谁同页"就变了：去重结论一并重算写回（applyPageOrder 里重跑过 dedupeDuplicatePages）
-  store.applyScanDuplicates(next.duplicates, next.failedDuplicates)
-  if (note) setMessage(note, 'info')
-}
-function onOrderInput(page, value) {
-  const n = Number(value)
-  if (!n || n < 1) {
-    setMessage('页号要填 1 以上的整数', 'error')
-    return
-  }
-  const overrides = { ...store.scan.orderOverrides, [page.fileIndex]: n }
-  applyOrder(overrides, '已把 ' + page.fileName + ' 的页序手选为第 ' + n + ' 页；识别结果（笔迹）不变，只是"这一页对应哪些字"跟着改')
-}
-function onDragStart(page) {
-  if (!needsManualOrder(page)) return
-  dragFrom.value = page.fileIndex
-}
-/**
- * 拖到卡片上时判断"这里能不能放下"（2026-10-13 修）：**只有页脚读不出的页是合法目标**。
- * 浏览器只在 `dragover` 被 preventDefault 时才允许放置 —— 非法的目标不拦，光标会是"禁止"，
- * 用户一看就知道那张卡片不能换。原来 `@dragover.prevent` 挂在 12×18 的手柄上，卡片本体不是合法目标，
- * 于是"把卡片拖到另一张卡片上松手"毫无反应（子代理实测：卡片本体 false、手柄 true）。
- */
-function onDragOver(page, event) {
-  if (dragFrom.value === null) return
-  if (!needsManualOrder(page)) return
-  event.preventDefault()
-}
-function onDropPage(target) {
-  const from = dragFrom.value
-  dragFrom.value = null
-  if (from === null || from === target.fileIndex) return
-  const source = pages.value.find((p) => p.fileIndex === from)
-  if (!source || !needsManualOrder(source) || !needsManualOrder(target)) {
-    setMessage('页脚读出页序的页不能拖动改序（页脚是权威的）；只有页脚读不出的页才需要手选', 'error')
-    return
-  }
-  // 交换两页的页序（都还没手选时用"文件顺序"作为初始值）
-  const overrides = { ...store.scan.orderOverrides }
-  const a = source.pageNumber || source.fileIndex + 1
-  const b = target.pageNumber || target.fileIndex + 1
-  overrides[source.fileIndex] = b
-  overrides[target.fileIndex] = a
-  applyOrder(overrides, '已交换两页的页序：' + source.fileName + ' → 第 ' + b + ' 页，' + target.fileName + ' → 第 ' + a + ' 页')
-}
+// ── 手选页序：**2026-10-15 用户拍板彻底去掉** ──────────────────────────────
+// 原来页脚读不出的页要靠用户在卡片上填页号、或拖着缩略图排页序（决策 二-7）。现在不做了：
+//   · 页脚读不出时，页号与整页字序由**纸面参考字序列定位**定（决策 五-9 的新模型）；
+//   · 定不出来的页，页级校验码也帮不上（它本来就要求先猜出"这一页是哪些字"），整页明确失败、重扫即可。
+// 去掉的理由：这条操作把"识别准确性"的最后一公里交给了用户，而它本身极易出错（顺序一错整批错字）；
+//   而序列定位 + 页级校验码已经把这件事变成程序能自证的。相关字段（scan.orderOverrides）只留给旧数据兼容。
 
 // ── 结果卡片（2026-10-12 用户口径，决策 八-16 ④⑤）──────────────────────────
 // 卡片上只放四样：文件名、状态（颜色 + 一个短词）、一行统计、三个操作。
@@ -968,7 +933,6 @@ function cardClass(page) {
   if (page.voided) return 'is-voided'
   if (!page.ok) return 'is-failed'
   if (page.kind === 'correction') return 'is-correction'
-  if (page.needReview) return 'is-review'
   return 'is-ok'
 }
 function cardStatusLabel(page) {
@@ -976,7 +940,6 @@ function cardStatusLabel(page) {
   if (page.voided) return '已作废'
   if (!page.ok) return '失败'
   if (page.kind === 'correction') return '更正册'
-  if (page.needReview) return '待确认'
   return '已识别'
 }
 /** 被采用的那一份的文件名（"重复页"卡片上要说清结果里用的是哪一份）——
@@ -989,20 +952,29 @@ function adoptedName(page) {
   const adopted = pages.value.find((p) => p.fileIndex === idx)
   return adopted ? adopted.fileName : ('第 ' + (idx + 1) + ' 个文件')
 }
-// 页号与"这个页号是怎么来的"：序列定位 > 页脚读出 > 手选 —— 三种来源的可信度不同，必须逐页说清
+// 页号与"这个页号是怎么来的"（可信度不同，必须逐页说清）：
+//   指纹反推 / 序列定位（都由纸面自证）> 页脚读出 > 重传沿用原页
 function pageNumberLabel(page) {
-  if (page.kind === 'correction' && page.pageNumber) return '更正册第 ' + page.pageNumber + ' 页（页脚校验码 0）'
+  if (page.kind === 'correction' && page.pageNumber) return '更正册第 ' + page.pageNumber + ' 页'
+  if (page.pageNumberSource === 'code') return '第 ' + page.pageNumber + ' 页（按页脚校验码反推）'
   if (page.pageNumberSource === 'sequence') return '第 ' + page.pageNumber + ' 页（按纸面参考字序定位）'
   if (page.footerOk) return '第 ' + page.pageNumber + ' 页（页脚读出）'
-  if (page.pageNumber) return '第 ' + page.pageNumber + ' 页（手选）'
-  return '页号待手选'
+  if (page.pageNumber) return '第 ' + page.pageNumber + ' 页（沿用原页）'
+  return '页号没定出来'
 }
-// hover 的完整信息（多行）：页号来源 / 校验码 / 方向纠正 / 四角误差 / 字序来源 / 写出统计
+// hover 的完整信息（多行）：页号来源 / 本页校验码 / 方向纠正 / 四角误差 / 字序来源 / 写出统计
 function cardTitle(page) {
   const lines = [page.fileName, pageNumberLabel(page)]
   const bits = []
-  if (page.footerOk && page.kind !== 'correction') {
-    bits.push('校验码 ' + page.batchCode + (page.batchMatch === false ? '（与所选批次不符）' : '（与所选批次一致）'))
+  if (page.footerOk && page.kind !== 'correction' && page.pageCode) {
+    const agree = page.pageCheck ? page.pageCheck.agree : null
+    bits.push('本页校验码 ' + page.pageCode +
+      (agree === true ? '（与识别出的字序一致）' : (agree === false ? '（与识别出的字序对不上）' : '')))
+  }
+  if (page.kind === 'correction') {
+    bits.push(page.legacyPaper
+      ? '更正册（旧版本印的纸：那批页脚里没有本页校验码，按更正册收下）'
+      : '更正册（按页号区间识别，没有本页校验码）')
   }
   // 2026-10-13：页脚读不出、方向是按纸面参考字救回来的页，说清它是怎么定的（与"已自动转正"分开说）
   if (page.orientation && page.orientation.rescuedByReference) {
@@ -1014,19 +986,12 @@ function cardTitle(page) {
   if (page.cornerMaxError !== null && page.cornerMaxError !== undefined) bits.push('四角误差 ' + page.cornerMaxError + ' 像素')
   if (bits.length) lines.push(bits.join(' · '))
   if (page.orderSource) lines.push('字序：' + orderSourceLabel(page))
-  // 认不出整页字序的页（自定义选字的纸）：有多少格要人工过一眼 —— 完整说法在 hover 里，
-  // 卡片上只在「逐格确认」按钮上带一个数字（八-16 ④ 的按钮带计数）
-  if (page.ok && page.needReview) {
-    const n = reviewCount(page)
-    lines.push(n ? '需要确认 ' + n + ' 格（整页字序没认出来，逐格认字的结果要你过一眼）' : '已全部确认')
-  }
   if (page.ok) {
     lines.push('写出 ' + page.counts.written + ' 格（可疑 ' + page.counts.suspect + '）· 被圈 ' + page.counts.marked + ' 个' +
       (page.counts.uncertain ? ' · 归属待确认 ' + page.counts.uncertain : ''))
   } else {
     lines.push(page.reason || '这一页没能识别')
   }
-  if (needsManualOrder(page)) lines.push('页脚读不出页号：点卡片上的「手选页序」填上第几页，或把卡片拖到另一张上交换')
   return lines.join('\n')
 }
 // 弹窗里的一行摘要：与 hover 同一份信息，压成一行（弹窗顶部）
@@ -1046,15 +1011,6 @@ function togglePage(page) {
 }
 
 /**
- * 卡片上的「手选页序」入口（2026-10-13 用户口径）：打开这一页的弹窗 —— 手选输入框在弹窗底部。
- * 为什么单给一个入口：原来提示里写"在结果里手选页序"，而入口只藏在「看格子」弹窗底部，用户找不到。
- * 已经打开的那一页不重复 toggle（否则点了反而收起）。
- */
-function openSheetForOrder(page) {
-  if (openIndex.value !== page.fileIndex) togglePage(page)
-}
-
-/**
  * 按需把这一页的格子拼图补上（2026-10-13 用户口径：刷新 / 重进之后也要能看字）。
  * 为什么需要：拼图只在内存缓存里活一次会话（清单 四-27 的口径），而**字形掩膜是落盘的** ——
  * 刷新过页面就直接从落盘分片重画一张，而不是告诉用户"缩略图不可用"。
@@ -1067,7 +1023,6 @@ async function ensureSheet(page) {
   rebuilding.value = { ...rebuilding.value, [page.fileIndex]: true }
   try {
     const res = await buildPageSheetFromStore({
-      batchId: store.scan.batchId,
       fileIndex: page.fileIndex,
       cellThumbSize: SCAN_DEFAULTS.cellThumbSize,
       // 被红笔圈掉的格：落盘的掩膜里没有这个信息，从页记录取（否则重建的图会丢掉红框）
@@ -1325,22 +1280,9 @@ const zoomIsMarkedLabel = computed(() => {
         @drop="onDropPage(page)"
       >
         <div class="scan-card-head">
-          <!-- 拖动改页序：只有页脚读不出的页可以拖（页脚读出的页序是权威的，决策 二-7）。
-               2026-10-13 修：**放置区是整张卡片**，不再只绑在这个小手柄上 —— 原来 @dragover / @drop
-               都挂在这里，而手柄只有 12×18 像素（卡片 359×83，面积比 138:1）：用户按直觉把卡片拖到
-               另一张卡片上松手，浏览器判"这里不是放置目标"→ 毫无反应（子代理实测：dragover 是否
-               preventDefault —— 卡片本体 false、手柄 true）。手柄只管"从这里开始拖" -->
-          <span
-            class="scan-card-handle"
-            :class="{ draggable: needsManualOrder(page) }"
-            :draggable="needsManualOrder(page)"
-            title="拖动这个手柄，放到另一张卡片上即可交换两页的页序（只有页脚读不出版号的页能拖）"
-            @dragstart="onDragStart(page)"
-          >
-            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-              <path d="M6 3h4M6 8h4M6 13h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
-          </span>
+          <!-- 2026-10-15 用户拍板：**拖动改页序这条操作已去掉**（连同卡片上的手选页序）——
+               页脚读不出时页号与字序由纸面参考字序列定位定，定不出来就整页失败重扫；
+               把准确性交给用户去填数字，本身就是最容易出错的一环（顺序一错整批错字）。 -->
           <span class="scan-card-name" :title="page.fileName">{{ page.fileName }}</span>
           <span class="scan-card-badge">{{ cardStatusLabel(page) }}</span>
         </div>
@@ -1370,16 +1312,6 @@ const zoomIsMarkedLabel = computed(() => {
           <button class="text" type="button" :disabled="!page.ok" data-role="view-cells" @click="togglePage(page)">
             {{ openIndex === page.fileIndex ? '收起格子' : '看格子' }}
           </button>
-          <!-- 页脚读不出页号的页：卡片上直接给「手选页序」入口（2026-10-13 用户口径）——
-               原来提示里写"在结果里手选页序"，而入口藏在「看格子」弹窗底部，用户找不到 -->
-          <button
-            v-if="needsManualOrder(page)"
-            class="text accent"
-            type="button"
-            data-role="manual-order"
-            title="这一页的页脚读不出页号：点这里打开它，在弹窗底部填上第几页"
-            @click="openSheetForOrder(page)"
-          >手选页序</button>
           <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来。
                2026-10-12 按用户口径由实体按钮改成文本按钮「重传」，位置紧跟「看格子」之后 -->
           <!-- 作废这一页（2026-10-15 用户口径）：清掉它的识别结果与字形，卡片留着 ——
@@ -1406,22 +1338,11 @@ const zoomIsMarkedLabel = computed(() => {
               @change="rescanPage(page, $event)"
             />
           </label>
-          <!-- 认不出整页字序的页（自定义选字的纸）：认不准的格 + 还没认出来的格交人过一眼。
-               全部确认完之后入口仍留着（想再核对一遍 / 改某个字还能进去），只是文案改成"已全部确认" -->
-          <button
-            v-if="page.needReview"
-            class="text"
-            type="button"
-            data-role="review-chars"
-            @click="openReview(page)"
-          >
-            逐格确认{{ reviewCount(page) ? '（' + reviewCount(page) + '）' : '（已全部确认）' }}
-          </button>
         </div>
       </div>
     </div>
 
-    <!-- 单页详情（弹窗）：136 格视图 + 单格放大 + 页脚读不出时手选页序。
+    <!-- 单页详情（弹窗）：136 格视图 + 单格放大（手选页序那块已随该功能一起去掉）。
          为什么收进弹窗：60 页时行内展开会把列表撑得很长，而且每页那 136 个格子的覆盖层与格子拼图会常驻 DOM -->
     <div v-if="sheetPage" class="backup-overlay" @click.self="togglePage(sheetPage)">
       <div class="backup-modal scan-sheet-modal" role="dialog" aria-label="这一页的格子" data-role="scan-sheet">
@@ -1466,21 +1387,6 @@ const zoomIsMarkedLabel = computed(() => {
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
           </div>
         </div>
-
-        <!-- 页脚读不出页号的页：在这里手选（页脚读出的页序是权威的，其余页不给这个入口）。
-             2026-10-13：卡片上也直接给了「手选页序」入口，点它打开的就是这个弹窗 -->
-        <div v-if="needsManualOrder(sheetPage)" class="scan-order" data-role="manual-order-box">
-          手选页序
-          <input
-            type="number"
-            min="1"
-            :max="batch ? batch.pageCount : 999"
-            :value="sheetPage.pageNumber || ''"
-            :disabled="running"
-            @change="onOrderInput(sheetPage, $event.target.value)"
-          />
-          <span class="panel-hint">填这一页是第几页；改完这一页的字会按新页号重新对应（笔迹不动）</span>
-        </div>
       </div>
     </div>
 
@@ -1489,7 +1395,7 @@ const zoomIsMarkedLabel = computed(() => {
     <p v-if="!showResult && !running" class="panel-hint">
       选好文件夹后点「开始识别」：程序对每张图片逐页做「预处理 → 切格（方向不对会自动转正）→
       按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
-      并把每页的页号来源、写出格数与可疑格报给你；认不准的格会开一个「逐格确认」让你过一眼。
+      并把每页的页号来源、写出格数与可疑格报给你；页脚里的每页校验码会替你把这一页的字序再验一遍。
     </p>
 
     <!-- 这批结果用的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。
@@ -1594,9 +1500,6 @@ const zoomIsMarkedLabel = computed(() => {
         </ul>
       </div>
     </div>
-
-    <!-- 逐格复核（2026-10-11 新模型）：认不出整页字序的页在这里逐格确认 / 手输 -->
-    <CharReview v-if="reviewPage" :page="reviewPage" :open="reviewOpen" @close="closeReview" />
 
     <!-- 更正核对（原独立的第 2 步，2026-10-11 并入本页 —— 决策 八-15 ④）：
          它是识别结果的下一步处理，不该另占一步；有识别结果时就挂在这里 -->
