@@ -328,6 +328,15 @@ export function summarizeCheckup(glyphs = []) {
   if (note) seconds.push(note + ' 个只是留意')
   if (missing) seconds.push(missing + ' 个取不到原料')
   if (excluded) seconds.push(excluded + ' 个已剔除')
+  // **占格率中位**（2026-10-16 用户口径）：这是"字写得多大"的直接指标 —— 生成的字同字号下看着多大，
+  //   基本就是由它决定（程序端是 1:1 映射、不缩放，见 test/font-build.mjs 那条"涂满书写格 = 正好等于
+  //   设计框"的断言）。把它显示到摘要上，用户拿我们的字体与系统楷体比、觉得偏小时，一眼就能分清
+  //   "是我写小了"还是"程序缩了"。只统计真正进了字体的字（剔除的与取不到原料的不算）。
+  const fills = glyphs
+    .filter((g) => !g.excluded && !g.missing && typeof g.fill === 'number' && g.fill > 0)
+    .map((g) => g.fill)
+    .sort((a, b) => a - b)
+  const fillMedian = fills.length ? Math.round(fills[Math.floor(fills.length / 2)] * 1000) / 1000 : null
   return {
     total: glyphs.length,
     rewrite,
@@ -335,6 +344,7 @@ export function summarizeCheckup(glyphs = []) {
     ok,
     missing,
     excluded,
+    fillMedian,
     // "干净"= 没有要重写的、也没有取不到原料的（被剔除的是用户的主动选择，不算问题）
     clean: rewrite === 0 && missing === 0,
     message: glyphs.length

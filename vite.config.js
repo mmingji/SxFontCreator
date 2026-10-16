@@ -93,6 +93,13 @@ function fileBuildPlugin() {
 
 export default defineConfig({
   plugins: [vue(), fileBuildPlugin()],
+  // 开发态：启动后**自动打开浏览器**（2026-10-16 用户口径）。
+  // 为什么只加这一条、不做"预热 / 显式预构建"：本机实测（清掉 node_modules/.vite 的冷启动）
+  //   浏览器拿到 HTML 2.22 秒、界面可用 2.30 秒，热启动 0.43 秒；而 Vite 启动时**已经把 8 个依赖
+  //   全预构建了**（含动态 import 的 pdf-lib / pdfjs-dist / fonteditor-core，见 node_modules/.vite/deps），
+  //   不存在"点到某一步才触发二次预构建 + 页面自己刷新"那个经典坑 —— 没有值得预热的东西。
+  //   真正省事的是别让人"等终端 ready 再手动开浏览器"（没 ready 就开，浏览器给的是连不上）。
+  server: { open: true },
   // 相对路径：产物换目录、打包发送、双击打开都不受影响
   base: './',
   // 程序版本注入（项目包清单里要写它；避免为读一个字符串再引一份 package.json 副本）

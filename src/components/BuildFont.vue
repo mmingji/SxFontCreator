@@ -555,6 +555,16 @@ const checkupSummaryText = computed(() => {
   if (!ck) return ''
   const parts = [ck.summary ? ck.summary.message : '']
   if (onRewriteList.value.length) parts.push('重写清单里 ' + onRewriteList.value.length + ' 个')
+  // 占格率中位（2026-10-16 用户口径）：这是"字写得多大"的直接指标 —— 生成的字同字号下看着多大，
+  //   基本由它决定（程序是 1:1 映射、不缩放）。用户拿我们的字体和系统楷体比、觉得偏小时，
+  //   一眼就能分清"是我写小了"还是"程序缩了"。参照值用系统字体实测：楷体约 0.86、宋体约 0.91。
+  const fill = ck.summary ? ck.summary.fillMedian : null
+  if (typeof fill === 'number') {
+    parts.push('占格率中位 ' + fill.toFixed(2) +
+      (fill < 0.72
+        ? '（整体偏小：同字号下会比楷体小一成以上 —— 想更大就写到刚触格线）'
+        : '（写得越满、成字越大；系统楷体约 0.86、宋体约 0.91）'))
+  }
   return parts.filter(Boolean).join('；')
 })
 

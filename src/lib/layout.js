@@ -23,10 +23,10 @@ export const LAYOUT = (() => {
   const pageHeight = 21 * CM
   const cols = 17
   const rows = 8
-  const cellWidth = 907 * TWIP // V4.0 实测：字位宽 1.6cm
-  const writingBox = 567 * TWIP // V4.0 实测：书写格 1cm
-  const referenceFontSize = 14 // V4.0 实测：参考字楷体 14pt
-  const lineWidth = 4 * TWIP // V4.0 实测：边框 0.5pt
+  const cellWidth = 907 * TWIP // V4.0 模板实测：字位宽 1.6cm（历史来源，见《决策记录》一-1）
+  const writingBox = 567 * TWIP // V4.0 模板实测：书写格 1cm（同上）
+  const referenceFontSize = 14 // V4.0 模板实测：参考字楷体 14pt（同上）
+  const lineWidth = 4 * TWIP // V4.0 模板实测：边框 0.5pt（同上）
   const tableWidth = cols * cellWidth
   const tableLeft = (pageWidth - tableWidth) / 2 // 表格居中（与 V4.0 的 jc=center 一致）
 
