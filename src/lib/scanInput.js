@@ -9,7 +9,7 @@
 //     负责把句柄读成文件清单（只认根层，子目录只计数）；
 //   · `<input webkitdirectory>`：扁平的 files + `File.webkitRelativePath`（形如 `扫描件/第1页.jpg`）。
 //   两条路最后都汇进同一个 pickScanInputs —— 下游（识别）不必知道自己是从哪条路来的。
-import { ORDER_FILE_NAME, parseOrderFile } from './orderFile.js'
+import { ORDER_FILE_EXTENSIONS, orderFilePriority, parseOrderFile } from './orderFile.js'
 
 // 认哪些扩展名（决策 二-18 ②）。刻意不含 .gif / .tif：前者动画帧没有意义，后者本项目链路的
 // 解码与预处理都没验过 —— 宁可"没被当成图片、在界面上说出来"，也不要悄悄产出一堆失败页。
@@ -26,9 +26,9 @@ export function isImageName(name) {
   return IMAGE_EXTENSIONS.indexOf(fileExtension(name)) >= 0
 }
 
-/** 是不是那个固定名的字序文件（Windows 上文件名不区分大小写，这里也不区分） */
+/** 是不是当前的固定名字序文件（`字序.sxorder`；Windows 上文件名不区分大小写，这里也不区分） */
 export function isOrderFileName(name) {
-  return String(name || '').toLowerCase() === ORDER_FILE_NAME.toLowerCase()
+  return orderFilePriority(name) === 0
 }
 
 /** 相对路径的目录段：`扫描件/第1页.jpg` → `扫描件`；`扫描件/旧的/第1页.jpg` → `扫描件`；没有相对路径 → 空串 */
@@ -148,7 +148,9 @@ async function countFilesIn(dirHandle, depth) {
  *   · **只认目录根下那一层** —— 落进子目录的一律忽略并计数（判据见 isRootLevel），
  *     避免把"另存一份的旧纸"混进来（连同它那份旧的字序文件）；
  *   · 图片按扩展名取，**按文件名自然序**排；
- *   · 字序文件候选 = 根层的 `.json`，固定名 `字序.json` 排在最前（找不到固定名时会去试别的）。
+ *   · 字序文件候选 = 根层里扩展名为 `.sxorder` 或 `.json` 的文件，**按 orderFilePriority 排序**：
+ *     当前的固定名 `字序.sxorder` 最先，其次是别的 `.sxorder`，再次是旧固定名 `字序.json`、
+ *     最后是别的 `.json`（旧包与用户自己改名的副本都要能读，真伪由文件里的 format 标记判定，一-18 ④）。
  * @param {File[]|ArrayLike} fileList 目录选择的 files
  * @returns {{images:Array, orderCandidates:Array, ignoredSubdir:number, ignoredOther:number, folderName:string, total:number}}
  */
@@ -167,13 +169,13 @@ export function pickScanInputs(fileList) {
       continue
     }
     if (isImageName(file.name)) images.push(file)
-    else if (fileExtension(file.name) === '.json') orderCandidates.push(file)
+    else if (ORDER_FILE_EXTENSIONS.indexOf(fileExtension(file.name)) >= 0) orderCandidates.push(file)
     else ignoredOther++
   }
   images.sort((a, b) => naturalCompare(a.name, b.name))
   orderCandidates.sort((a, b) => {
-    const pa = isOrderFileName(a.name) ? 0 : 1
-    const pb = isOrderFileName(b.name) ? 0 : 1
+    const pa = orderFilePriority(a.name)
+    const pb = orderFilePriority(b.name)
     if (pa !== pb) return pa - pb
     return naturalCompare(a.name, b.name)
   })
@@ -211,7 +213,7 @@ export async function findOrderFile(candidates, options = {}) {
   }
   return {
     ok: false,
-    reason: list.length ? '目录里的 json 都不是有效的字序文件（' + tried.join('；') + '）' : '',
+    reason: list.length ? '目录里没有能用的字序文件（' + tried.join('；') + '）' : '',
     fileName: '',
     file: null,
     tried

@@ -35,7 +35,7 @@ const store = useProjectStore()
 
 // ── 输入：**一个文件夹**（决策 二-18 / 六-13）───────────────────────────────
 // 为什么是文件夹：纸与字序文件本来就是一起给用户的（第 1 步的压缩包），
-//   让程序一次读全比"手动挑图片、再靠认字反推字序"少一个出错环节 —— 目录里那份 字序.json
+//   让程序一次读全比"手动挑图片、再靠认字反推字序"少一个出错环节 —— 目录里那份 字序.sxorder
 //   直接把"这批纸按什么顺序排字"说死（决策 一-18），认参考字降为没有文件时的退路。
 //
 // 主路是 `showDirectoryPicker`（决策 六-13 改判）：它弹的是**系统原生文件夹对话框**（有路径面包屑、
@@ -377,7 +377,8 @@ async function applyDirFiles(picked, folder, subdirFiles) {
     const input = pickScanInputs(picked)
     if (!input.folderName) input.folderName = folderName.value
     scanInput.value = input
-    // 字序文件：固定名「字序.json」优先，读不了再试目录里别的 .json（决策 一-18 ② 的容错）
+    // 字序文件：当前固定名「字序.sxorder」优先，其次是别的 .sxorder，再次是旧版的 字序.json / 别的 .json
+    //   （2026-10-16 改扩展名，旧包不作废；次序与判据在 lib/orderFile.js 的 orderFilePriority）
     const found = await findOrderFile(input.orderCandidates, { perPage: LAYOUT.perPage })
     orderFile.value = found
     // ① 回执行由 dirNote（computed）常驻给出："选了哪个文件夹、几张图片"
@@ -1112,7 +1113,7 @@ const zoomIsMarkedLabel = computed(() => {
          仍保留的只有一条：**这台浏览器没有系统文件夹对话框**（Firefox / Safari 走退路）——
             "不静默降级"是决策 六-13 的要求，所以那句挪到下面按钮行里，只在缺这个接口时出现。
          2026-10-11（决策 二-18 / 一-18）：不再手动挑图片、也不再选批次 ——
-            给一个文件夹，程序读里面的图片与 字序.json；没有字序文件时才靠"认纸面参考字"定字序 -->
+            给一个文件夹，程序读里面的图片与 字序.sxorder；没有字序文件时才靠"认纸面参考字"定字序 -->
 
     <!-- ② 文件夹与进度 -->
     <div class="panel-row">
@@ -1443,7 +1444,7 @@ const zoomIsMarkedLabel = computed(() => {
             </template>
           </ul>
           <p v-if="canEditList && orderCandidates.length > 1" class="panel-hint">
-            这个文件夹里有 {{ orderCandidates.length }} 个 json 文件：字序按"固定名优先"挑中了「{{ activeOrderName || '（都不合格式）' }}」——
+            这个文件夹里有 {{ orderCandidates.length }} 个字序文件：字序按"固定名优先"挑中了「{{ activeOrderName || '（都不合格式）' }}」——
             多余的是"另存一份 / 从别处拷来的"旧字序，可以在这里去掉，免得以后挑错。
           </p>
           <p v-else-if="canEditList && orderCandidates.length === 1 && activeOrderName" class="panel-hint">

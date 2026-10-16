@@ -47,7 +47,7 @@ export function renderGuideHtml() {
     font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
     font-size: 14px; line-height: 1.85; color: #1f2933; background: #f6f7f9;
   }
-  main { max-width: 820px; margin: 0 auto; background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 28px 32px 36px; }
+  main { max-width: 1200px; margin: 0 auto; background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 28px 32px 36px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { margin: 0 0 6px; font-size: 12px; color: #667180; }
   .intro { margin: 0 0 18px; padding-bottom: 14px; border-bottom: 1px solid #e3e6ea; color: #3d4852; }
@@ -65,7 +65,7 @@ export function renderGuideHtml() {
   code { font-family: Consolas, "Courier New", monospace; font-size: 13px; background: #f2f5f8; padding: 1px 4px; border-radius: 3px; }
   strong { color: #101820; }
   a { color: #2e6e7e; }
-  footer { max-width: 820px; margin: 18px auto 0; font-size: 12px; color: #667180; text-align: center; }
+  footer { max-width: 1200px; margin: 18px auto 0; font-size: 12px; color: #667180; text-align: center; }
   @media print {
     body { background: #fff; padding: 0; }
     main { border: 0; border-radius: 0; padding: 0; }

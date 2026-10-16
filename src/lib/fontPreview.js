@@ -4,8 +4,10 @@
 //   ② analyzePreviewText —— 逐字判定"有没有被这套字体收录"，给出未收录清单；
 //   ③ previewFontFamily / registerPreviewFont —— 把生成好的字体字节用 FontFace（浏览器字体接口）
 //      **动态注册**进当前页面，不装机也能看效果（决策 四-8）。
-// 为什么必须有 ②：字体文件里只有"收录"的那些字形 —— 清单外的字在浏览器 / PS 里会**回退成系统字体**、
-//   在 Word 里会显示成方框（清单 三-4 的装机实测结论）。不标出来，用户会以为预览里的样子就是安装后的样子。
+// 为什么必须有 ②：字体文件里只有"收录"的那些字形 —— 清单外的字**在 Word、Photoshop 与浏览器里都会
+//   回退成系统字体**（2026-10-16 用户实测修订：原来是"Word 里显示成方框"，实测 Word 也会回退，
+//   方框只在"整条字体链都没有该字符的可见字形"时出现；清单 三-4 的旧结论据此改写）。
+//   不标出来，用户会以为预览里的样子就是安装后的样子。
 // 数据来源：收录清单 = `store.font.coverage.chars`（生成字体时算出来的，下载包里的使用说明与 preview.html 同源）。
 // 为什么独立成文件：①② 是纯函数，直接在 Node 里断言，不必起浏览器；③ 用 typeof 探测环境，缺 FontFace 时给中文错误。
 import { SINGLE_PAGE_SENTENCES, pickSinglePageSentence } from './singlePageText.js'
@@ -40,8 +42,10 @@ export function defaultPreviewText(coveredChars, limit = DEFAULT_PREVIEW_CHARS) 
   return list.slice(0, Math.max(0, limit)).join('')
 }
 
-// 空白字符（半角空格、全角空格、制表符等）：它们确实不在字表里、也会回退，
-// 但不显示任何字形 —— 逐字标红只会让每个词之间挂一个记号，反而看不出真正缺的字，故不计入未收录。
+// 空白字符（半角空格、全角空格、制表符等）**不计入未收录统计**。
+// 2026-10-16 起半角空格已经**被收录**（生成端补了一个空轮廓、advance 500 的空格字形 —— 见
+//   lib/glyphBuilder.js 与决策 四-3），但这里仍不统计它：它不显示任何字形，逐字标红只会让每个词之间
+//   挂一个记号，反而看不出真正缺的字；全角空格、制表符之类则确实不在字表与字体里。
 const BLANK_RE = /^\s$/
 
 /**

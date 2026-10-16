@@ -8,11 +8,38 @@
 //   因此可以在 Node 侧直接断言（test/template-pack.mjs）。
 import { LAYOUT } from './layout.js'
 
-// 文件名固定（决策 一-18 ②）：识别时先按这个名字找，找不到再扫目录下其它 .json 挑格式对得上的
-export const ORDER_FILE_NAME = '字序.json'
+// 文件名固定（决策 一-18 ②）：识别时先按这个名字找，找不到再扫目录下同扩展名的其它文件、挑格式对得上的。
+//
+// **2026-10-16 用户口径：扩展名由 .json 改成 .sxorder；文件在 zip 里带只读属性。**
+//   为什么：这是一份"给程序读"的文件，用户双击打开、手改一下（哪怕是换个编辑器另存）都可能让它读不出来
+//   （解析宁严勿宽，一-18 ④），而用户根本不需要看它。实测（test/.tmp 的一次性探针）：zip 里的 DOS 只读位
+//   在 7-Zip / WinRAR 解压后**会保留**，但 Windows 资源管理器双击 zip 解压**不保留** —— 所以主措施是扩展名
+//   （双击没有关联程序、Windows 会问"如何打开"），只读位只算第二道（见 lib/templatePack.js）。
+export const ORDER_FILE_NAME = '字序.sxorder'
+export const ORDER_FILE_EXTENSION = '.sxorder'
+// 改扩展名之前发出去的压缩包里是 字序.json —— 识别端继续认它（旧包与旧纸都不作废）
+export const LEGACY_ORDER_FILE_NAME = '字序.json'
+// 识别端认的扩展名：.sxorder 是当前的；.json 留给旧包，以及"用户自己改名 / 从别处拷来的副本"（一-18 ②）
+export const ORDER_FILE_EXTENSIONS = ['.sxorder', '.json']
 // 格式标记与版本：解析时用它俩把"我们的字序文件"与"目录里随便一个 json"区分开
 export const ORDER_FILE_FORMAT = 'sxfont-order'
 export const ORDER_FILE_VERSION = 1
+
+/**
+ * 候选优先级（越小越优先；返回 -1 = 不是字序文件候选）。
+ * 次序：当前的固定名 → 别的 .sxorder → 旧的固定名 字序.json → 别的 .json。
+ * 为什么还给 .json 留最低一档：改扩展名之前发出去的包、以及用户自己改名 / 从别处拷来的副本，都要能读
+ *   —— 真伪最终由文件里的 `format` 标记判定（一-18 ④），扩展名只决定"先试谁"。
+ */
+export function orderFilePriority(name) {
+  const lower = String(name || '').toLowerCase()
+  const ext = lower.slice(lower.lastIndexOf('.')).toLowerCase()
+  if (lower === ORDER_FILE_NAME.toLowerCase()) return 0
+  if (ORDER_FILE_EXTENSIONS.indexOf(ext) < 0) return -1
+  if (ext === ORDER_FILE_EXTENSION) return 1
+  if (lower === LEGACY_ORDER_FILE_NAME.toLowerCase()) return 2
+  return 3
+}
 
 /** 按码点数字数（与 lib/charset.js 的 countChars 同口径；这里自带一份，免得把字表数据拖进来） */
 export function charCountOf(text) {

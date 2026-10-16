@@ -35,7 +35,8 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
     '怎么用',
     '----------------------------------------',
     'Word：在「开始 → 字体」里选「' + familyName + '」；找不到就确认装好并重启过 Word。',
-    'Photoshop：文字工具 → 字体列表里选「' + familyName + '」。',
+    'Photoshop：先用文字工具打字，再全选文字、在字体列表里选「' + familyName + '」—— 实测直接在选项栏',
+    '           选了字体再输入不生效（出来的还是默认字体的样子），选中已有文字再选一次即可。',
     '网页：把 font.css 与字体文件放同一目录，然后',
     '      <link rel="stylesheet" href="./font.css">',
     '      body { font-family: "' + familyName + '", sans-serif; }',
@@ -43,14 +44,18 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
     '这套字体收录了什么',
     '----------------------------------------',
     '收录 ' + coverage.total + ' 个字（其中 ' + coverage.fromCorrection + ' 个来自更正册覆盖）。',
+    '另外附带一个空格字形（宽度半个汉字，空轮廓）—— 打空格不必再回退到别的字体。',
     coverage.suspectNote ? coverage.suspectNote : '',
     missingNote ? missingNote : '',
     '完整的收录清单见 preview.html（或直接把字体装进系统，在字符映射表里看）。',
     '',
     '注意',
     '----------------------------------------',
-    '没写的字在 Word 里会显示成方框、在 PS 里可能回退到别的字体 —— 想要一套完整可用的字体，',
+    '没写的字在 Word、Photoshop 与浏览器里都会回退成系统字体（2026-10-16 实测）—— 想要一套完整可用的字体，',
     '建议先把常用字补齐（前 2000 字覆盖日常语料约 97%，见产品界面里的说明）。',
+    'Photoshop 注意：新建文字图层默认会预置占位文本（Lorem Ipsum），本字体没有的那些字符会触发',
+    '「字形保护」把整个图层换成系统字体 —— 在 首选项 → 文字 里关掉「用占位文本填充新文字图层」即可；',
+    '也可以先打字、再全选文字换一次字体。',
     '字体的观感取决于书写：居中书写、别出格、大小匀称（笔画多的字撑满格，天生小的字居中写小），成品的字距与字重才稳定。',
     ''
   ]
@@ -106,7 +111,7 @@ export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, m
   <p class="cover">${esc(list)}</p>
 
   <p class="note">
-    没写的字不会出现在上面这串里 —— 在 Word 里它们会显示成方框、在 PS 里可能回退到别的字体。
+    没写的字不会出现在上面这串里 —— 它们在这套字体里没有字形，Word、Photoshop 与浏览器都会回退成系统字体。
     ${missingNote ? esc(missingNote) : ''}
   </p>
   <p class="note">

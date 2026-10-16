@@ -269,8 +269,23 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     throw err
   }
 
-  // ① SVG font（中间格式）：glyph 的 unicode 决定 cmap、horiz-adv-x 决定字宽
-  const glyphsXml = built.map((g) =>
+  // ① **补一个空格字形**（2026-10-16 用户拍板："补空格字形、advance 取 500"）。
+  //   为什么补：这份字体原来不含 U+0020 —— 用户打空格只能走系统回退；更要紧的是 **Adobe 的「字形保护」**
+  //   （Glyph Protection，Photoshop 默认开启）：输入里只要有一个字符不在字体里，它就把**整个文字图层**
+  //   换成系统字体（2026-10-16 实测：PS 新建文字图层默认预置的 "Lorem Ipsum" 就把这份只含汉字的字体
+  //   当场换掉了；那次的实际触发字符是拉丁字母，见《使用说明》第五节 —— 空格同样是最常见的触发字符）。
+  //   形状：**空轮廓**（没有任何笔画）+ **半角 advance 500**（与数字/字母同档，见决策 四-3；中文里约半个
+  //   汉字宽，与宋体等中文字体的半角空格一致）。
+  //   它**不计入"收录"**：coverage / mapping / 界面上的"N 个字"说的都是"用户写了多少字"（八-21 的口径），
+  //   程序补的这一格不算用户的书写成果 —— 只在 stats 里用 spaceGlyph 标出来，供测试与说明引用。
+  const fontGlyphs = built.slice()
+  const hasSpaceGlyph = !byChar.has(' ')
+  if (hasSpaceGlyph) {
+    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.halfWidth, clamped: false })
+  }
+
+  // ② SVG font（中间格式）：glyph 的 unicode 决定 cmap、horiz-adv-x 决定字宽
+  const glyphsXml = fontGlyphs.map((g) =>
     '<glyph glyph-name="' + glyphName(g.char) + '" unicode="&#x' + g.code.toString(16) + ';" ' +
     'horiz-adv-x="' + g.advanceWidth + '" d="' + escapeXml(g.d) + '"/>')
   const svgFont = '<svg xmlns="http://www.w3.org/2000/svg">\n<defs><font id="' + escapeXml(familyName) +
@@ -279,11 +294,11 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     glyphsXml.join('\n') + '\n</font></defs>\n</svg>'
   const ttfObj = fonteditor.svg2ttfobject(svgFont, { combinePath: false })
 
-  // ② OS/2 字段补位：Word 靠它认"这是中文字体"（清单 三-12）。位置很关键 —— 必须在写盘之前，
+  // ③ OS/2 字段补位：Word 靠它认"这是中文字体"（清单 三-12）。位置很关键 —— 必须在写盘之前，
   //   而且 ulUnicodeRange2 是用访问器接管的（fonteditor 写盘时会硬写这个字段，见 patchOs2ForWindows）
   patchOs2ForWindows(ttfObj)
 
-  // ③ name 表（决策 四-1）：中英并列写在同一字段里 —— fonteditor 的 name 表按 platform/language 写记录
+  // ④ name 表（决策 四-1）：中英并列写在同一字段里 —— fonteditor 的 name 表按 platform/language 写记录
   //   （Mac 一条 + Windows 一条，同一字符串），塞不进两套语言；若要严格的双语双记录得自己拼 name 表二进制
   const psName = toPostScriptName(familyName)
   ttfObj.name = {
@@ -303,7 +318,7 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     sampleText: meta.sampleText || built.slice(0, 12).map((g) => g.char).join('')
   }
 
-  // ④ 写 TTF → woff → woff2
+  // ⑤ 写 TTF → woff → woff2
   const font = fonteditor.createFont(ttfObj)
   const ttf = font.write({ type: 'ttf', toBuffer: false })
   const woff = fonteditor.ttf2woff(ttf)
@@ -326,12 +341,17 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     familyName,
     mapping: built.map((g) => ({ char: g.char, code: g.code, advanceWidth: g.advanceWidth, clamped: g.clamped })),
     skipped,
+    // 是否补了空格字形（2026-10-16）：字体里恒有（除非用户自己写了空格），但它**不在 mapping 里** ——
+    // 上面那条"收录多少个字"的口径只算用户写的字（见 ① 的说明）。
+    spaceGlyph: hasSpaceGlyph,
     stats: {
       total: glyphs.length,
       built: built.length,
       skipped: skipped.length,
       clamped: built.filter((g) => g.clamped).length,
-      halfwidth: built.filter((g) => g.advanceWidth === opt.halfWidth).length
+      halfwidth: built.filter((g) => g.advanceWidth === opt.halfWidth).length,
+      // 程序补的空格字形（不进 built / mapping，见 ① 的说明）—— 界面统计与测试都靠它
+      spaceGlyph: hasSpaceGlyph
     }
   }
 }
