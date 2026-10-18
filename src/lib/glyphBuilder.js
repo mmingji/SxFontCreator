@@ -206,14 +206,20 @@ export async function ensureWoff2Ready(wasmUrl) {
 }
 
 // 生成 @font-face 用的 CSS（汉字字体不需要图标那套类名，一条声明即可）
-export function buildFontCss({ familyName, fileName, version = '1.0' }) {
+// `hasWoff2`（2026-10-18）：woff2 编码失败时包里不会放 `.woff2`（见 buildGlyphFont 的 try/catch），
+//   这时**不能**再写那一行 —— 否则 font.css 指着一个不存在的文件，浏览器先 404、再回退到 woff/ttf
+//   （能用，但控制台多一条报错、用户会以为包坏了）。woff 与 ttf 视为恒有：woff 失败会让整条构建失败，
+//   不会走到"包已经打出来"这一步。
+export function buildFontCss({ familyName, fileName, version = '1.0', hasWoff2 = true }) {
+  const src = []
+  if (hasWoff2) src.push("url('./" + fileName + ".woff2') format('woff2'),")
+  src.push("url('./" + fileName + ".woff') format('woff'),")
+  src.push("url('./" + fileName + ".ttf') format('truetype');")
   return [
     '/* ' + familyName + ' v' + version + ' —— 由 SxFontCreator 生成 */',
     '@font-face {',
     "  font-family: '" + familyName + "';",
-    "  src: url('./" + fileName + ".woff2') format('woff2'),",
-    "       url('./" + fileName + ".woff') format('woff'),",
-    "       url('./" + fileName + ".ttf') format('truetype');",
+    ...src.map((line, i) => (i === 0 ? '  src: ' + line : '       ' + line)),
     '  font-weight: 400;',
     '  font-style: normal;',
     '  font-display: swap;',
@@ -336,7 +342,7 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     ttf,
     woff,
     woff2,
-    css: buildFontCss({ familyName, fileName, version }),
+    css: buildFontCss({ familyName, fileName, version, hasWoff2: !!woff2 }),
     fileName,
     familyName,
     mapping: built.map((g) => ({ char: g.char, code: g.code, advanceWidth: g.advanceWidth, clamped: g.clamped })),

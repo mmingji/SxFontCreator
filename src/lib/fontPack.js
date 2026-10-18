@@ -6,7 +6,9 @@
 import JSZip from 'jszip'
 
 // 使用说明的正文（纯文本 → 不受 PDF 那个"字表内字符"的限制，可以正常写冒号、括号与英文）
-export function buildGuideText({ familyName, fullName, version, fileName, coverage, missingNote, designer, copyright, licence }) {
+// `hasWoff2`（2026-10-18）：包内文件清单要按**实际打进去的文件**列 —— woff2 编码失败时包里没有它，
+//   清单里就不该出现（否则用户按清单找一个不存在的文件，见 font.css 里同一条口径）
+export function buildGuideText({ familyName, fullName, version, fileName, coverage, missingNote, designer, copyright, licence, hasWoff2 = true }) {
   const lines = [
     'SxFontCreator 手写体使用说明',
     '========================================',
@@ -21,7 +23,7 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
     '包内文件',
     '----------------------------------------',
     '  ' + fileName + '.ttf    安装到系统用（Windows / macOS 双击或右键安装）',
-    '  ' + fileName + '.woff2  网页用（体积最小，现代浏览器）',
+    hasWoff2 ? '  ' + fileName + '.woff2  网页用（体积最小，现代浏览器）' : '',
     '  ' + fileName + '.woff   网页用（兼容旧浏览器）',
     '  font.css                网页引用用的 @font-face 片段',
     '  preview.html            样张预览（双击就能看，右侧字体文件要放在同一目录）',
@@ -66,13 +68,15 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
 // `fontDataUrl`（2026-10-15 新增）：把字体字节**内联**进页面（base64 data URL）——
 //   给"在新标签页里查看网页预览"用：那条路没有"同目录的字体文件"可引用（file:// 下 fetch 也被拦），
 //   不内联就只能看到回退后的系统字体，等于没预览。zip 里那一份仍走外链（体积小、可替换）。
-export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, missingNote, fontDataUrl = '' }) {
+// `hasWoff2`（2026-10-18）：外链那一份按包里**实际有的文件**写 src（woff2 可能没生成出来，
+//   见 buildFontCss 的同一条口径）；内联那一份只有一个 data URL，与它无关。
+export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, missingNote, fontDataUrl = '', hasWoff2 = true }) {
   const list = (coverage.chars || []).join('')
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
   const fontSrc = fontDataUrl
     ? "src: url('" + fontDataUrl + "') format('truetype');"
-    : "src: url('./" + esc(fileName) + ".woff2') format('woff2'),\n         url('./" + esc(fileName) +
-      ".woff') format('woff'),\n         url('./" + esc(fileName) + ".ttf') format('truetype');"
+    : (hasWoff2 ? "src: url('./" + esc(fileName) + ".woff2') format('woff2'),\n         " : 'src: ') +
+      "url('./" + esc(fileName) + ".woff') format('woff'),\n         url('./" + esc(fileName) + ".ttf') format('truetype');"
   const subNote = fontDataUrl
     ? '用这套手写体渲染的样张 —— 字体字节已经内联在这一页里，换台机器打开也是这个样子；共收录 ' + coverage.total + ' 个字。'
     : '用这套手写体渲染的样张 —— 字体文件与本源张放在同一目录即可正常显示；共收录 ' + coverage.total + ' 个字。'
@@ -149,14 +153,17 @@ export async function packFontZip(input) {
     missingNote: input.coverage.missingNote,
     designer: input.designer,
     copyright: input.copyright,
-    licence: input.licence
+    licence: input.licence,
+    // 说明里的"包内文件"清单要与实际打进 zip 的一致（woff2 可能是没有的）
+    hasWoff2: !!input.woff2
   }))
   folder.file('preview.html', buildPreviewHtml({
     familyName: input.familyName,
     fileName: input.fileName,
     coverage: input.coverage,
     sampleText: input.sampleText,
-    missingNote: input.coverage.missingNote
+    missingNote: input.coverage.missingNote,
+    hasWoff2: !!input.woff2
   }))
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 } })
 }
