@@ -248,14 +248,16 @@ function locatedStartPage(page) {
 // 这一页的字是**从哪儿来的**（决策 一-18 ⑤）：三种来源对用户的信任度不同，必须在界面上说清 ——
 //   file 文件夹里的字序文件（文件给死的）/ sequence 纸面参考字序列定位（认出来的）/ cells 逐格认字（猜的）
 function orderSourceLabel(page) {
+  // 2026-10-18（一-20）：**底部条码**排在最前 —— 它给的是纸面自己写的字序，比"认出来的"更硬
+  if (page.orderSource === 'barcode') return '来自底部条码（纸面自己写的字序）'
   if (page.orderSource === 'file') {
     const hit = page.located && page.located.seqKey === 'file'
-    return '来自文件夹里的字序文件' + (hit ? '（在文件里定位到第 ' + locatedStartPage(page) + ' 页起）' : '（按页脚页号取）')
+    return '来自文件夹里的字序文件' + (hit ? '（在文件里定位到第 ' + locatedStartPage(page) + ' 页起）' : '（按竖带页号取）')
   }
   if (page.orderSource === 'sequence') {
     return sequenceLabel(page.located ? page.located.seqKey : '') + ' · 第 ' + locatedStartPage(page) + ' 页起'
   }
-  if (page.orderSource === 'rewrite') return '补写清单（重写模板 / 未收录字，靠纸面参考字与页脚校验码认）'
+  if (page.orderSource === 'rewrite') return '补写清单（重写模板 / 未收录字，靠纸面参考字与竖带校验码认）'
   if (page.orderSource === 'cells') return '逐格认字'
   return ''
 }
@@ -954,12 +956,13 @@ function adoptedName(page) {
   return adopted ? adopted.fileName : ('第 ' + (idx + 1) + ' 个文件')
 }
 // 页号与"这个页号是怎么来的"（可信度不同，必须逐页说清）：
-//   指纹反推 / 序列定位（都由纸面自证）> 页脚读出 > 重传沿用原页
+//   条码 / 指纹反推 / 序列定位（都由纸面自证）> 竖带读出 > 重传沿用原页
 function pageNumberLabel(page) {
   if (page.kind === 'correction' && page.pageNumber) return '更正册第 ' + page.pageNumber + ' 页'
-  if (page.pageNumberSource === 'code') return '第 ' + page.pageNumber + ' 页（按页脚校验码反推）'
+  if (page.pageNumberSource === 'barcode') return '第 ' + page.pageNumber + ' 页（按底部条码）'
+  if (page.pageNumberSource === 'code') return '第 ' + page.pageNumber + ' 页（按竖带校验码反推）'
   if (page.pageNumberSource === 'sequence') return '第 ' + page.pageNumber + ' 页（按纸面参考字序定位）'
-  if (page.footerOk) return '第 ' + page.pageNumber + ' 页（页脚读出）'
+  if (page.footerOk) return '第 ' + page.pageNumber + ' 页（竖带读出）'
   if (page.pageNumber) return '第 ' + page.pageNumber + ' 页（沿用原页）'
   return '页号没定出来'
 }
@@ -977,9 +980,9 @@ function cardTitle(page) {
       ? '更正册（旧版本印的纸：那批页脚里没有本页校验码，按更正册收下）'
       : '更正册（按页号区间识别，没有本页校验码）')
   }
-  // 2026-10-13：页脚读不出、方向是按纸面参考字救回来的页，说清它是怎么定的（与"已自动转正"分开说）
+  // 2026-10-13：页脚区（现为右侧竖带）读不出、方向是按纸面参考字救回来的页，说清它是怎么定的
   if (page.orientation && page.orientation.rescuedByReference) {
-    bits.push('页脚读不出：方向按纸面参考字定（认得出 ' + (page.orientation.rescueSure || 0) + ' 格' +
+    bits.push('竖带读不出：方向按纸面参考字定（认得出 ' + (page.orientation.rescueSure || 0) + ' 格' +
       (page.orientation.rescueLocated ? '、字序也定位上了' : '') + '）')
   } else if (page.orientation && page.orientation.corrected) {
     bits.push('已自动转正 ' + page.orientation.turns * 90 + ' 度')
@@ -1282,7 +1285,7 @@ const zoomIsMarkedLabel = computed(() => {
       >
         <div class="scan-card-head">
           <!-- 2026-10-15 用户拍板：**拖动改页序这条操作已去掉**（连同卡片上的手选页序）——
-               页脚读不出时页号与字序由纸面参考字序列定位定，定不出来就整页失败重扫；
+               竖带读不出时页号与字序由纸面参考字序列定位定，定不出来就整页失败重扫；
                把准确性交给用户去填数字，本身就是最容易出错的一环（顺序一错整批错字）。 -->
           <span class="scan-card-name" :title="page.fileName">{{ page.fileName }}</span>
           <span class="scan-card-badge">{{ cardStatusLabel(page) }}</span>
@@ -1396,7 +1399,7 @@ const zoomIsMarkedLabel = computed(() => {
     <p v-if="!showResult && !running" class="panel-hint">
       选好文件夹后点「开始识别」：程序对每张图片逐页做「预处理 → 切格（方向不对会自动转正）→
       按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
-      并把每页的页号来源、写出格数与可疑格报给你；页脚里的每页校验码会替你把这一页的字序再验一遍。
+      并把每页的页号来源、写出格数与可疑格报给你；底部条码与竖带里的校验码会替你把这一页的字序再验一遍。
     </p>
 
     <!-- 这批结果用的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。

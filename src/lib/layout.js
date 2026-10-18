@@ -133,7 +133,10 @@ export const LAYOUT = (() => {
     ]
     const bandLeft = tableLeft + tableWidth
     const bandWidth = pageWidth - bandLeft
-    const x = bandLeft + (bandWidth - blockSize) / 2
+    // **方块的最右侧与右侧定位块的右边缘对齐**（2026-10-18 用户口径）：两者都落在 pageWidth − markOffset。
+    //   原来是"方块在空白带里居中"，结果比定位块少半个方块宽、看着参差；右对齐之后一列方块、可见页码、
+    //   四角定位块共用同一条竖直基准线。
+    const x = pageWidth - markOffset - blockSize
     let cursor = tableTop
     const laid = parts.map((p) => {
       const top = cursor
@@ -149,7 +152,10 @@ export const LAYOUT = (() => {
       stackHeight: tableTop - cursor,
       // 可见页码（12pt 数字）：竖带**最底端**、紧贴表格底边之上
       pageNumberSize: 12,
-      pageNumberBaselineY: tableBottom + 6
+      pageNumberBaselineY: tableBottom + 6,
+      // 页码**右对齐**到同一条基准线（= 定位块右边缘）：数字位数变多时向左扩展，
+      // 右边沿永远不越过定位块的右边缘（用户口径："页码数字在最宽状态的右侧也不会超出定位块的右边沿"）
+      pageNumberRight: pageWidth - markOffset,
     }
   })()
 

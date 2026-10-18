@@ -126,7 +126,7 @@ export function drawSideBand(page, input) {
     const size = S.pageNumberSize
     const width = input.font.widthOfTextAtSize(text, size)
     page.drawText(text, {
-      x: S.x + (S.blockSize - width) / 2,
+      x: S.pageNumberRight - width,
       y: S.pageNumberBaselineY,
       size,
       font: input.font,
@@ -153,7 +153,7 @@ function drawVisiblePageNumber(page, pageNumber, font) {
   const size = S.pageNumberSize
   const width = font.widthOfTextAtSize(text, size)
   page.drawText(text, {
-    x: S.x + (S.blockSize - width) / 2,
+    x: S.pageNumberRight - width,
     y: S.pageNumberBaselineY,
     size,
     font,
