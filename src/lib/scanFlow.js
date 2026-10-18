@@ -18,6 +18,8 @@ import { extractPage } from './handwritingExtractor.js'
 import { rotateQuarterTurns } from './imageOps.js'
 import { LAYOUT, classifyFooterPage, CORRECTION_PAGE_BASE } from './layout.js'
 import { computePageCode, matchPageCode } from './pageCode.js'
+// 指纹反解（2026-10-18）：字序来自逐格认字时，用每格候选 + 页脚指纹把认错的格纠正回来
+import { solvePageCharsByCode } from './pageCodeSolve.js'
 import { getAllChars } from './charset.js'
 import { charAtCell, dedupeDuplicatePages, usableForGlyphs } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
@@ -505,42 +507,67 @@ export async function recognizePage(file, options = {}) {
     if (record.pageCode) {
       const check = { code: selfCode, agree: selfAgree, from: 'self' }
       if (!selfAgree) {
-        let hit = null
-        let hitSeq = null
-        for (const cand of candidates) {
-          const m = matchPageCode(record.pageCode, cand.chars, LAYOUT.perPage)
-          if (m) { hit = m; hitSeq = cand; break }
+        // **先试"指纹反解"**（2026-10-18 新增；用户实测问"字序文件丢了写的字就报废吗"之后做的）：
+        //   字序来自**逐格认字**时（没有候选字序），每格的 top-2 候选其实已经算好了 —— 在"最可疑的
+        //   十几格"里穷举，找出使页脚指纹与纸面一致、且候选分数最像的那一组，就把认错的格纠正回来了。
+        //   它**不需要任何候选字序**（候选来自纸面自己），所以自定义档丢了字序文件也能救回来。
+        //   判据与边界全在 lib/pageCodeSolve.js（12 位指纹只有 4096 种值，组合空间大时会撞上"假匹配"，
+        //   所以那边会按候选分数择优、并要求明显优于次优 —— 分不开就返回 null，这里照旧往下走反推 / 失败）。
+        let solvedOk = false
+        if ((record.orderSource === 'cells' || record.orderSource === 'rewrite') && read && read.cells) {
+          const solved = solvePageCharsByCode(read.cells, record.pageCode)
+          if (solved) {
+            record.pageChars = solved.chars.slice()
+            record.orderSource = 'code'
+            record.pageCheck = { code: solved.code, agree: true, from: 'solve', fixed: solved.fixed }
+            solvedOk = true
+            messages.push({
+              level: 'info',
+              text: '这一页的参考字有几格没认准（红圈 / 手写序号盖住了？），已用页脚校验码纠正 ' +
+                solved.fixed + ' 格，整页字序与纸面指纹一致'
+            })
+          }
         }
-        if (hit) {
-          record.pageNumber = hit.pageNumber
-          record.pageNumberSource = 'code'
-          record.pageChars = hit.chars.slice()
-          record.orderSource = hitSeq.key
-          record.located = { seqKey: hitSeq.key, start: (hit.pageNumber - 1) * LAYOUT.perPage, agree: 0 }
-          check.agree = true // 已经通过校验（只是走的是"反推页号"这条路）
-          check.from = 'reverse'
-          check.correctedPageNumber = hit.pageNumber
-          check.seqKey = hitSeq.key
-          messages.push({
-            level: 'info',
-            text: '纸面页脚上的校验码与识别出的字序对不上，已按校验码反推：这一页是第 ' + hit.pageNumber +
-              ' 页（字序取自' + hitSeq.label + '）'
-          })
+        if (solvedOk) {
+          // 已经用反解通过校验：跳过"反推页号"与失败分支
         } else {
-          check.agree = false
-          record.pageCheck = check
-          // 失败原因分两种（2026-10-18 用户实测踩到的）：字序是**逐格认出来**的（目录里没有字序文件）
-          //   时，多半是个别字没认准 → 提示他把字序文件放进来，而不是让他怀疑纸印错了；
-          //   字序来自字序文件 / 序列定位时，才真的是"纸与这套字序不匹配"（旧纸或别的批）。
-          const byCells = record.orderSource === 'cells'
-          record.reason = '这一页的页脚校验码与识别出的字序对不上（纸面 ' + record.pageCode + '、识别出 ' + selfCode + '）：' +
-            (byCells
-              ? '这一页的字序是按纸面逐格认出来的（目录里没有字序文件），个别字没认准就会对不上 —— ' +
-                '把第 1 步压缩包里的「字序.sxorder」和图片一起放进这个文件夹，再识别一次通常就好。'
-              : '这张纸可能不是用最新模板印的（旧模板印的纸要重印），或者这一页的参考字没认对。') +
-            '若这一页本来就只印了很少几个字（重写模板 / 补写模板），请从第 3 步那一处重新下载模板再打一份。'
-          record.messages = [{ level: 'error', text: record.reason }]
-          return { record, cache: { thumb: null, sheet: null, masks: null } }
+          let hit = null
+          let hitSeq = null
+          for (const cand of candidates) {
+            const m = matchPageCode(record.pageCode, cand.chars, LAYOUT.perPage)
+            if (m) { hit = m; hitSeq = cand; break }
+          }
+          if (hit) {
+            record.pageNumber = hit.pageNumber
+            record.pageNumberSource = 'code'
+            record.pageChars = hit.chars.slice()
+            record.orderSource = hitSeq.key
+            record.located = { seqKey: hitSeq.key, start: (hit.pageNumber - 1) * LAYOUT.perPage, agree: 0 }
+            check.agree = true // 已经通过校验（只是走的是"反推页号"这条路）
+            check.from = 'reverse'
+            check.correctedPageNumber = hit.pageNumber
+            check.seqKey = hitSeq.key
+            messages.push({
+              level: 'info',
+              text: '纸面页脚上的校验码与识别出的字序对不上，已按校验码反推：这一页是第 ' + hit.pageNumber +
+                ' 页（字序取自' + hitSeq.label + '）'
+            })
+          } else {
+            check.agree = false
+            record.pageCheck = check
+            // 失败原因分两种（2026-10-18 用户实测踩到的）：字序是**逐格认出来**的（目录里没有字序文件）
+            //   时，多半是个别字没认准 → 提示他把字序文件放进来，而不是让他怀疑纸印错了；
+            //   字序来自字序文件 / 序列定位时，才真的是"纸与这套字序不匹配"（旧纸或别的批）。
+            const byCells = record.orderSource === 'cells' || record.orderSource === 'rewrite'
+            record.reason = '这一页的页脚校验码与识别出的字序对不上（纸面 ' + record.pageCode + '、识别出 ' + selfCode + '）：' +
+              (byCells
+                ? '这一页的字序是按纸面逐格认出来的（目录里没有字序文件），个别字没认准就会对不上 —— ' +
+                  '把第 1 步压缩包里的「字序.sxorder」和图片一起放进这个文件夹，再识别一次通常就好。'
+                : '这张纸可能不是用最新模板印的（旧模板印的纸要重印），或者这一页的参考字没认对。') +
+              '若这一页本来就只印了很少几个字（重写模板 / 补写模板），请从第 3 步那一处重新下载模板再打一份。'
+            record.messages = [{ level: 'error', text: record.reason }]
+            return { record, cache: { thumb: null, sheet: null, masks: null } }
+          }
         }
       }
       record.pageCheck = check
