@@ -15,7 +15,8 @@ import { getAllChars } from './charset.js'
 // 页级校验码抽在 lib/pageCode.js（零依赖纯函数）：识别端也要用同一个算法，若留在本文件里，
 // 识别链路就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
 import { computePageCode, isBlankChar } from './pageCode.js'
-import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, correctionPageNumber } from './layout.js'
+import { payloadToRows } from './pageBarcode.js'
+import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, encodeSideBandBits, correctionPageNumber } from './layout.js'
 
 // 版面常量（LAYOUT、格位换算、页脚编码）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
 // 但不能为此把 pdf-lib + fontkit（构建后约 1.16MB）拖进首屏 —— 与 computePageCode 抽到 lib/pageCode.js
@@ -65,6 +66,87 @@ function drawRegisterMarks(page, pageNumber, pageCode = 0) {
       color: markColor
     })
   }
+}
+
+// ── 底部条码与右侧竖带（《决策记录》一-20；取代原来的"页脚 20 位横排"）────────────────────
+
+/**
+ * 画底部横向条码：把载荷按 LAYOUT.barcode 的网格画成模块矩形（深色 = 1）。
+ * **连续暗模块合并成一个矩形**：逐个模块画会在相邻矩形之间留出抗锯齿浅缝，合并后既没有缝、也少画很多条。
+ * 行 0 = 最上面那一行（紧贴表格底边），与 payloadToRows 的位流顺序一致。
+ * @param {object} page pdf-lib 的页面
+ * @param {Uint8Array} bytes packBarcodePayload 的 bytes（整条码字，299 字节）
+ * @returns {{x:number,y:number,width:number,height:number}[]} 实际画出的矩形（供测试核对几何）
+ */
+export function drawBarcode(page, bytes) {
+  const B = LAYOUT.barcode
+  const rows = payloadToRows(bytes, B)
+  const rects = []
+  for (let r = 0; r < rows.length; r++) {
+    const y = B.top - (r + 1) * B.rowHeight
+    let i = 0
+    while (i < rows[r].length) {
+      if (!rows[r][i]) {
+        i++
+        continue
+      }
+      let j = i
+      while (j < rows[r].length && rows[r][j]) j++
+      const rect = { x: B.left + i * B.module, y, width: (j - i) * B.module, height: B.rowHeight }
+      rects.push(rect)
+      page.drawRectangle({ ...rect, color: LAYOUT.markColor })
+      i = j
+    }
+  }
+  return rects
+}
+
+/**
+ * 画右侧竖带：锚点（8pt 大方块）+ 24 个数据位方块（页号 8 / 档位 4 / 指纹 12）+ 最底端的可见页码。
+ * **可见页码在最底端**是用户口径（一-20）：它是给人读的（更正册要按主区页码顺序写），机器读的三组方块
+ *   从竖带顶端往下排、与它之间留白。
+ * @param {object} page pdf-lib 的页面
+ * @param {{pageNumber:number, scopeField:number, pageCode:number, font:object}} input
+ * @returns {{anchor:object, bits:{x:number,y:number,size:number}[], bitsValue:number[]}} 供测试核对
+ */
+export function drawSideBand(page, input) {
+  const S = LAYOUT.sideBand
+  const bitsValue = encodeSideBandBits(input.pageNumber, input.scopeField || 0, input.pageCode || 0)
+  const parts = {}
+  for (const p of S.parts) parts[p.key] = p
+  const anchor = parts.anchor
+  const anchorRect = { x: S.x, y: anchor.top - anchor.size, width: anchor.size, height: anchor.size }
+  page.drawRectangle({ ...anchorRect, color: LAYOUT.markColor })
+  // 三组数据位：每组从自己的 top 往下排，组内按 bit0 在最上
+  const groupOrder = ['page', 'scope', 'code']
+  const bits = []
+  let bitIndex = 0
+  for (const key of groupOrder) {
+    const group = parts[key]
+    for (let i = 0; i < group.count; i++) {
+      const y = group.top - (i + 1) * group.size - i * S.gap
+      const rect = { x: S.x, y, size: group.size }
+      bits.push(rect)
+      if (bitsValue[bitIndex]) {
+        page.drawRectangle({ x: rect.x, y: rect.y, width: group.size, height: group.size, color: LAYOUT.markColor })
+      }
+      bitIndex++
+    }
+  }
+  // 可见页码：竖带最底端、紧贴表格底边之上，居中于竖带
+  if (input.font) {
+    const text = String(input.pageNumber)
+    const size = S.pageNumberSize
+    const width = input.font.widthOfTextAtSize(text, size)
+    page.drawText(text, {
+      x: S.x + (S.blockSize - width) / 2,
+      y: S.pageNumberBaselineY,
+      size,
+      font: input.font,
+      color: LAYOUT.markColor
+    })
+  }
+  return { anchor: anchorRect, bits, bitsValue }
 }
 
 /**

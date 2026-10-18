@@ -209,6 +209,34 @@ export const LAYOUT = (() => {
   }
 })()
 
+// ── 右侧竖带的 24 位（不含锚点）：页号 8 + 档位 4 + 指纹 12（《决策记录》一-20）────────────
+// **bit0 在最上**（紧挨锚点那个方块），往下依次是 bit1、bit2…… —— 与印在纸上的方块排布顺序一致，
+// 也与旧页脚"bit0 在最左"是同一种写法（只是方向从"右"变成"下"）。
+// 这是生成端（templatePdf.drawSideBand）与识别端采样之间的契约：改这里必须同步改解码端。
+export function encodeSideBandBits(pageNumber, scopeField = 0, pageCode = 0) {
+  const { pageBits, scopeBits, codeBits } = LAYOUT.sideBand
+  const page = Math.max(0, Math.min((1 << pageBits) - 1, (pageNumber | 0) - 1))
+  const scope = scopeField & 0xf
+  const code = Math.max(0, Math.min((1 << codeBits) - 1, pageCode | 0))
+  const bits = []
+  for (let i = 0; i < pageBits; i++) bits.push((page >> i) & 1)
+  for (let i = 0; i < scopeBits; i++) bits.push((scope >> i) & 1)
+  for (let i = 0; i < codeBits; i++) bits.push((code >> i) & 1)
+  return bits
+}
+
+// encodeSideBandBits 的逆（识别端采样之后调它；与上面严格对称）
+export function decodeSideBandBits(bits) {
+  const { pageBits, scopeBits, codeBits } = LAYOUT.sideBand
+  let page = 0
+  for (let i = 0; i < pageBits; i++) if (bits[i]) page |= 1 << i
+  let scope = 0
+  for (let i = 0; i < scopeBits; i++) if (bits[pageBits + i]) scope |= 1 << i
+  let code = 0
+  for (let i = 0; i < codeBits; i++) if (bits[pageBits + scopeBits + i]) code |= 1 << i
+  return { pageNumber: page + 1, scopeField: scope, pageCode: code }
+}
+
 // 页脚编码 → 20 位数组（bit0 在最左，与印在纸上的方块排布顺序一致）
 // 前 8 位是页号（主区第 n 页编码 n−1；更正册第 n 页编码 128+n−1，见 CORRECTION_PAGE_BASE），
 // 后 12 位是**本页校验码**（这一页那些字的指纹，见 lib/pageCode.js）。
