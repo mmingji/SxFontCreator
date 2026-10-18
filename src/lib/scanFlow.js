@@ -21,6 +21,9 @@ import { computePageCode, matchPageCode } from './pageCode.js'
 import { getAllChars } from './charset.js'
 import { charAtCell, dedupeDuplicatePages, usableForGlyphs } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
+// **单页试打那一页的字序是程序里的常量**（决策 八-21）：丢了字序文件时它就是"这一页可能是哪些字"的
+//   唯一可信候选 —— 不给它，名句页只能靠逐格认字，认不全就整页失败、写过的字白写（见下面 candidates 的说明）
+import { SINGLE_PAGE_TEXT } from './singlePageText.js'
 // 格子拼图与 blob→dataURL 的画法在 lib/pageSheet.js 里（刷新后从落盘字形重建时也用它，两处必须同一种画法）
 import { blobToDataUrl, cellSheet } from './pageSheet.js'
 
@@ -407,6 +410,15 @@ export async function recognizePage(file, options = {}) {
       candidates.push({ key: extra.key || 'rewrite', label: extra.label || '补写清单', chars: Array.from(extra.chars) })
     }
   }
+  // **内置候选：单页试打那一页的字序**（2026-10-18 用户实测发现后才加的）。
+  // 为什么要有（真机踩到的）：那一页印的是 9 句名句连排（106 格、没有标点分隔），**不是任何预置全序的
+  //   连续段** —— 丢了 `字序.sxorder` 时只能逐格认字，而 106 个字里认错一个，页脚指纹（整页哈希）
+  //   就对不上 → 整页失败、写过的字只能重写。可这一页的内容是**程序里的常量**（lib/singlePageText.js），
+  //   "这一页可能是哪些字"其实已知 → 把它当候选送进"认参考字 + 序列定位"，丢文件也能救回来。
+  // 只在**没有字序文件**时加：文件是这一批纸的真相，有它就不该再拿别的序列去猜（一-18 的口径）。
+  if (!orderChars) {
+    candidates.push({ key: 'single', label: '单页试打的字序（内置）', chars: Array.from(SINGLE_PAGE_TEXT) })
+  }
   // 指纹为 0 的件：可能是打印自检页，也可能是**旧版本模板 / 旧更正册**印的纸
   // （2026-10-15 起页脚高 12 位改成"本页指纹"，旧纸那一格里是整批共用的码或 0）。
   // 走到这里说明它超出了字序文件声明的页数 —— 按打印自检页处理；两种可能都说清，
@@ -517,8 +529,15 @@ export async function recognizePage(file, options = {}) {
         } else {
           check.agree = false
           record.pageCheck = check
-          record.reason = '这一页的页脚校验码与识别出的字序对不上（纸面 ' + record.pageCode + '、识别出 ' + selfCode +
-            '）：这张纸可能不是用最新模板印的（旧模板印的纸要重印），或者这一页的参考字没认对。' +
+          // 失败原因分两种（2026-10-18 用户实测踩到的）：字序是**逐格认出来**的（目录里没有字序文件）
+          //   时，多半是个别字没认准 → 提示他把字序文件放进来，而不是让他怀疑纸印错了；
+          //   字序来自字序文件 / 序列定位时，才真的是"纸与这套字序不匹配"（旧纸或别的批）。
+          const byCells = record.orderSource === 'cells'
+          record.reason = '这一页的页脚校验码与识别出的字序对不上（纸面 ' + record.pageCode + '、识别出 ' + selfCode + '）：' +
+            (byCells
+              ? '这一页的字序是按纸面逐格认出来的（目录里没有字序文件），个别字没认准就会对不上 —— ' +
+                '把第 1 步压缩包里的「字序.sxorder」和图片一起放进这个文件夹，再识别一次通常就好。'
+              : '这张纸可能不是用最新模板印的（旧模板印的纸要重印），或者这一页的参考字没认对。') +
             '若这一页本来就只印了很少几个字（重写模板 / 补写模板），请从第 3 步那一处重新下载模板再打一份。'
           record.messages = [{ level: 'error', text: record.reason }]
           return { record, cache: { thumb: null, sheet: null, masks: null } }
