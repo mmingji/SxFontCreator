@@ -496,6 +496,186 @@ export function unpackBarcodePayload(bytes) {
   }
 }
 
+// ── 从"校正到设计坐标系"的灰度图里采样（识别端） ──────────────────────────────────────
+// 与现有页脚解码同一套路数（gridDetector.decodeFooterCode）：位置全部由设计坐标算出、不做图像识别；
+//   每个模块取**中心 40% 区域的灰度平均**（躲开抗锯齿 / 打印扩散的边缘），再用**自适应阈值**判 0/1。
+// 为什么用自适应阈值而不是固定阈值：条码与定位块同色（灰度约 93），但打印深浅、纸张、曝光都会让它漂移；
+//   取"全部模块灰度的 (min+max)/2"只看这一片区域自己的明暗对比，比钉死一个数字稳。
+// **宁严勿宽**：对比度不足（max−min 太小）直接返回 null，让调用方退回"认参考字"那条路，绝不硬猜。
+
+/** 取一个像素矩形（内缩 inset）的平均灰度；矩形退化 / 越界返回 null */
+function meanGray(gray, x, y, w, h, inset) {
+  const x0 = Math.max(0, Math.round(x + w * inset))
+  const x1 = Math.min(gray.width, Math.round(x + w * (1 - inset)))
+  const y0 = Math.max(0, Math.round(y + h * inset))
+  const y1 = Math.min(gray.height, Math.round(y + h * (1 - inset)))
+  if (x1 <= x0 || y1 <= y0) return null
+  let sum = 0
+  let n = 0
+  for (let yy = y0; yy < y1; yy++) {
+    const base = yy * gray.width
+    for (let xx = x0; xx < x1; xx++) {
+      sum += gray.data[base + xx]
+      n++
+    }
+  }
+  return n ? sum / n : null
+}
+
+/** 区域内的自适应阈值（灰度 min/max 的中点）；对比度不足返回 null */
+function regionThreshold(gray, x0, y0, x1, y1, minContrast) {
+  let min = 255
+  let max = 0
+  for (let y = Math.max(0, y0); y < Math.min(gray.height, y1); y++) {
+    const base = y * gray.width
+    for (let x = Math.max(0, x0); x < Math.min(gray.width, x1); x++) {
+      const v = gray.data[base + x]
+      if (v < min) min = v
+      if (v > max) max = v
+    }
+  }
+  if (max - min < minContrast) return null
+  return (min + max) / 2
+}
+
+/**
+ * 采样条码的每个模块（0/1）。
+ * **为什么必须自校准**：模块只有 0.42mm（@300dpi 约 5 像素），而四角校正后仍有实测 < 6 像素的整体残差 ——
+ *   直接按设计坐标采样会串到相邻模块甚至相邻行（这是第一版实测踩到的：不加校准连整体平移 3px 都读不出来）。
+ *   所以分两步：
+ *   ① **粗定位**：在条码区域做列投影与行投影，找出条码的**左边界**与**下边界** —— 这两处外侧都是空白纸，
+ *      不受干扰；**上边界不能用**（它紧贴表格那条横线），改用"下边界 + 设计高度"；
+ *   ② **精搜索**：以亚像素步长在 ±2px 内搜 (dx, dy)，用**同步图案**（每行的起始 8 + 行号 4 + 结束 8，
+ *      共 80 个采样点）的灰度匹配分挑最佳 —— 这些图案是已知的，等于条码自带的一把对齐标尺。
+ *      搜索范围远小于图案周期（2 模块 ≈ 10px），不会出现相位歧义。
+ * 判不出来一律返回 null（对比度不足 / 边界找不到 / 采样越界），让调用方退回"认参考字"那条路。
+ * @param {{data:Uint8ClampedArray|Uint8Array,width:number,height:number}} gray 校正到设计坐标系的灰度图
+ * @param {(pt:number)=>number} xPt 设计坐标 x（pt）→ 图像 x（px）
+ * @param {(pt:number)=>number} yPt 设计坐标 y（pt）→ 图像 y（px）—— PDF 的 y 朝上、图像的 y 朝下
+ * @param {{inset?:number, minContrast?:number, pad?:number, searchPx?:number, step?:number}} [options]
+ * @returns {number[][]|null} 每行 modulesPerRow 个 0/1
+ */
+export function sampleBarcodeModules(gray, xPt, yPt, options = {}, layout = LAYOUT.barcode) {
+  const inset = options.inset === undefined ? 0.3 : options.inset
+  const minContrast = options.minContrast === undefined ? 40 : options.minContrast
+  const pad = options.pad === undefined ? 12 : options.pad
+  const searchPx = options.searchPx === undefined ? 2 : options.searchPx
+  const step = options.step === undefined ? 0.5 : options.step
+  const moduleW = xPt(layout.module) - xPt(0)
+  const moduleH = Math.abs(yPt(layout.rowHeight) - yPt(0))
+  if (!(moduleW > 0.5) || !(moduleH > 0.5)) return null
+
+  const leftPx = xPt(layout.left)
+  const rightPx = xPt(layout.right)
+  const topPx = yPt(layout.top)
+  const bottomPx = yPt(layout.bottom)
+  const x0 = Math.max(0, Math.floor(leftPx - pad))
+  const x1 = Math.min(gray.width, Math.ceil(rightPx + pad))
+  const y0 = Math.max(0, Math.floor(topPx - pad))
+  const y1 = Math.min(gray.height, Math.ceil(bottomPx + pad))
+  if (x1 <= x0 || y1 <= y0) return null
+
+  const threshold = regionThreshold(gray, x0, y0, x1, y1, minContrast)
+  if (threshold === null) return null
+
+  // ① 粗定位：左边界（列投影；纵向范围跳过紧贴条码顶边的表格线）与下边界（行投影，下方是空白纸）
+  const projTop = Math.min(gray.height - 1, Math.max(0, Math.floor(topPx) + 1))
+  const projBottom = Math.min(gray.height - 1, Math.ceil(bottomPx + pad))
+  let coarseDx = 0
+  {
+    const minRun = Math.max(2, Math.round((projBottom - projTop + 1) * 0.3))
+    for (let x = x0; x < x1; x++) {
+      let dark = 0
+      for (let y = projTop; y <= projBottom; y++) if (gray.data[y * gray.width + x] < threshold) dark++
+      if (dark >= minRun) {
+        coarseDx = x - leftPx
+        break
+      }
+    }
+  }
+  let coarseDy = 0
+  {
+    const minRun = Math.max(2, Math.round((x1 - x0) * 0.3))
+    for (let y = projBottom; y >= projTop; y--) {
+      const base = y * gray.width
+      let dark = 0
+      for (let x = x0; x < x1; x++) if (gray.data[base + x] < threshold) dark++
+      if (dark >= minRun) {
+        coarseDy = y - bottomPx
+        break
+      }
+    }
+  }
+
+  const sampleModule = (dx, dy, r, i) => meanGray(gray,
+    xPt(layout.left + (i + 0.5) * layout.module - layout.module / 2) + dx,
+    yPt(layout.top - (r + 0.5) * layout.rowHeight + layout.rowHeight / 2) + dy,
+    moduleW, moduleH, inset)
+
+  // ② 精搜索：同步图案（起始 8 + 行号 4 + 结束 8）的匹配分，越大越像
+  const refs = []
+  const stopStart = layout.startModules + layout.rowIndexModules + layout.dataModulesPerRow
+  for (let r = 0; r < layout.rowCount; r++) {
+    const startBits = START_PATTERN.slice(0, layout.startModules)
+    for (let b = layout.rowIndexModules - 1; b >= 0; b--) startBits.push((r >> b) & 1)
+    refs.push({ row: r, startBits, stopBits: STOP_PATTERN.slice(0, layout.stopModules), stopStart })
+  }
+  const scoreAt = (dx, dy) => {
+    let score = 0
+    for (const ref of refs) {
+      for (let i = 0; i < ref.startBits.length; i++) {
+        const v = sampleModule(dx, dy, ref.row, i)
+        if (v === null) return null
+        score += ref.startBits[i] ? threshold - v : v - threshold
+      }
+      for (let i = 0; i < ref.stopBits.length; i++) {
+        const v = sampleModule(dx, dy, ref.row, ref.stopStart + i)
+        if (v === null) return null
+        score += ref.stopBits[i] ? threshold - v : v - threshold
+      }
+    }
+    return score
+  }
+  let bestDx = coarseDx
+  let bestDy = coarseDy
+  let bestScore = -Infinity
+  for (let sx = -searchPx; sx <= searchPx + 1e-9; sx += step) {
+    for (let sy = -searchPx; sy <= searchPx + 1e-9; sy += step) {
+      const s = scoreAt(coarseDx + sx, coarseDy + sy)
+      if (s === null) continue
+      if (s > bestScore) {
+        bestScore = s
+        bestDx = coarseDx + sx
+        bestDy = coarseDy + sy
+      }
+    }
+  }
+  if (bestScore === -Infinity) return null
+
+  // ③ 按最佳偏移全量采样 + 自适应阈值判 0/1
+  const rows = []
+  const values = []
+  for (let r = 0; r < layout.rowCount; r++) {
+    const vals = []
+    for (let i = 0; i < layout.modulesPerRow; i++) {
+      const v = sampleModule(bestDx, bestDy, r, i)
+      if (v === null) return null
+      vals.push(v)
+    }
+    rows.push(vals)
+    for (const v of vals) values.push(v)
+  }
+  let min = Infinity
+  let max = -Infinity
+  for (const v of values) {
+    if (v < min) min = v
+    if (v > max) max = v
+  }
+  if (!(max - min >= minContrast)) return null
+  const cut = (min + max) / 2
+  return rows.map((vals) => vals.map((v) => (v < cut ? 1 : 0)))
+}
+
 // ── 位流 ↔ 行图案（生成端画、识别端读） ────────────────────────────────────────────────
 
 /** 每行的起始 / 结束同步图案（宽窄交替，给解码端核对模块相位用） */
@@ -524,7 +704,7 @@ export function payloadToRows(bytes, layout = LAYOUT.barcode) {
 
 /**
  * 每一行的模块数组 → 载荷字节（生成端的逆；识别端在采样之后调它）。
- * @returns {{bytes:Uint8Array, corrected:number}|null} 图案不对 / 行号不符 / 纠错失败一律 null
+ * @returns {{data:Uint8Array, dataLen:number, corrected:number}|null} 图案不对 / 行号不符 / 纠错失败一律 null
  */
 export function rowsToPayload(rows, layout = LAYOUT.barcode) {
   if (!Array.isArray(rows) || rows.length !== layout.rowCount) return null
