@@ -91,6 +91,90 @@ export const LAYOUT = (() => {
     pageMark.bits * pageMark.bitSize + (pageMark.bits - 1) * pageMark.bitGap
   pageMark.startX = (pageWidth - pageMark.totalWidth) / 2
 
+  // ── 底部横向条码 + 右侧竖带（2026-10-18 用户拍板，决策 一-18）────────────────────────
+  // **取代**上面的 pageMark（旧"页脚 20 位横排"）：按用户口径旧格式**直接抛弃**、识别端不读旧格式，
+  //   所以切换落地时 pageMark 会整块删除 —— 这一轮先并存，等生成端与识别端一起切。
+  // 版式参数（2026-10-18 定稿，依据都写在《决策记录》一-18 里）：
+  //   · 模块 **0.42mm** —— 第 158 条实测的"抗模糊 + 噪声"下限（更小的模块在扫描件上会糊成一片）；
+  //   · 行高 = **3 × 模块**（PDF417 一类的惯例）：行太扁会在垂直方向串扰，行太高则排不下；
+  //   · **4 行**、**宽 26cm** —— 上边界紧贴表格底边，下边界距纸边 **5.67mm**（比下角定位块的 5mm 更宽裕，
+  //     避开打印机 3~5mm 的不可打印区）；宽度两端各留约 8.5mm 静区，不碰左右下角定位块；
+  //   · 每行 = 起始图案 8 + 行号 4 + 数据 599 + 结束图案 8 = 619 模块 → 数据位 2396 位 = **299 字节**；
+  //   · 载荷与纠错的分法见 lib/pageBarcode.js（头部 4 字节 + 字序载荷 + 里德-所罗门纠错）。
+  const barcode = (() => {
+    const module = (0.42 * CM) / 10 // 0.42mm
+    const rowHeight = module * 3 // 1.26mm
+    const rowCount = 4
+    const width = 26 * CM
+    const startModules = 8 // 每行起始图案：宽窄交替的同步条，解码时用来定模块相位
+    const rowIndexModules = 4 // 行号（4 位，够 16 行）—— 行序错了要能发现，不能靠"读到的顺序"
+    const stopModules = 8 // 每行结束图案
+    const modulesPerRow = Math.floor(width / module) // 619
+    const dataModulesPerRow = modulesPerRow - startModules - rowIndexModules - stopModules // 599
+    const height = rowCount * rowHeight
+    // GF(256) 上的 RS 码字**最长 255 字节**，299 字节一块装不下 —— 必须切成两块（第一版把整条当一个码字解，
+    //   纠错全失败）。两块各自"数据 + 纠错"，数据区上限 246 字节（= 123 × 2），不足补 0：
+    //   这样**解码端不需要任何外部信息就能分块**（若把"数据长度"当作分块依据，会陷入"长度本身也要保护"的循环）。
+    const blocks = [
+      { dataBytes: 123, parityBytes: 27 },
+      { dataBytes: 123, parityBytes: 26 }
+    ]
+    return {
+      module, rowHeight, rowCount, width, height,
+      startModules, rowIndexModules, stopModules, modulesPerRow, dataModulesPerRow,
+      dataBits: dataModulesPerRow * rowCount, // 2396 位
+      totalBytes: Math.floor((dataModulesPerRow * rowCount) / 8), // 299 字节（整条码字）
+      blocks,
+      dataBytes: blocks.reduce((sum, b) => sum + b.dataBytes, 0), // 246 字节（数据区上限）
+      top: tableBottom, // 紧贴表格底边（往上会压表格）
+      bottom: tableBottom - height,
+      left: (pageWidth - width) / 2,
+      right: (pageWidth + width) / 2
+    }
+  })()
+
+  // 右侧竖带（表格右边 → 纸右边，宽约 12.5mm）：**给人看的可见页码在最底端**，其余位置给机器读的方块。
+  //   排列（从表格顶端往下）：**锚点 1 → 页号 8 → 档位 4 → 指纹 12**（共 25 个方块）——
+  //   锚点（8pt 大方块）是这一竖排的起点基准，与旧页脚那个锚点同一个作用；
+  //   页号 / 档位 / 指纹三组都**沿用原来的位宽与语义**（页号：主区 n、更正册 128+n−1；指纹：本页那些字的
+  //   FNV-1a 低 12 位，见 lib/pageCode.js），只是从"底部横排"挪到了"右侧竖排"。
+  //   为什么可见页码还在竖带里（而不是挪走）：它是给人读的（更正册要按主区页码顺序写，一-20 ⑦），
+  //   机器读的三组方块反而要避开它 —— 所以页码固定占最底端，方块从顶端往下排、中间留白。
+  const sideBand = (() => {
+    const blockSize = 6
+    const gap = 5
+    const anchorSize = 8
+    const pageBits = 8
+    const scopeBits = 4
+    const codeBits = 12
+    const parts = [
+      { key: 'anchor', label: '锚点', count: 1, size: anchorSize },
+      { key: 'page', label: '页号', count: pageBits, size: blockSize },
+      { key: 'scope', label: '档位', count: scopeBits, size: blockSize },
+      { key: 'code', label: '指纹', count: codeBits, size: blockSize }
+    ]
+    const bandLeft = tableLeft + tableWidth
+    const bandWidth = pageWidth - bandLeft
+    const x = bandLeft + (bandWidth - blockSize) / 2
+    let cursor = tableTop
+    const laid = parts.map((p) => {
+      const top = cursor
+      const height = p.count * p.size + (p.count - 1) * gap
+      cursor = top - height - gap // 组与组之间也留一个 gap
+      return { ...p, top, height }
+    })
+    return {
+      blockSize, gap, anchorSize, pageBits, scopeBits, codeBits,
+      dataBits: pageBits + scopeBits + codeBits,
+      blocks: 1 + pageBits + scopeBits + codeBits,
+      bandLeft, bandWidth, x, parts: laid,
+      stackHeight: tableTop - cursor,
+      // 可见页码（12pt 数字）：竖带**最底端**、紧贴表格底边之上
+      pageNumberSize: 12,
+      pageNumberBaselineY: tableBottom + 6
+    }
+  })()
+
   return {
     pageWidth, pageHeight, cols, rows,
     cellWidth, cellHeight, writingBox, referenceFontSize, lineWidth,
@@ -98,6 +182,7 @@ export const LAYOUT = (() => {
     referenceAreaSize, referenceAreaBottom, gapTop, gapMid, gapBottom,
     tableWidth, tableLeft, tableTop, tableBottom,
     markSize, markOffset, pageMark,
+    barcode, sideBand,
     perPage: cols * rows,
     // 书写格内的十字辅助线（田字格）：极淡虚线，只做书写参考；识别时按灰度滤掉（笔迹是黑的，优先级最高）
     crossGuide: true,
