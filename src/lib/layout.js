@@ -100,8 +100,12 @@ export const LAYOUT = (() => {
       totalBytes: Math.floor((dataModulesPerRow * rowCount) / 8), // 299 字节（整条码字）
       blocks,
       dataBytes: blocks.reduce((sum, b) => sum + b.dataBytes, 0), // 246 字节（数据区上限）
-      top: tableBottom, // 紧贴表格底边（往上会压表格）
-      bottom: tableBottom - height,
+      // **底端与底部定位块的底端对齐**（都距纸边 0.5cm = 用户 2026-10-18 口径）：条码顶端因此自然上移，
+      //   与表格那条横线之间留出约 1.9pt 的间隙 —— 既让版面看起来整齐，也让识别端不必担心
+      //   "条码上边界紧贴表格线"（原来上边界被表格线污染，粗定位只能走下边界；现在两条边都干净）。
+      //   条码高度不变（4 行 × 3 × 0.42mm ≈ 14.3pt），底端 = markOffset、顶端 = markOffset + height。
+      bottom: markOffset,
+      top: markOffset + height,
       left: (pageWidth - width) / 2,
       right: (pageWidth + width) / 2
     }
