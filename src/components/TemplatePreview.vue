@@ -580,7 +580,7 @@ async function generatePack() {
     <p class="panel-hint">
       <strong>打印</strong>：彩色喷墨、<strong>打印质量选「高」</strong>、<strong>实际大小 / 100%</strong>、<strong>不勾「无边距」</strong>；先打最后一页自检页量一下 1cm 方框。<br />
       <strong>书写</strong>：0.5mm 黑色中性笔，<strong>居中书写、别出格</strong> —— 笔画多的字写到刚刚触到格子边，笔画少的字居中写小些；不描不改；
-      写错的字用红笔<strong>把这一格圈起来</strong>（圈在虚线书写格里、别圈上面的参考字），要重写的字写到更正册上。<br />
+      写错的字用红笔<strong>把这一格的参考字圈起来</strong>，要重写的字写到更正册上。<br />
       <strong>扫描</strong>：<strong>彩色 300dpi、照片模式</strong>，一页一个文件；如用手机扫描 App（如扫描全能王），选<strong>「智能高清」（默认档）</strong>。
       <!-- 2026-10-16 用户要求：原来这里那句「没写的字会回退、不必写完也能用」（data-role="fallback-hint"）
            整句去掉 —— 它的"Word 里显示成方框"与实测不符（Word 也会回退成系统字体），而且这一步下方
