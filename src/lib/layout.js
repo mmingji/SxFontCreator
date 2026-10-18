@@ -65,35 +65,9 @@ export const LAYOUT = (() => {
   const referenceLineHeight = referenceAreaSize // = 参考字区域高度（供测试与文档引用）
   const blockHeight = referenceLineHeight + writingBox
 
-  // 页脚编码标记：一个锚点方块 + 20 个数据位方块（位置对应二进制位）
-  // 20 位 = 低 8 位页号 + 高 12 位**本页校验码（本页指纹）**（《决策记录》一-9 的 2026-10-15 修订，
-  //   取代八-10 原来"整批共用一个批次校验码"的口径）：
-  //   · 低 8 位页号：主区第 n 页编 n−1（1~127）；**更正册第 n 页编 128+n−1**（件类型改用页号区间表示，
-  //     不再用"校验码 0"这种特殊值 —— 0 现在专门表示"这一页没有字"）。
-  //   · 高 12 位指纹：这一页实际印了参考字的那些字的 FNV-1a 低 12 位（见 lib/pageCode.js）；
-  //     识别端拿"猜出来的这一页的字"再算一遍比对 —— 一致就说明页号与字序来源都对。
-  //   总宽 = 8pt 锚点 + 4pt 间隙 + 20×6pt 方块 + 19×5pt 间隔 = 227pt ≈ 8.01cm，
-  //   A4 横向（可用宽 27.2cm）放得下，也不碰左右下角的定位块。**物理排布与位宽这次没有改**
-  //   （改的只是这 20 位各自的语义），识别端的采样几何因此一行都不用动。
-  const pageBits = 8
-  const codeBits = 12
-  const pageMark = {
-    anchorSize: 8,
-    bitSize: 6,
-    bitGap: 5,
-    anchorGap: 4,
-    pageBits, // 低 8 位：页号（含件类型区间）
-    codeBits, // 高 12 位：本页校验码（本页指纹）
-    bits: pageBits + codeBits,
-    y: markOffset + 4 // 距纸边约 0.63cm，落在可打印区内
-  }
-  pageMark.totalWidth = pageMark.anchorSize + pageMark.anchorGap +
-    pageMark.bits * pageMark.bitSize + (pageMark.bits - 1) * pageMark.bitGap
-  pageMark.startX = (pageWidth - pageMark.totalWidth) / 2
-
-  // ── 底部横向条码 + 右侧竖带（2026-10-18 用户拍板，决策 一-18）────────────────────────
-  // **取代**上面的 pageMark（旧"页脚 20 位横排"）：按用户口径旧格式**直接抛弃**、识别端不读旧格式，
-  //   所以切换落地时 pageMark 会整块删除 —— 这一轮先并存，等生成端与识别端一起切。
+  // ── 底部横向条码 + 右侧竖带（2026-10-18 用户拍板，决策 一-20）────────────────────────
+  // **取代**原来的"页脚 20 位横排"（旧 `pageMark` 与那 20 位的编解码已按用户口径**整块删除**）：
+  //   旧格式直接抛弃、识别端不读旧格式，所以代码里没有兼容分支。
   // 版式参数（2026-10-18 定稿，依据都写在《决策记录》一-18 里）：
   //   · 模块 **0.42mm** —— 第 158 条实测的"抗模糊 + 噪声"下限（更小的模块在扫描件上会糊成一片）；
   //   · 行高 = **3 × 模块**（PDF417 一类的惯例）：行太扁会在垂直方向串扰，行太高则排不下；
@@ -181,7 +155,7 @@ export const LAYOUT = (() => {
     referenceLineHeight, referenceTypicalTop, referenceTypicalBottom, blockHeight, blockBottom,
     referenceAreaSize, referenceAreaBottom, gapTop, gapMid, gapBottom,
     tableWidth, tableLeft, tableTop, tableBottom,
-    markSize, markOffset, pageMark,
+    markSize, markOffset,
     barcode, sideBand,
     perPage: cols * rows,
     // 书写格内的十字辅助线（田字格）：极淡虚线，只做书写参考；识别时按灰度滤掉（笔迹是黑的，优先级最高）
@@ -198,11 +172,10 @@ export const LAYOUT = (() => {
     //   纸面上看得见又不抢眼。8pt 是"看得清又不占地方"的折中（需求里的最小字号约束针对界面，纸面另计）
     hintColor: rgb(0.502, 0.502, 0.502),
     hintFontSize: 8,
-    // 可见页码（2026-10-15 用户口径）：印在**右侧中间**、只印数字，12pt、用 markColor（中深青）——
+    // 可见页码（2026-10-15 用户口径，2026-10-18 挪位）：只印数字、12pt、用 markColor（中深青）——
     //   写更正册要按主区页号的先后顺序写，纸面上没有一个人能看懂的页码就会写乱。
-    //   位置与颜色的实现只在 templatePdf.drawVisiblePageNumber 一处（它要拿 tableLeft / tableWidth 算空白带，
-    //   所以没有把坐标搬进来）；改版式时这两处一起看。
-    visiblePageNumber: { size: 12 },
+    //   位置与字号现在归 `sideBand.pageNumberSize` / `pageNumberBaselineY`（它固定占右侧竖带最底端），
+    //   画法在 templatePdf 的 drawSideBand（模板 / 更正册 / 自检页）与 drawVisiblePageNumber（示意页）两处。
     // #2E6E7E 中深青：定位块与页码标记用它，替代原来的纯黑 ——
     // ① 红度 R − max(G,B) = −80（负值），不会被红圈识别误判；② 灰度约 93，灰度扫描下仍远深于格线（166）
     markColor: rgb(0.18, 0.431, 0.494)
@@ -237,32 +210,33 @@ export function decodeSideBandBits(bits) {
   return { pageNumber: page + 1, scopeField: scope, pageCode: code }
 }
 
-// 页脚编码 → 20 位数组（bit0 在最左，与印在纸上的方块排布顺序一致）
-// 前 8 位是页号（主区第 n 页编码 n−1；更正册第 n 页编码 128+n−1，见 CORRECTION_PAGE_BASE），
-// 后 12 位是**本页校验码**（这一页那些字的指纹，见 lib/pageCode.js）。
-// **这是模板生成与切格识别之间的契约**：解码端（gridDetector.decodeFooterCode）按同样顺序读位；
-// 改这里就必须同步改解码端（《决策记录》一-9）。
-export function encodePageCode(pageNumber, pageCode = 0) {
-  const { pageBits, codeBits } = LAYOUT.pageMark
-  const page = Math.max(0, Math.min((1 << pageBits) - 1, (pageNumber | 0) - 1))
-  const code = Math.max(0, Math.min((1 << codeBits) - 1, pageCode | 0))
-  const bits = []
-  for (let i = 0; i < pageBits; i++) bits.push((page >> i) & 1)
-  for (let i = 0; i < codeBits; i++) bits.push((code >> i) & 1)
-  return bits
+// 竖带里每个方块（锚点 + 24 位）在设计坐标（pt）下的矩形 —— **生成端画、识别端采样共用这一份**。
+// 为什么抽出来：两处各写一遍排布公式，迟早会写歪（与 六-8"取值型参数集中"是同一条道理）。
+// 顺序 = 印刷顺序 = 采样顺序：锚点 → 页号 8 → 档位 4 → 指纹 12，每组 bit0 在该组最上面。
+export function sideBandBlockRects() {
+  const S = LAYOUT.sideBand
+  const parts = {}
+  for (const p of S.parts) parts[p.key] = p
+  const out = []
+  const a = parts.anchor
+  out.push({ key: 'anchor', index: 0, x: S.x, y: a.top - a.size, width: a.size, height: a.size })
+  for (const key of ['page', 'scope', 'code']) {
+    const group = parts[key]
+    for (let i = 0; i < group.count; i++) {
+      out.push({
+        key,
+        index: i,
+        x: S.x,
+        y: group.top - (i + 1) * group.size - i * S.gap,
+        width: group.size,
+        height: group.size
+      })
+    }
+  }
+  return out
 }
 
-// encodePageCode 的逆：把 20 位读回页号与本页校验码（切格解码端用，与上面严格对称）
-export function decodePageBits(bits) {
-  const { pageBits, codeBits } = LAYOUT.pageMark
-  let page = 0
-  for (let i = 0; i < pageBits; i++) if (bits[i]) page |= 1 << i
-  let code = 0
-  for (let i = 0; i < codeBits; i++) if (bits[pageBits + i]) code |= 1 << i
-  return { pageNumber: page + 1, pageCode: code }
-}
-
-// ── 件的类型：靠页号区间区分，不靠校验码的特殊值（《决策记录》一-9 的 2026-10-15 修订）──────
+// ── 件的类型：靠页号区间区分，不靠校验码的特殊值（《决策记录》一-9 的 2026-10-15 修订，一-20 沿用）──
 // 主区字表页的页号是 1~127（实际最多 62 页）；更正册从 128 起编 —— 这样：
 //   · 高 12 位的指纹位一位都不用让出来（仍是完整的 12 位，碰撞率 1/4096）；
 //   · "校验码 = 0" 这个特殊值腾出来表示**这一页没有字**（打印自检页），语义不再重叠。

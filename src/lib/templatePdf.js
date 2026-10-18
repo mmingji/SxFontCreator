@@ -11,19 +11,19 @@ import { PDFDocument } from 'pdf-lib'
 // pdf-lib 嵌入自定义字体（TTF + 子集化）必须先注册 fontkit；@pdf-lib/fontkit 是它配套的 fork。
 // 注意是**实例方法**（pdf-lib 1.17 的 PDFDocument 上没有静态 registerFontkit）：每个文档创建后注册一次。
 import fontkit from '@pdf-lib/fontkit'
-import { getAllChars } from './charset.js'
+import { getAllChars, charIndexMap } from './charset.js'
 // 页级校验码抽在 lib/pageCode.js（零依赖纯函数）：识别端也要用同一个算法，若留在本文件里，
 // 识别链路就会为了一个哈希函数把 pdf-lib（2.3MB）拖进首屏。这里 import 后在文件末尾再导出，保持既有引用不变
 import { computePageCode, isBlankChar } from './pageCode.js'
-import { payloadToRows } from './pageBarcode.js'
-import { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, encodeSideBandBits, correctionPageNumber } from './layout.js'
+import { payloadToRows, packBarcodePayload, KIND, encodeScopeField } from './pageBarcode.js'
+import { CM, LAYOUT, cellRect, writingBoxRect, encodeSideBandBits, sideBandBlockRects, correctionPageNumber } from './layout.js'
 
 // 版面常量（LAYOUT、格位换算、页脚编码）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
 // 但不能为此把 pdf-lib + fontkit（构建后约 1.16MB）拖进首屏 —— 与 computePageCode 抽到 lib/pageCode.js
 // 是同一个理由。这里 import 后再导出，保持既有引用（测试、界面、切格模块）不变。
 // 注意 `export { x } from './y'` 是再导出、不会在当前模块创建绑定，本文件内部要用就必须先 import（踩过这个坑）。
 // computePageCode 一并再导出：它是"生成端印在页脚、识别端拿去自证"的同一个算法，调用方从这里取。
-export { CM, LAYOUT, cellRect, writingBoxRect, encodePageCode, computePageCode }
+export { CM, LAYOUT, cellRect, writingBoxRect, computePageCode }
 
 // 参考字的基线：字在**参考字区域内居中** —— 按该字自己的墨迹外框（glyphBox）算，
 // 所以不同字的基线会上下浮动（这正是"外形居中"的必然结果，2026-10-03 用户规则）。
@@ -36,11 +36,14 @@ export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize, gl
   return centerY - mid * fontSize
 }
 
-// 画一页的公共部分：四角定位块 + 页脚编码标记
-// pageCode：**本页校验码**（这一页那些字的 12 位指纹，见 lib/pageCode.js）——
+// 画一页的公共部分：四角定位块 + **底部条码** + **右侧竖带**（《决策记录》一-20；旧"页脚 20 位横排"已删）
+// input.pageCode：**本页校验码**（这一页那些字的 12 位指纹，见 lib/pageCode.js）——
 //   主区字表页按这一页实际印的字算；更正册与打印自检页传 0（它们没有"这一页的字"，0 是专用值）
-function drawRegisterMarks(page, pageNumber, pageCode = 0) {
-  const { markSize, markOffset, pageWidth, pageHeight, markColor, pageMark } = LAYOUT
+// input.payload：底部条码的整条码字（packBarcodePayload 的 bytes）—— 没有字序的件同样要印
+//   （件类型 / 页号 / 档位 / 字数都在里面）
+// input.visibleNumber：纸面**给人读**的页码（更正册两边各自从 1 起，与机器读的 128+ 不是一回事）
+function drawRegisterMarks(page, input) {
+  const { markSize, markOffset, pageWidth, pageHeight, markColor } = LAYOUT
   const corners = [
     { x: markOffset, y: markOffset },
     { x: pageWidth - markOffset - markSize, y: markOffset },
@@ -50,22 +53,14 @@ function drawRegisterMarks(page, pageNumber, pageCode = 0) {
   for (const c of corners) {
     page.drawRectangle({ x: c.x, y: c.y, width: markSize, height: markSize, color: markColor })
   }
-
-  // 编码标记：锚点方块（识别时的基准）+ 20 个数据位方块（bit=1 才画）
-  const bits = encodePageCode(pageNumber, pageCode)
-  const { anchorSize, bitSize, bitGap, anchorGap, y, startX } = pageMark
-  page.drawRectangle({ x: startX, y, width: anchorSize, height: anchorSize, color: markColor })
-  const bitsStart = startX + anchorSize + anchorGap
-  for (let i = 0; i < bits.length; i++) {
-    if (!bits[i]) continue
-    page.drawRectangle({
-      x: bitsStart + i * (bitSize + bitGap),
-      y,
-      width: bitSize,
-      height: bitSize,
-      color: markColor
-    })
-  }
+  if (input.payload) drawBarcode(page, input.payload)
+  drawSideBand(page, {
+    pageNumber: input.pageNumber,
+    visibleNumber: input.visibleNumber,
+    scopeField: input.scopeField || 0,
+    pageCode: input.pageCode || 0,
+    font: input.font || null
+  })
 }
 
 // ── 底部条码与右侧竖带（《决策记录》一-20；取代原来的"页脚 20 位横排"）────────────────────
@@ -112,30 +107,22 @@ export function drawBarcode(page, bytes) {
 export function drawSideBand(page, input) {
   const S = LAYOUT.sideBand
   const bitsValue = encodeSideBandBits(input.pageNumber, input.scopeField || 0, input.pageCode || 0)
-  const parts = {}
-  for (const p of S.parts) parts[p.key] = p
-  const anchor = parts.anchor
-  const anchorRect = { x: S.x, y: anchor.top - anchor.size, width: anchor.size, height: anchor.size }
+  const rects = sideBandBlockRects()
+  const anchorRect = rects[0]
   page.drawRectangle({ ...anchorRect, color: LAYOUT.markColor })
-  // 三组数据位：每组从自己的 top 往下排，组内按 bit0 在最上
-  const groupOrder = ['page', 'scope', 'code']
-  const bits = []
   let bitIndex = 0
-  for (const key of groupOrder) {
-    const group = parts[key]
-    for (let i = 0; i < group.count; i++) {
-      const y = group.top - (i + 1) * group.size - i * S.gap
-      const rect = { x: S.x, y, size: group.size }
-      bits.push(rect)
-      if (bitsValue[bitIndex]) {
-        page.drawRectangle({ x: rect.x, y: rect.y, width: group.size, height: group.size, color: LAYOUT.markColor })
-      }
-      bitIndex++
+  const bits = []
+  for (const rect of rects.slice(1)) {
+    bits.push({ x: rect.x, y: rect.y, size: rect.width })
+    if (bitsValue[bitIndex]) {
+      page.drawRectangle({ x: rect.x, y: rect.y, width: rect.width, height: rect.height, color: LAYOUT.markColor })
     }
+    bitIndex++
   }
   // 可见页码：竖带最底端、紧贴表格底边之上，居中于竖带
   if (input.font) {
-    const text = String(input.pageNumber)
+    const label = input.visibleNumber === undefined ? input.pageNumber : input.visibleNumber
+    const text = String(label)
     const size = S.pageNumberSize
     const width = input.font.widthOfTextAtSize(text, size)
     page.drawText(text, {
@@ -154,24 +141,23 @@ export function drawSideBand(page, input) {
  * 为什么要有它：页脚那串方块是给机器读的，人一眼看不出这一页是第几页；而写更正册时要按
  *   "主区页号的先后顺序"写圈出来的字（一-7 / 二-13），没有可见页码就只能靠人自己记 —— 顺序一乱，
  *   整册更正就全错位。所以纸面上必须有一个**人一眼能看懂的页码**。
- * 位置口径（用户原话："模板的右侧中间（方向口径：说明文字那一边为上）"）：说明文字印在表格上方，
- *   所以"右侧" = A4 横向的右边距空白，"中间" = 页面竖向正中 —— 上下两个右角定位块都在角上，
- *   中间这一段不会撞上它们（左下 / 右下的页脚编码带也在页脚，不在中部）。
+ * 位置口径（2026-10-18 起，决策 一-20）：**表格右侧竖带的最底端**、紧贴表格底边之上 ——
+ *   竖带上面依次是锚点与页号 / 档位 / 指纹三组方块，页码固定占最底下那一段（给人读的东西不跟机器抢位置）。
+ *   原来它印在"右侧中间"，改用竖带之后挪到底端，与竖带里的方块拉开距离。
  * 颜色用 markColor（中深青 #2E6E7E）：与定位块同色，红圈识别（红度 R − max(G,B)）不会把它误判，
  *   灰度约 93 也远深于格线，扫描后看得清。
  */
 function drawVisiblePageNumber(page, pageNumber, font) {
-  const { pageWidth, pageHeight, tableLeft, tableWidth, markColor, visiblePageNumber } = LAYOUT
+  const S = LAYOUT.sideBand
   const text = String(pageNumber)
-  const size = visiblePageNumber.size
+  const size = S.pageNumberSize
   const width = font.widthOfTextAtSize(text, size)
-  const bandLeft = tableLeft + tableWidth // 表格右边 → 纸边的空白带
   page.drawText(text, {
-    x: bandLeft + (pageWidth - bandLeft - width) / 2,
-    y: (pageHeight - size) / 2,
+    x: S.x + (S.blockSize - width) / 2,
+    y: S.pageNumberBaselineY,
     size,
     font,
-    color: markColor
+    color: LAYOUT.markColor
   })
 }
 
@@ -262,10 +248,18 @@ function drawCenteredText(page, text, centerX, y, size, font, color) {
 
 // 打印自检页：放在文末，用户拿尺子量方框与标尺即可自证"打印缩放 = 100%"，
 // 黑白激光或按"适合页面"打印这类错误，能在浪费 51 页纸之前发现（决策记录 一-12）
-function drawSelfCheckPage(page, pageNumber, font, pageCode = 0) {
+function drawSelfCheckPage(page, pageNumber, font) {
   const { pageWidth, pageHeight, markColor, gridColor } = LAYOUT
   const centerX = pageWidth / 2
-  drawRegisterMarks(page, pageNumber, pageCode)
+  drawRegisterMarks(page, {
+    pageNumber,
+    scopeField: 0,
+    pageCode: 0, // 自检页没有"这一页的字"，指纹是专用值 0（决策 一-19）
+    font,
+    payload: packBarcodePayload({
+      kind: KIND.selfCheck, scopeField: 0, pageNumber, charCount: 0, indexes: [], seg: null
+    }).bytes
+  })
   drawCenteredText(page, SELF_CHECK_TEXTS.title, centerX, pageHeight - 70, 18, font, markColor)
 
   // 1cm 标准方框
@@ -406,12 +400,19 @@ function drawReferenceChar(page, cell, char, font, glyphBoxes) {
  *   pageCodes 是**每一页各自的 12 位校验码**（这一页那些字的指纹，印在页脚高 12 位）：
  *   识别端拿"猜出来的这一页的字"再算一遍比对，一致就说明页号与字序来源都对（决策 一-9 的 2026-10-15 修订）
  */
-export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = true, startPage = 1, onlyPage, onProgress }) {
+export async function buildTemplatePdf({
+  chars, fontBytes, includeSelfCheck = true, startPage = 1, onlyPage, onProgress,
+  scope = 'custom', orderMode = 'rank', seg = null
+}) {
   const list = chars && chars.length ? chars : getAllChars()
   const perPage = LAYOUT.perPage
   const sheetPages = Math.max(1, Math.ceil(list.length / perPage))
   const selfCheck = includeSelfCheck !== false
   const pageCount = sheetPages + (selfCheck ? 1 : 0)
+  // 条码要用的两件东西（决策 一-20）：**档位字段**（这一批纸来自哪一档、按什么序排）与**字表序号映射**
+  //   （把"这一页是哪些字"写成 0~8273 的序号 —— 识别端凭它就能还原字序，不必认参考字）。
+  const scopeField = encodeScopeField(scope, orderMode)
+  const indexMap = charIndexMap()
   // **只生成一页**（2026-10-16 新增，第 1 步预览用；不传 = 整份，下载路径与既有测试的行为一个字不变）：
   //   传的是**绝对页号**（1 起，含自检页）。为什么要有它：预览一次只看一页，而整份生成在全量档要
   //   1.5 秒（书写示意还要 2.9 秒）—— 按需生成把"切档位等几秒"变成"等几十毫秒"。
@@ -438,10 +439,30 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
     //   识别端判 empty 跳过；生成端若照算指纹，两端就对不上（实测 836 vs 1132）→ 那一页必然整页失败。
     //   **格位保留**（后面的字不前移）：页号 + 格号 → 字的映射与字序文件仍一一对应。
     const pageChars = slice.map((ch) => (isBlankChar(ch) ? null : ch))
-    const pageCode = computePageCode(pageChars.filter((ch) => ch !== null))
+    const printed = pageChars.filter((ch) => ch !== null)
+    const pageCode = computePageCode(printed)
+    // 底部条码：**整页字序**（这一页的字在字表里的序号）+ 件类型 / 页号 / 档位 / 字数（决策 一-20）。
+    //   预置档位走"连续段"编码（只要 4 字节：全序 id + 起始 + 个数）；自定义档走升序 delta；
+    //   兜底是定长 14 位 —— 三种都装得下（最坏 246 字节，数据区就是 246）。
+    // **按格号排列、空白格写 -1**（条码里必须留下"哪几格是空的"：字表里那个半角空格落在两页的中间格，
+    //   只存非空格的字会让识别端从那一格之后整页错位）
+    const indexes = pageChars.map((ch) => (ch === null ? -1 : (indexMap.get(ch) ?? -1)))
+    const packed = packBarcodePayload({
+      kind: KIND.main,
+      scopeField,
+      pageNumber: startPage + p,
+      charCount: indexes.length,
+      indexes,
+      seg: seg ? { fullOrderId: seg.fullOrderId, start: (seg.startIndex || 0) + p * perPage, count: indexes.length } : null
+    })
     drawGrid(page)
-    drawRegisterMarks(page, startPage + p, pageCode)
-    drawVisiblePageNumber(page, startPage + p, font)
+    drawRegisterMarks(page, {
+      pageNumber: startPage + p,
+      scopeField,
+      pageCode,
+      font,
+      payload: packed.bytes
+    })
     drawHint(page, font, PAGE_HINT_LINES)
     for (let i = 0; i < pageChars.length; i++) {
       if (pageChars[i] === null) continue // 空白格：印出来什么都没有，跳过（指纹也把它排除了）
@@ -454,7 +475,7 @@ export async function buildTemplatePdf({ chars, fontBytes, includeSelfCheck = tr
   if (only) {
     // 单页模式：只画请求的那一页（自检页 = sheetPages + 1，它的指纹是专用值 0）
     if (only > sheetPages) {
-      if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, 0)
+      if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font)
       pageCodes.push(0)
     } else {
       pageCodes.push(drawSheetPage(only - 1))
@@ -502,8 +523,23 @@ export async function buildCorrectionBookPdf({ pageCount = 5, startIndex = 1, fo
   for (let p = 0; p < pageCount; p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
-    drawRegisterMarks(page, correctionPageNumber(p + 1), 0)
-    drawVisiblePageNumber(page, p + 1, font)
+    // 更正册：件类型 = correction、指纹 0（这一册没有"这一页的字"）+ 条码只带件类型 / 页号 / 档位；
+    //   **可见页码从 1 起**（visibleNumber），与机器读的 128+ 是两套值（决策 一-20 / 八-20 ⑦）
+    drawRegisterMarks(page, {
+      pageNumber: correctionPageNumber(p + 1),
+      visibleNumber: p + 1,
+      scopeField: 0,
+      pageCode: 0,
+      font,
+      payload: packBarcodePayload({
+        kind: KIND.correction,
+        scopeField: 0,
+        pageNumber: correctionPageNumber(p + 1),
+        charCount: 0,
+        indexes: [],
+        seg: null
+      }).bytes
+    })
     drawHint(page, font, CORRECTION_HINT)
     for (let i = 0; i < LAYOUT.perPage; i++) {
       const label = String(startIndex + p * LAYOUT.perPage + i)

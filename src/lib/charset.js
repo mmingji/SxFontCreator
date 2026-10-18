@@ -56,3 +56,16 @@ export function countByClass() {
   for (const char of CHARSET) counts[classifyChar(char)] += 1
   return counts
 }
+
+// 字 → 它在字表里的下标（0 基）—— **底部条码打包字序要用**（《决策记录》一-20）：
+//   把一个字映射成 0~8273 的序号写进条码，识别端凭序号就能从字表还原"这一页是哪些字"，
+//   不必再去认参考字。缓存一份 Map：生成一页要查 136 次，逐次 indexOf 是 O(8274) 太浪费。
+let charIndexCache = null
+export function charIndexMap() {
+  if (!charIndexCache) {
+    charIndexCache = new Map()
+    const all = CHARSET
+    for (let i = 0; i < all.length; i++) if (!charIndexCache.has(all[i])) charIndexCache.set(all[i], i)
+  }
+  return charIndexCache
+}

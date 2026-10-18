@@ -311,32 +311,39 @@ function decodeVarint(bytes, at) {
 }
 
 /**
- * 把"这一页的字在字表里的序号"编成载荷。
- * @param {number[]} indexes 升序或乱序的字表序号（0 基）
+ * 把"这一页每一格的字"编成载荷。
+ * @param {number[]} indexes **按格号排列**的字表序号（0 基）；`-1` = 这一格是空白（没印参考字）
+ *   —— 格位信息必须留在载荷里：字表里恰好有一个半角空格（基础字符第 1 个，落在常用档第 48 页第 109 格、
+ *   全量档第 60 页第 82 格），那一格在纸上是空的；若条码只存"非空格的字"，识别端就不知道空的是第几格，
+ *   从那一格之后整页错位（指纹只跳过空格、不含位置，所以它兜不住这件事）。
  * @param {{fullOrderId:number,start:number,count:number}|null} seg 这一页是内置全序的连续段时给出
  */
 export function encodeOrderPayload(indexes, seg) {
-  const list = (indexes || []).filter((v) => Number.isInteger(v) && v >= 0)
+  const list = (indexes || []).map((v) => (Number.isInteger(v) && v >= 0 ? v : -1))
   if (!list.length) return { code: ORDER_CODE.none, bytes: [] }
-  if (seg && Number.isInteger(seg.fullOrderId)) {
+  const hasBlank = list.includes(-1)
+  if (seg && !hasBlank && Number.isInteger(seg.fullOrderId)) {
     const bytes = [seg.fullOrderId & 0xff]
     writeU16(bytes, seg.start | 0)
     bytes.push(seg.count & 0xff)
     return { code: ORDER_CODE.segment, bytes }
   }
-  // delta：只在严格升序时可用（首项 2 字节，后续存"差值 − 1"的 varint）
-  let ascending = true
-  for (let i = 1; i < list.length; i++) if (list[i] <= list[i - 1]) ascending = false
+  // delta：只在"全是字、且严格升序"时可用（首项 2 字节，后续存"差值 − 1"的 varint）
+  let ascending = !hasBlank
+  for (let i = 1; i < list.length && ascending; i++) if (list[i] <= list[i - 1]) ascending = false
   const deltaBytes = ascending ? (() => {
     const out = []
     writeU16(out, list[0])
     for (let i = 1; i < list.length; i++) encodeVarint(out, list[i] - list[i - 1] - 1)
     return out
   })() : null
-  // fixed：每字 14 位（8274 < 2^14），乱序也能装
+  // fixed：每格 14 位（8274 < 2^14），乱序与空白格都能装（空白格 = 16383 哨兵）
   const fixedBytes = (() => {
     const bits = []
-    for (const v of list) for (let b = 13; b >= 0; b--) bits.push((v >> b) & 1)
+    for (const v of list) {
+      const code = v < 0 ? 0x3fff : v
+      for (let b = 13; b >= 0; b--) bits.push((code >> b) & 1)
+    }
     const out = []
     for (let i = 0; i < bits.length; i += 8) {
       let byte = 0
@@ -382,7 +389,7 @@ export function decodeOrderPayload(code, bytes, charCount) {
     for (let i = 0; i + 14 <= bits.length && indexes.length < count; i += 14) {
       let v = 0
       for (let b = 0; b < 14; b++) v = (v << 1) | bits[i + b]
-      indexes.push(v)
+      indexes.push(v === 0x3fff ? -1 : v) // 16383 = 空白格哨兵（生成端写的就是它）
     }
     if (indexes.length < count) return null
     return { indexes }
@@ -398,8 +405,8 @@ export function decodeOrderPayload(code, bytes, charCount) {
  * @param {number} input.kind 件类型（KIND.*）
  * @param {number} input.scopeField 档位字段（encodeScopeField 的结果）
  * @param {number} input.pageNumber 页号（主区 1~127；更正册 128+n−1）
- * @param {number} input.charCount 这一页的字数（不含空白格）
- * @param {number[]} [input.indexes] 这一页的字在字表里的序号（按格号升序）
+ * @param {number} input.charCount 这一页的**格数**（含空白格；≤ 136）—— 与 indexes 的长度一致
+ * @param {number[]} [input.indexes] 这一页**每一格**的字表序号（按格号排列；`-1` = 空白格，见 encodeOrderPayload）
  * @param {object|null} [input.seg] 连续段信息（内置全序）
  * @param {number} [input.totalBytes] 数据位总容量（默认 LAYOUT.barcode.dataBytes）
  * @returns {{bytes:Uint8Array, dataLen:number, nsym:number}}

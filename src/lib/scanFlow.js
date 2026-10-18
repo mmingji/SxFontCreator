@@ -298,8 +298,9 @@ export async function recognizePage(file, options = {}) {
     read: null,
     located: null,
     pageChars: null,
-    pageNumberSource: null, // sequence（序列定位反推）| footer（页脚读出）| override（重传沿用原页页号）| code（指纹反推）| unknown
-    // 这一页的字是**从哪儿来的**：file 目录里的字序文件 / sequence 纸面参考字序列定位 / cells 逐格认字 /
+    pageNumberSource: null, // sequence（序列定位反推）| footer（竖带读出）| barcode（底部条码）| override（重传沿用原页页号）| code（指纹反推）| unknown
+    // 这一页的字是**从哪儿来的**：file 目录里的字序文件 / barcode 底部条码 / sequence 纸面参考字序列定位 /
+    //   cells 逐格认字 / rewrite 补写清单 / code 指纹反解（决策 一-20 把 barcode 插在 file 之后）
     // rewrite 补写清单。界面要把它显示出来 —— "字序是文件给死的"与"是猜出来的"对用户的信任度完全不同（一-18 ⑤）
     orderSource: null,
     cells: [],
@@ -401,12 +402,34 @@ export async function recognizePage(file, options = {}) {
   //     没认准的格只**计数**（`unsureCount`，进页记录与提示），不再逐格往界面上送 ——
   //     那条「逐格复核」的操作 2026-10-15 已按用户拍板去掉，`unsureCells` 字段 2026-10-16 一并删除
   const orderChars = typeof opt.orderChars === 'string' && opt.orderChars.length ? opt.orderChars : ''
+  // **底部条码给出的字序**（决策 一-20）：这一页每一格是哪个字，条码里直接写着（字表序号，-1 = 空白格）。
+  //   它比"认参考字 + 序列定位"硬得多 —— 实测逐格认字 top-1 只有 91%，错几格整页就废；
+  //   而条码给的是**纸面自己写的答案**，还带 CRC + 纠错。
+  //   优先级（用户口径）：**字序文件 > 条码 > 序列定位 / 逐格认字** —— 文件是"这一批纸的真相"，
+  //   有文件就以文件为准；没有文件时条码就是最可靠的那条路。
+  const barcodeChars = (() => {
+    if (orderChars) return null
+    const bc = page.barcode
+    if (!bc || !bc.ok || !bc.payload || !bc.payload.order) return null
+    const idx = bc.payload.order.indexes
+    if (!Array.isArray(idx) || !idx.length) return null
+    const table = getAllChars()
+    const chars = idx.map((i) => (i >= 0 && table[i] ? table[i] : null))
+    return chars.some((c) => c !== null) ? chars : null
+  })()
+  // 条码里的页号比竖带读出来的更可信（条码整块带纠错，竖带只有 24 个小方块）：有就用它
+  if (barcodeChars && page.barcode.payload.pageNumber) {
+    record.pageNumber = page.barcode.payload.pageNumber
+    record.pageNumberSource = 'barcode'
+  }
   // 候选全序（页级校验的反推要在它们里面逐页找指纹）：
   //   · file    = 目录里的字序文件（决策 一-18）
   //   · rewrite = 补写清单（重写模板 / 未收录字模板，决策 八-8、八-19 ⑮⑲）
   //   · 一个都没有时，referenceCharReader 会拿两份预置全序（笔画序 / 频序）去定位
   const candidates = []
   if (orderChars) candidates.push({ key: 'file', label: '字序文件', chars: Array.from(orderChars) })
+  // 条码候选排在文件之后：文件说了算；没有文件时它就是最可靠的那一条（一-20）
+  if (barcodeChars) candidates.push({ key: 'barcode', label: '底部条码', chars: barcodeChars })
   for (const extra of (opt.extraSequences || [])) {
     if (extra && extra.chars && extra.chars.length) {
       candidates.push({ key: extra.key || 'rewrite', label: extra.label || '补写清单', chars: Array.from(extra.chars) })
@@ -465,8 +488,8 @@ export async function recognizePage(file, options = {}) {
       record.located = record.read.located
       record.pageNumber = Math.floor(read.located.start / LAYOUT.perPage) + 1
       record.pageNumberSource = 'sequence'
-      // 序列定位用的候选序列就是字序文件时，这一页的字等于"文件给死的那一段"（不是猜出来的）
-      record.orderSource = orderChars ? 'file' : 'sequence'
+      // 序列定位用的候选序列就是字序文件 / 条码时，这一页的字等于"它给死的那一段"（不是猜出来的）
+      record.orderSource = orderChars ? 'file' : (read.located.seqKey === 'barcode' ? 'barcode' : 'sequence')
       record.pageChars = read.located.chars.slice()
     } else if (orderChars && record.pageNumber !== null) {
       // 字序文件在、页脚也读出了页号：直接按页号从文件字序里切一段。
@@ -481,6 +504,16 @@ export async function recognizePage(file, options = {}) {
         level: 'info',
         text: '这一页的字序取自目录里的字序文件：第 ' + record.pageNumber + ' 页 = 字序里的第 ' +
           (start + 1) + ' ~ ' + (start + record.pageChars.length) + ' 个字'
+      })
+    } else if (barcodeChars && barcodeChars.length) {
+      // 条码给出了这一页的字序，但序列定位没命中（认参考字质量太差）：**仍然用条码的** ——
+      //   它比逐格认字硬得多；后面 ③.6 的页级校验会拿指纹把关，对不上就整页失败，不会静默用错字序。
+      record.pageChars = barcodeChars.slice()
+      record.pageNumberSource = 'barcode'
+      record.orderSource = 'barcode'
+      messages.push({
+        level: 'info',
+        text: '这一页的字序取自底部条码（' + barcodeChars.length + ' 格，含空白格位）'
       })
     } else {
       record.pageChars = read.cells.map((c) => (c.empty ? null : c.char))

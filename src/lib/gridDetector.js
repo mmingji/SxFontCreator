@@ -24,7 +24,8 @@
 import {
   adaptiveThreshold, connectedComponents, globalThreshold, invert3x3, rotateQuarterTurns, solveHomography, warpGray
 } from './imageOps.js'
-import { LAYOUT, cellRect, writingBoxRect, decodePageBits, classifyFooterPage } from './layout.js'
+import { LAYOUT, cellRect, writingBoxRect, decodeSideBandBits, sideBandBlockRects, classifyFooterPage } from './layout.js'
+import { sampleBarcodeModules, rowsToPayload, unpackBarcodePayload } from './pageBarcode.js'
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
@@ -71,16 +72,12 @@ export const MARK_CENTERS_PX = (() => {
   }
 })()
 
-// 设计坐标下页脚方块的位置（图像 px）：1 个锚点 + 20 个数据位，供解码采样用
-export const FOOTER_RECTS_PX = (() => {
-  const pm = LAYOUT.pageMark
-  const anchor = DESIGN.rect({ x: pm.startX, y: pm.y, width: pm.anchorSize, height: pm.anchorSize })
-  const bits = []
-  for (let i = 0; i < pm.bits; i++) {
-    const xPt = pm.startX + pm.anchorSize + pm.anchorGap + i * (pm.bitSize + pm.bitGap)
-    bits.push(DESIGN.rect({ x: xPt, y: pm.y, width: pm.bitSize, height: pm.bitSize }))
-  }
-  return { anchor, bits }
+// 设计坐标下**右侧竖带**方块的位置（图像 px）：1 个锚点 + 24 个数据位（页号 8 / 档位 4 / 指纹 12）。
+// 几何直接取自 layout.js 的 sideBandBlockRects() —— **生成端 drawSideBand 用的也是它**，
+// 两处各写一遍公式早晚会写歪（《决策记录》一-20 的契约）。
+export const SIDE_BAND_RECTS_PX = (() => {
+  const rects = sideBandBlockRects()
+  return { anchor: DESIGN.rect(rects[0]), bits: rects.slice(1).map((r) => DESIGN.rect(r)) }
 })()
 
 // ── 参数 ──────────────────────────────────────────────────────────────────
@@ -112,13 +109,18 @@ export const DETECT_DEFAULTS = {
   cornerZone: 0.25, // 四角搜索区：页宽 / 页高各 25%。纸占画面 ≥ 60% 时定位块仍落在区内（决策 二-4 的拍摄要求）
   markSizeTolerance: 0.35, // 四块等效边长相互之间的最大相对偏差（防止拿噪点凑数）
   maxComponents: 20000, // 整页笔迹可能分成上万个连通块，上限太小会把右下角的定位块截掉
-  // 页脚解码
+  // 右侧竖带解码（2026-10-18 起取代"页脚 20 位横排"，决策 一-20）
   footInset: 0.3, // 采样区 = 方块中心 60%（每边内缩 30%），躲开抗锯齿边缘
   footOnRatio: 0.5, // 暗像素占比 ≥ 0.5 记为二进制 1
   footUncertainLow: 0.3, // 占比落在这个区间说明"读不准"（既不像空位也不像实心方块）
   footUncertainHigh: 0.7,
   anchorMinFill: 0.8, // 锚点方块必须几乎填满采样区，否则判定页脚整排不可用
   anchorSearchPx: 6, // 锚点质心搜索半径：吸收整体对齐残差（实测 < 6px）
+  // 底部条码采样（决策 一-20）：内缩比例 / 最小对比度 / 粗定位外扩像素 / 精搜索半径
+  barcodeInset: 0.3,
+  barcodeMinContrast: 40,
+  barcodePadPx: 12,
+  barcodeSearchPx: 2,
   // 校正后的自检
   cornerErrorWarn: 6, // 超过它给 warn（实测真实件 < 6px）
   cornerErrorLimit: 15, // 超过它判本页不可用：再切下去大概率整页错位
@@ -339,7 +341,7 @@ function darkCentroid(gray, rect, pad, threshold) {
 export function decodeFooterCode(designGray, options = {}) {
   const opt = { ...DETECT_DEFAULTS, ...options }
   const threshold = opt.markThreshold
-  const { anchor: anchorRect, bits: bitRects } = FOOTER_RECTS_PX
+  const { anchor: anchorRect, bits: bitRects } = SIDE_BAND_RECTS_PX
 
   // 锚点：质心偏移作为整排的公共偏移（20 个数据位与锚点是同一张纸上一起印出来的，共享同一个对齐残差）
   const centroid = darkCentroid(designGray, anchorRect, opt.anchorSearchPx, threshold)
@@ -381,10 +383,52 @@ export function decodeFooterCode(designGray, options = {}) {
         ' 位）：可能是扫描分辨率低、纸面有污渍或页脚被裁。这一页的页号与字序会改由纸面参考字定'
     }
   }
-  const { pageNumber, pageCode } = decodePageBits(bits)
+  const { pageNumber, scopeField, pageCode } = decodeSideBandBits(bits)
   return {
-    ...base, ok: true, reason: null, pageNumber, pageCode,
-    message: '页脚解码成功：页号 ' + pageNumber + '，本页校验码 ' + pageCode
+    ...base, ok: true, reason: null, pageNumber, scopeField, pageCode,
+    message: '竖带解码成功：页号 ' + pageNumber + '，档位字段 ' + scopeField + '，本页校验码 ' + pageCode
+  }
+}
+
+/**
+ * 解码**底部横向条码**（决策 一-20）：这一页是哪些字，由它直接给出，不必再认参考字。
+ * 判据与竖带一致：**读不出就明确失败**（采样找不到边界 / 纠错纠不过来 / 载荷不自洽），
+ *   但**条码读不出不等于整页失败** —— 调用方据此退回"字序文件 → 认参考字"那几条路。
+ * @returns {{ok:boolean, reason:string|null, payload:object|null, corrected:number, message:string}}
+ */
+export function decodeBarcode(designGray, options = {}) {
+  const opt = { ...DETECT_DEFAULTS, ...options }
+  const rows = sampleBarcodeModules(designGray, DESIGN.x, DESIGN.y, {
+    inset: opt.barcodeInset,
+    minContrast: opt.barcodeMinContrast,
+    pad: opt.barcodePadPx,
+    searchPx: opt.barcodeSearchPx
+  })
+  if (!rows) {
+    return {
+      ok: false, reason: 'sample', payload: null, corrected: 0,
+      message: '底部条码没读出来（找不到条码边界，或对比度不够）：可能是条码被裁掉、被手指或阴影挡住、' +
+        '或扫描分辨率太低。这一页的字序会改由字序文件或纸面参考字定'
+    }
+  }
+  const decoded = rowsToPayload(rows)
+  if (!decoded) {
+    return {
+      ok: false, reason: 'decode', payload: null, corrected: 0,
+      message: '底部条码读到了，但纠错没能还原（条码有污损或模糊）：这一页的字序会改由字序文件或纸面参考字定'
+    }
+  }
+  const payload = unpackBarcodePayload(decoded.data)
+  if (!payload) {
+    return {
+      ok: false, reason: 'payload', payload: null, corrected: decoded.corrected,
+      message: '底部条码的内容不自洽（版本或校验不过）：这一页的字序会改由字序文件或纸面参考字定'
+    }
+  }
+  return {
+    ok: true, reason: null, payload, corrected: decoded.corrected,
+    message: '底部条码解码成功：' + (payload.kindLabel || '未知件类型') + '，第 ' + payload.pageNumber +
+      ' 页，' + payload.charCount + ' 个字（' + (payload.scopeLabel || '') + '·' + (payload.orderLabel || '') + '）'
   }
 }
 
@@ -523,16 +567,22 @@ function analyzeOrientation(gray, opt) {
   const tFooter = now()
   const footer = decodeFooterCode(designGray, opt)
   timings.footer = Math.round(now() - tFooter)
+  // 底部条码：**只在最终这个方向上解一次** —— 它不参与方向纠正（那是竖带的活，锚点方块比条码模块大 5 倍、
+  //   好认得多），放进方向循环只会让坏件慢 4 倍。读不出不影响"这一页被可靠处理"的判定。
+  const tBarcode = now()
+  const barcode = decodeBarcode(designGray, opt)
+  timings.barcode = Math.round(now() - tBarcode)
 
   const geometryOk = !cornerErrors || cornerErrors.max <= opt.cornerErrorLimit
   return {
-    ok: footer.ok && geometryOk, // "这一页被可靠处理了" = 页脚解得出 且 几何在限内
+    ok: footer.ok && geometryOk, // "这一页被可靠处理了" = 竖带解得出 且 几何在限内
     stage: 'done',
     marks,
     matrix: transform.matrix,
     cornerErrors,
     designGray,
     footer,
+    barcode,
     timings,
     reason: footer.ok ? null : footer.message
   }
@@ -549,7 +599,7 @@ function analyzeOrientation(gray, opt) {
 export function analyzePage(gray, options = {}) {
   const opt = { ...DETECT_DEFAULTS, ...options }
   const t0 = now()
-  const timings = { marks: 0, transform: 0, rectify: 0, verify: 0, footer: 0 }
+  const timings = { marks: 0, transform: 0, rectify: 0, verify: 0, footer: 0, barcode: 0 }
   const messages = []
 
   // ── 方向纠正（决策 二-11）───────────────────────────────────────────────
