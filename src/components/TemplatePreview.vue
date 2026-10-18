@@ -75,6 +75,10 @@ const previewBytes = ref(null)
 const previewBusy = ref(false)
 const previewPage = ref(1) // 模板预览当前页（1 起；最后一页是打印自检页）
 const previewPages = ref(0) // 模板总页数 = 字表页 + 1 页自检；0 = 没有可预览的内容
+// 两块预览的**灰底板宽高比**：非就绪态（生成中 / 空态）按它撑住与成品一样大的底板，
+// 免得"载入完成"那一下卡片长高、下面的内容跟着跳（2026-10-18 用户要求）。
+// 值从 LAYOUT 取 —— 纸型只有那一个出处（决策 六-9）
+const pageRatio = LAYOUT.pageWidth / LAYOUT.pageHeight
 
 // 书写示意（用户 2026-10-07 要求，原名"填写示意"、2026-10-08 按用户要求改名）：与模板**同版式**的一页，
 // 但每个书写格里已经用工整手写体写好了那个字，让用户一眼看到"这个格子应该写成什么样"
@@ -526,6 +530,7 @@ async function generatePack() {
         :page-no="previewPage"
         :page-count="previewPages"
         :max-width="640"
+        :page-ratio="pageRatio"
         title="模板预览（与实际打印逐格一致，最后一页是打印自检页）"
         empty-text="还没有可预览的字：换个档位，或在下面「自定义选字」里挑几个字"
         @page-change="onPreviewPageChange"
@@ -536,6 +541,7 @@ async function generatePack() {
         :page-no="samplePage"
         :page-count="samplePages"
         :max-width="640"
+        :page-ratio="pageRatio"
         title="书写示意（按悠哉字体示意书写格式）"
         empty-text="书写示意还没生成出来"
         @page-change="onSamplePageChange"

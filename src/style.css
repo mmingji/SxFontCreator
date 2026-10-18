@@ -673,6 +673,10 @@ label.text-file input {
   gap: 8px;
 }
 
+/* 灰底板：**非就绪态（生成中 / 空态 / 失败）也要与成品画布一样高**，
+   高度由组件按成品画布高度内联写在 min-height 上（见 PdfPreview.vue 的 placeholderHeight）——
+   否则"载入完成"那一下卡片长高约 300px，下面的操作区跟着跳。
+   这里的 120px 只是"还没量出成品高度"时的兜底（内联值一旦给出就接管本属性） */
 .pdf-preview-body {
   display: flex;
   flex-direction: column;

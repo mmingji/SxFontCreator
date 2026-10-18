@@ -17,7 +17,7 @@
 //      结果是文档与 worker 从来没释放（每改一次设置就漏一个）；
 //   ② **旧文档要等新文档就绪后再销毁**，且每次换字节都用一个 token 作废在途的那一轮 ——
 //      否则会出现"上一轮把新一轮的渲染任务取消掉"的竞态，界面停在"正在渲染预览…"。
-import { nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { loadPdfjs } from '../lib/pdfjsLoader.js'
 
 const props = defineProps({
@@ -36,17 +36,43 @@ const props = defineProps({
   // 标题：第 1 步并排两块预览（模板 / 书写示意），各自要写清自己是什么
   title: { type: String, default: '模板预览（第 1 页与实际打印完全一致）' },
   // 没有字节时的占位文案（如书写示意还没生成出来）
-  emptyText: { type: String, default: '' }
+  emptyText: { type: String, default: '' },
+  // 纸张宽高比（宽 ÷ 高）：**首次**加载（还没有渲染过任何一页）时用它按容器宽度推算灰底板高度。
+  // 默认 A4 横向 = 297 / 210，与本项目模板 PDF 的页面一致；调用方从 LAYOUT 传（版式参数只有那一个出处）。
+  pageRatio: { type: Number, default: 297 / 210 }
 })
 // 翻页交给调用方（它才知道"第 N 页要什么"）：本组件只负责"渲染这一页的字节"
 const emit = defineEmits(['page-change'])
 
 const canvasRef = ref(null)
-const wrapRef = ref(null)
+// 画布的父容器：渲染宽度以它为基准（**不要拿外层卡片量** —— 卡片含 8px 内边距，算出来的画布会比容器宽 16px，
+// 逼出 body 的横向滚动条，就绪态因而比非就绪态高出约 15px）
+const bodyRef = ref(null)
 const status = ref('idle') // idle | rendering | ready | error
 const errorText = ref('')
 // 页号与页数都是**调用方给的**（见 props 说明）；这里只保留一个"文档里有几页"用于渲染时的自我校验
 const docPageCount = ref(0)
+
+// ── 非就绪态（生成中 / 空态 / 失败）的灰底板高度 ─────────────────────────────
+// **必须与成品画布一样高**（2026-10-18 用户要求）：原来非就绪态画布是 display:none、body 只剩
+//   `min-height: 120px`，而成品约 450px —— "载入完成"那一下卡片猛长一截，下面的内容整体往下跳。
+// 高度取两个来源，优先级从高到低：
+//   ① **上一次渲染成功的画布高度** —— 那就是成品的实际高度。画布尺寸只在渲染时设置（窗口缩放不会改它），
+//      所以这个记录值与画布永远一致，翻页 / 换档位时按它撑住即可。
+//   ② **还没有渲染过任何一页**（打开这一步的第一次加载）时，按容器宽度与纸张宽高比推算 ——
+//      与 renderPage 算缩放用的是同一个宽度口径，误差只在取整那一像素上。
+const placeholderHeight = ref(0)
+
+// 按容器宽度推算成品高度（给"第一次加载"用；写法与 renderPage 里的 scale 计算保持一致）
+function measurePlaceholder() {
+  const body = bodyRef.value
+  const width = Math.min(props.maxWidth, (body && body.clientWidth) || props.maxWidth)
+  return Math.round(width / (props.pageRatio > 0 ? props.pageRatio : 297 / 210))
+}
+
+onMounted(() => {
+  if (!placeholderHeight.value) placeholderHeight.value = measurePlaceholder()
+})
 
 // pdf.js 的模块加载与 worker 落位抽在 lib/pdfjsLoader.js —— 那里是"pdf.js 怎么用"的唯一出处
 // （file:// 下 worker 只能走 Blob URL、必须用 legacy 构建、销毁要走加载任务这三条坑都记在它的文件头）
@@ -141,7 +167,7 @@ async function renderPage(token) {
     if (token !== undefined && token !== openToken) return
     // 按容器宽度（不超过 maxWidth）算缩放：A4 横向 842pt 宽，容器 900px 时约 1.07 倍
     const base = page.getViewport({ scale: 1 })
-    const containerWidth = Math.min(props.maxWidth, (wrapRef.value && wrapRef.value.clientWidth) || props.maxWidth)
+    const containerWidth = Math.min(props.maxWidth, (bodyRef.value && bodyRef.value.clientWidth) || props.maxWidth)
     const scale = containerWidth / base.width
     const dpr = Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1)
     const viewport = page.getViewport({ scale })
@@ -149,6 +175,8 @@ async function renderPage(token) {
     canvas.height = Math.max(1, Math.round(viewport.height * dpr))
     canvas.style.width = Math.round(viewport.width) + 'px'
     canvas.style.height = Math.round(viewport.height) + 'px'
+    // 记下成品高度：非就绪态按它撑住灰底板（见 placeholderHeight 的说明）
+    placeholderHeight.value = Math.round(viewport.height)
     const ctx = canvas.getContext('2d')
     ctx.save()
     ctx.fillStyle = '#ffffff'
@@ -252,7 +280,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="wrapRef" class="pdf-preview" :data-pages="pageCount" :data-page-no="pageNo" :data-status="status">
+  <div class="pdf-preview" :data-pages="pageCount" :data-page-no="pageNo" :data-status="status">
     <div class="pdf-preview-head">
       <span class="pdf-preview-title">{{ title }}</span>
       <!-- 翻页条**常驻渲染**（单页时按钮禁用）：页数是测试与排障都要看的量，不给它加 v-if。
@@ -263,7 +291,8 @@ onBeforeUnmount(() => {
         <button class="text" type="button" :disabled="pageNo >= pageCount || status === 'rendering'" @click="goto(1)">下一页</button>
       </span>
     </div>
-    <div class="pdf-preview-body">
+    <!-- 灰底板高度恒等于成品画布（见 placeholderHeight 的说明）：生成中 / 空态 / 失败都不跳高 -->
+    <div ref="bodyRef" class="pdf-preview-body" :style="placeholderHeight ? { minHeight: placeholderHeight + 'px' } : null">
       <canvas ref="canvasRef" class="pdf-preview-canvas" :class="{ hidden: status !== 'ready' }" @click="openZoom"></canvas>
       <p v-if="status === 'idle'" class="pdf-preview-empty">
         {{ loading ? '正在生成，稍后显示预览…' : (emptyText || '还没有预览：先在下面点「生成模板 PDF」或「更新预览」') }}
