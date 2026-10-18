@@ -10,7 +10,6 @@
 //   字体固定用内置楷体子集（referenceFont.js；2026-10-11 起界面不再提供"选本机字体"，见决策 五-9）；试打页内容来自 singlePageText.js。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LAYOUT, buildTemplatePdf, buildCorrectionBookPdf, buildSamplePagePdf } from '../lib/templatePdf.js'
-import { getCharsetMeta } from '../lib/charset.js'
 import { CHAR_RANK_META } from '../lib/charRank.js'
 import { singlePageCharCount } from '../lib/singlePageText.js'
 import { orderModeLabel, scopePreset, charsForScope as charsForScopeLib } from '../lib/templateScope.js'
@@ -31,10 +30,11 @@ import SelectionPanel from './SelectionPanel.vue'
 import PdfPreview from './PdfPreview.vue'
 
 const store = useProjectStore()
-const meta = getCharsetMeta()
 // 字表构成的几个数字**全部从字表分级算出来**，不硬编码 —— 改字表时口径说明自动跟着变。
 // 「常用 6500 字」档 = 一级 3500 + 二级 3000 + 基础字符 169 = 6669 字；
 // 全量（8274 字）走「自定义选字」里的「全选全部」。
+// （`getCharsetMeta()` 那个全量数字的引用 2026-10-18 随"自定义选字"的旧文案一起去掉了：
+//   那句"一个字都没选时按全部 8274 字出"是 2026-10-16 就作废的口径。）
 const l1Count = getLevelChars('l1').length
 const l2Count = getLevelChars('l2').length
 const baseCount = getLevelChars('base').length
@@ -225,14 +225,17 @@ onBeforeUnmount(() => {
 // 三选一的提示：每一种都当场说清"这次会排哪些字、多少页"
 const scopeHint = computed(() => {
   if (scope.value === 'single') {
-    // 2026-10-18：试打页 = 一页名句集锦（汉字不重复、标点排末尾）；固定顺序，所以不问"排列方式"
-    return '单页试打：只印一页名句（' + singlePageCharCount() + ' 字，' + LAYOUT.perPage + ' 格内放得下）+ 打印自检页，' +
-      '先确认版式与打印设置；这一页汉字一个不重复、标点排在最后，按名句本身的顺序排'
+    // 2026-10-18 用户口径（原文案"太臃肿了"）：这一行只说"印什么、多少字、接着做什么" ——
+    //   格数、"汉字不重复 / 标点排末尾"这类细节属于纸面与《使用说明》，堆在档位说明里只会让人读不完。
+    return '单页试打：只印一页名句集锦 ' + singlePageCharCount() + ' 字 + 打印自检页，先确认版式与打印设置；'
   }
   if (scope.value === 'custom') {
     return store.selectedCount
       ? '自定义选字：已选 ' + store.selectedCount + ' 字 ≈ ' + Math.ceil(store.selectedCount / LAYOUT.perPage) + ' 页'
-      : '自定义选字：还没有选字 —— 一个字都没选时按全部 ' + meta.total + ' 字出（等于「全选全部」），下面是选字面板'
+      // 2026-10-18 用户报：这里还挂着**旧口径**"一个字都没选时按全部 8274 字出" —— 那条 2026-10-16
+      //   就改掉了（八-4 补注：没选字 = 没有字可排，两块预览空白、点下载给中文提示、不出纸），
+      //   文案跟着改准（顺手去掉对 meta.total 的依赖）。
+      : '自定义选字：还没有选字 —— 一个字都没选就没有字可排（不会出纸），下面是选字面板'
   }
   return '一级 ' + l1Count + ' 字 + 二级 ' + l2Count + ' 字 + 基础字符 ' + baseCount +
     ' = 常用 ' + commonCount + ' 字／' + commonPages + ' 页'

@@ -31,7 +31,7 @@ export const SCOPE_PRESETS = [
     // **2026-10-18 现口径：一页名句集锦** —— 汉字一个都不重复、标点去重后排在这一页末尾（用户口径
     //   "保证产出的所有模板都不会有重复的字"），内容见 lib/singlePageText.js。
     // 字数从 lib/singlePageText.js 现算，不写死（换内容时这里自动跟着变）。
-    note: '只印一页名句（' + singlePageCharCount() + ' 字）+ 打印自检页'
+    note: '只印一页名句集锦 ' + singlePageCharCount() + ' 字 + 打印自检页'
   },
   { key: 'common', label: '常用 6500 字', note: '一级 ' + L1 + ' + 二级 ' + L2 + ' + 基础字符 ' + BASE + ' = ' + (L1 + L2 + BASE) + ' 字' }
 ]
