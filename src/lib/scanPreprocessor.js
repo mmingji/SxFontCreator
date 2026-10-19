@@ -45,10 +45,12 @@ export function assessQuality(gray, options = {}) {
     aspect: +aspect.toFixed(3),
     aspectDeviation: +(Math.abs(aspect - opt.pageAspect) / opt.pageAspect).toFixed(3),
     meanGray: +meanGray(gray).toFixed(1),
-    illuminationSpread: +spread.toFixed(1),
+    // 判不了时给 null（不是 0）：0 会被读成「光照非常均匀」，与事实相反
+    illuminationSpread: spread === null ? null : +spread.toFixed(1),
     sharpness: Math.round(laplacianVariance(gray)),
     inkRatio: +inkRatio.toFixed(5),
-    unevenLight: spread > opt.unevenThreshold
+    // 判不了（null）一律按「光照不均」处理 —— 局部自适应是更稳的那一侧（决策 二-5）
+    unevenLight: spread === null || spread > opt.unevenThreshold
   }
 }
 
@@ -71,7 +73,10 @@ export function qualityMessages(quality) {
     out.push({ level: 'warn', text: '整页偏暗（平均灰度 ' + quality.meanGray + '），可能是曝光不足或纸面有阴影' })
   }
   if (quality.unevenLight) {
-    out.push({ level: 'info', text: '检测到光照不均（明暗差 ' + Math.round(quality.illuminationSpread) + '），已自动改用局部自适应阈值' })
+    const how = quality.illuminationSpread === null
+      ? '纸底偏暗、量不出明暗差'
+      : '明暗差 ' + Math.round(quality.illuminationSpread)
+    out.push({ level: 'info', text: '检测到光照不均（' + how + '），已自动改用局部自适应阈值' })
   }
   if (quality.sharpness < 5) {
     out.push({ level: 'warn', text: '画面偏模糊，可能是没对焦或纸没压平；建议重拍或改用平板扫描' })
@@ -84,8 +89,10 @@ export function binarize(gray, options = {}) {
   const opt = { ...PREPROCESS_DEFAULTS, ...options }
   const otsu = otsuThreshold(gray)
   const spread = illuminationSpread(gray, opt.qualityBlock)
+  // spread 为 null（亮块太少、判断不了）时按「光照不均」处理 → 走局部自适应，不拿全局阈值冒险
+  const uneven = spread === null || spread > opt.unevenThreshold
   const mode = opt.thresholdMode === 'auto'
-    ? (spread > opt.unevenThreshold ? 'adaptive' : 'global')
+    ? (uneven ? 'adaptive' : 'global')
     : opt.thresholdMode
 
   if (mode === 'adaptive') {

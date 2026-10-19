@@ -106,6 +106,9 @@ export function globalThreshold(gray, threshold) {
 }
 
 // 分块局部背景：把图切成 blockSize 见方的小块，算出每块的平均灰度。
+// **blockSize = 32 是经验取值**（试出来的，不是推导值）：块再小（≤16）会被单个笔画像素拉偏 ——
+//   背景估计开始"跟着笔画走"，笔画周围反而被判成背景；块再大（≥64）就跟不上手机拍摄那种缓变光照。
+//   32 像素 @300dpi ≈ 2.7mm，落在"比笔画粗、比光照变化细"的区间里（改大改小都要重跑 二-4 那批样本）。
 // 为什么用"分块 + 双线性插值"而不是逐像素滑动窗口：滑动窗口要一张与原图等大的积分图
 //   （3447×2419 的 Float64 就要 66MB），而光照不均的变化本身是平缓的，分块足够，
 //   内存只要 (宽/块) × (高/块) 个浮点数。
@@ -156,6 +159,9 @@ export function sampleBlockMeans(blocks, x, y) {
 // 局部自适应阈值（Wellner / Bradley 一脉）：像素比自己周围的背景暗 offset 以上才算前景。
 // 用途：手机拍摄这类**光照不均**的输入（决策 二-4 明确要求"用局部自适应，不用全局阈值"）。
 // offset 是关键参数：太小会把纸纹、淡格线一起判成前景；太大则细笔画会断。
+// **offset = 12 是经验取值**：它的量级由三组实测对比度决定 —— 灰格线 166 与纸底 247~250 差约 80、
+//   笔迹与纸底差 150+、纸面本身的缓变起伏只有个位数；12 足以滤掉纸纹与格线的轻微起伏，
+//   又远小于笔迹的对比度（改小会把格线吃进前景，改大会让淡笔画断开）。blockSize 同 blockMeans 的 32。
 export function adaptiveThreshold(gray, { blockSize = 32, offset = 12 } = {}) {
   const { data, width, height } = gray
   const blocks = blockMeans(gray, blockSize)
@@ -347,7 +353,10 @@ export function strokeWidthEstimate(mask) {
   }
   if (!vals.length) return { pixels: 0, median: 0, p90: 0, max: 0 }
   vals.sort((a, b) => a - b)
-  const at = (p) => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]
+  // 分位取法用 (n−1)·p，**不是 n·p**：后者在样本小时会取到最后一个元素（n = 10 时
+  //   floor(0.9×10) = 9 就是最大值，p90 名不副实）。大掩膜上 n 是几万，两种取法结果相同；
+  //   只有体检那种小切片（几百像素）才看得出差别。
+  const at = (p) => vals[Math.min(vals.length - 1, Math.round((vals.length - 1) * p))]
   return {
     pixels: vals.length,
     median: 2 * at(0.5),
@@ -361,7 +370,10 @@ export function strokeWidthEstimate(mask) {
 // 连通域标记（8 邻域）＋按面积过滤，返回每个连通块的外接矩形、面积与质心。
 // 用途：1.5 找四角定位块（按面积与长宽比过滤）、1.6 剔除参考字残留的小笔画、1.7 找红圈。
 // 实现用**显式栈**而不是递归：整页前景可能有上万像素一块，递归会爆调用栈。
-// keepPixels = true 时同时返回该块的像素坐标（找红圈要判"环形"）；默认不返回坐标数组 —— 整页前景可达上万像素，逐块存下来很占内存。
+// keepPixels = true 时同时返回该块的像素坐标（找红圈要判「环形」）；默认不返回坐标数组 —— 整页前景可达上万像素，逐块存下来很占内存。
+// **maxComponents = 5000 是保护上限、不是业务判据**（经验取值）：它防的是「输入根本不是模板件」时
+//   连通块无限膨胀（整页噪点）；正常件远达不到（一页的候选块也就几百个）。**注意它会静默截断**：
+//   到达上限后 break，剩下的前景不再被标记、也不在任何一块里 —— 调用方拿到的是「前 5000 块」。
 export function connectedComponents(mask, { minArea = 1, maxArea = Infinity, keepPixels = false, maxComponents = 5000 } = {}) {
   const { data, width, height } = mask
   const labels = new Int32Array(width * height).fill(-1)
@@ -450,6 +462,8 @@ export function solveHomography(from, to) {
     for (let r = col + 1; r < 8; r++) {
       if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r
     }
+    // 1e-12 是浮点意义上的「零」：坐标是像素量级（10³），主元小于它说明这四点共线 / 重合，
+    //   此时方程组没有唯一解 —— 明确抛错，不返回一个看着像样的矩阵
     if (Math.abs(a[pivot][col]) < 1e-12) throw new Error('四点共线或重合，无法解出透视变换')
     if (pivot !== col) {
       const t = a[pivot]; a[pivot] = a[col]; a[col] = t
@@ -479,6 +493,7 @@ export function invert3x3(m) {
   const B = -(d * i - f * g)
   const C = d * h - e * g
   const det = a * A + b * B + c * C
+  // 同 solveHomography：行列式小于浮点意义上的「零」即判退化（三点共线），明确抛错
   if (Math.abs(det) < 1e-12) throw new Error('矩阵不可逆（三点共线）')
   const D = -(b * i - c * h)
   const E = a * i - c * g
@@ -580,7 +595,9 @@ export function rotateQuarterTurns(gray, turns = 1) {
 // ── 质量评估用的统计量 ────────────────────────────────────────────────────
 
 // 拉普拉斯方差：清晰度的常用代理指标 —— 越模糊，边缘越少，方差越小。
-// 阈值因设备而异，这里只作为**相对参考**（同一台设备的历史值比较），不单独判"糊没糊"。
+// 核用 **4 邻域**（4·中心 − 上下左右）：它只量「边缘多不多」，4 邻域已经够用；
+//   8 邻域核（含对角）对 JPEG 块效应与椒盐噪声更敏感，会把「压缩痕迹多」误读成「清晰」。
+// 阈值因设备而异，这里只作为**相对参考**（同一台设备的历史值比较），不单独判「糊没糊」。
 export function laplacianVariance(gray) {
   const { data, width, height } = gray
   let sum = 0
@@ -604,15 +621,25 @@ export function laplacianVariance(gray) {
 // 为什么不取全体块的极差：暗块往往是成片笔迹、定位块或（手机拍摄时）画面外的桌面，
 //   它们不代表光照；实测一份均匀的平板扫描件用极差法会算出 80，用亮块分位法只有约 9。
 // 用途：决定二值化走全局阈值还是局部自适应 —— 平板扫描件通常 < 30，手机拍摄常 > 60。
+// **两个经验取值**：blockSize = 64（比 adaptiveThreshold 的 32 大一档 —— 这里量的是「整页光照走向」，
+//   块大一些更稳、也不会被单个笔画带偏）；亮块阈值 150（**与提取阈值同值**，含义就是「纸底该有的亮度」）。
+/**
+ * @param {object} gray
+ * @param {number} [blockSize=64]
+ * @returns {number|null} p90 − p10（灰度差）；**null = 亮块太少、判断不了**
+ *   （纸底压不到 150 说明整页偏暗 / 过曝 / 大面积阴影）。**不返回 0** —— 0 的含义是「光照非常均匀」，
+ *   会把调用方推到全局阈值那一侧（更不安全）；调用方约定：null 一律按「光照不均」处理（走局部自适应）。
+ */
 export function illuminationSpread(gray, blockSize = 64) {
   const { means } = blockMeans(gray, blockSize)
   const bright = []
   for (let i = 0; i < means.length; i++) {
     if (means[i] > 150) bright.push(means[i])
   }
-  if (bright.length < 4) return 0
+  // 亮块少于 4 个就没法谈分位（p10 与 p90 会落到同一块上）→ 判不了，返回 null（见上面的契约）
+  if (bright.length < 4) return null
   bright.sort((a, b) => a - b)
-  const pick = (q) => bright[Math.min(bright.length - 1, Math.floor(q * bright.length))]
+  const pick = (q) => bright[Math.min(bright.length - 1, Math.round((bright.length - 1) * q))]
   return pick(0.9) - pick(0.1)
 }
 
