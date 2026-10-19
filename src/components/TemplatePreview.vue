@@ -555,7 +555,7 @@ async function generatePack() {
     <p v-if="sampleNote" class="panel-message error">{{ sampleNote }}</p>
 
     <div class="panel-actions">
-      <button class="primary" data-role="generate-pack" :disabled="busy" @click="generatePack">生成并下载模板压缩包</button>
+      <button class="primary" data-role="generate-pack" :disabled="busy" @click="generatePack">下载模板</button>
       <span v-if="busy && progress.total" class="panel-hint">进度 {{ progress.done }} / {{ progress.total }} 页</span>
       <!-- 自定义档一个字都没选：按钮旁常驻一行说明（切档位 / 选字都会立刻跟着变，见 noChars 的注释） -->
       <span v-if="noChars" class="panel-hint" data-role="template-nochars">
