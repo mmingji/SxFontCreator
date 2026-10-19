@@ -162,9 +162,17 @@ function cardGroupRank(page) {
   if (!page.ok) return 3 // 识别失败
   return 1 // 已识别的主区页
 }
+// 组内排序用**人读页号**（主区页 = 页码；更正册 = 它自己的 1 起页号）；页号没定出来的排组尾
+function pageSortNumber(page) {
+  return Number.isInteger(page.pageNumber) && page.pageNumber > 0 ? page.pageNumber : 9999
+}
 const orderedPages = computed(() => pages.value
   .map((p, i) => ({ p, i }))
-  .sort((a, b) => (cardGroupRank(a.p) - cardGroupRank(b.p)) || (a.i - b.i))
+  // 2026-10-19 用户口径：**同组内按页码排**（原来按文件顺序，补传 / 重传之后看着乱）；
+  //   同页号或都没有页号时才退回文件顺序（稳定排序，保证渲染顺序确定）。
+  .sort((a, b) => (cardGroupRank(a.p) - cardGroupRank(b.p)) ||
+    (pageSortNumber(a.p) - pageSortNumber(b.p)) ||
+    (a.i - b.i))
   .map((x) => x.p))
 // 这一轮的字序：**只来自目录里的字序文件**（决策 一-18）—— 批次已彻底删除（2026-10-15），
 //   没有文件时这一项为空，每页的字完全由纸面参考字定（序列定位）或逐格认字 + 页脚校验码自证。

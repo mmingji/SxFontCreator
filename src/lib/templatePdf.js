@@ -463,6 +463,15 @@ export async function buildTemplatePdf({
       font,
       payload: packed.bytes
     })
+    // 把**这一页实际印进去的条码内容**记下来（数据区，不含纠错码字）：测试与排查用 ——
+    //   可以据此验证"生成端印的字序"与"识别端解出来的字序"是同一个东西（不用渲染 PDF 也能核）。
+    barcodes.push({
+      pageNumber: startPage + p,
+      charCount: indexes.length,
+      indexes,
+      data: packed.data,
+      dataLen: packed.dataLen
+    })
     drawHint(page, font, PAGE_HINT_LINES)
     for (let i = 0; i < pageChars.length; i++) {
       if (pageChars[i] === null) continue // 空白格：印出来什么都没有，跳过（指纹也把它排除了）
@@ -472,6 +481,7 @@ export async function buildTemplatePdf({
   }
 
   const pageCodes = []
+  const barcodes = []
   if (only) {
     // 单页模式：只画请求的那一页（自检页 = sheetPages + 1，它的指纹是专用值 0）
     if (only > sheetPages) {
@@ -496,7 +506,7 @@ export async function buildTemplatePdf({
   }
 
   const bytes = await pdf.save()
-  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes, onlyPage: only }
+  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes, barcodes, onlyPage: only }
 }
 
 /**
