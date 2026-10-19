@@ -146,8 +146,9 @@ export function mapCorrections(circledChars, correctionCells, options = {}) {
   if (leftover.length) {
     messages.push({
       level: 'warn',
-      text: '有 ' + leftover.length + ' 个作废的字在更正册后面没有找到补写（更正册格数不够），将保留主区原字形：' +
-        '可以在一张空白纸上补写这些字后单独上传'
+      text: '有 ' + leftover.length + ' 个作废的字在更正册后面没有找到补写（更正册格数不够）：这些字将保留主区原字形。' +
+        '要补齐，到第 3 步把它们「加入重写清单」→「下载重写模板」→ 写完用第 2 步的「补传扫描件」丢回来' +
+        '（同页号覆盖、后写优先）'
     })
   }
   if (extra.length) {
