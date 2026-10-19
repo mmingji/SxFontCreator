@@ -375,35 +375,6 @@ button.text:hover {
   display: none;
 }
 
-/* **文本形态**的文件选择按钮（label 包一个隐藏的 file input）：视觉与 `button.text` 完全一致
-   —— 无边框、无底色、12px 次要色、默认带下划线（下划线取文字自身颜色），悬停只变色。
-   2026-10-08 用户要求：「选择本机字体」是个次要动作，不该做成实体按钮（第 1 步里其它入口都是文本按钮）。 */
-label.text-file {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  color: var(--text-2);
-  text-decoration: underline;
-  text-decoration-color: currentColor;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-label.text-file:hover {
-  color: var(--primary);
-}
-
-label.text-file.disabled {
-  color: var(--text-2);
-  opacity: 0.5;
-  cursor: default;
-  text-decoration-color: currentColor;
-}
-
-label.text-file input {
-  display: none;
-}
-
 /* 问号浮窗（两处共用）：①「本机字体怎么选」—— 那段说明较长（系统字体目录的两条绕开办法 + macOS 目录），
    常驻会把面板撑长；②「字表按什么标准收字」—— 来源核对 + 《通用规范汉字表》官方说明节选（第二至第八条）。
    都是点问号展开，点别处或按 Esc 收起。
@@ -858,14 +829,6 @@ label.text-file input {
 }
 
 /* 收批闸门与逐页提示：error 是"整页失败/被拦下"，warn 是"跳过某页"，info 是提醒 */
-.scan-summary {
-  margin: 10px 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: #fafbfd;
-}
-
 .scan-problems {
   list-style: none;
   margin: 6px 0 0;
@@ -1442,9 +1405,9 @@ button.text.accent:hover {
 }
 
 /* ── 通用弹窗骨架（遮罩 + 卡片 + 标题行）─────────────────────────────────
-   逐格复核弹窗（CharReview.vue）在用；类名沿用了当年「项目备份」弹窗的名字（改名要动的地方多、
-   收益低）。2026-10-11（决策 五-10）：项目备份 / 清空项目 / 批次管理三个弹窗都已删除，
-   它们专用的那几组规则一并清掉。 */
+   第 2 步的「看格子 / 看文件清单 / 更正核对」与第 3 步的「清空全部数据」等弹窗共用；
+   类名沿用了当年「项目备份」弹窗的名字（改名要动的地方多、收益低）。2026-10-11（决策 五-10）：
+   项目备份 / 清空项目 / 批次管理三个弹窗都已删除，它们专用的那几组规则一并清掉。 */
 
 .backup-overlay {
   position: fixed;
@@ -1543,30 +1506,6 @@ button.text.accent:hover {
   gap: 8px;
 }
 
-/* 批量动作与"体检已过期"提示同一行（2026-10-15 用户口径）：左边一句话、右边一排按钮 —— */
-.checkup-note-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #eff6ff;
-  font-size: 12px;
-}
-
-.checkup-note-row .checkup-note-text {
-  flex: 1 1 320px;
-  min-width: 0;
-  color: var(--primary-dark);
-  line-height: 1.7;
-}
-
-.checkup-note-row .panel-actions {
-  margin: 0;
-}
-
 /* tab 下面那一行：说明文字在左、**该栏的批量动作在说明文字最右侧**（2026-10-15 用户口径） */
 .checkup-tab-bar {
   display: flex;
@@ -1633,31 +1572,6 @@ button.text.accent:hover {
 
 /* ── 字形体检清单（第 3 步，阶段三 3.2）────────────────────────────────────
    每条一行：字 + 位置 + 提示 + 处置按钮。字用大一号显示（要认得出是哪个字）。 */
-.checkup-group {
-  margin-top: 10px;
-}
-
-.checkup-list {
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-  max-height: 260px;
-  overflow: auto;
-}
-
-.checkup-list li {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 5px 0;
-  border-bottom: 1px dashed var(--border);
-  font-size: 12px;
-}
-
-.checkup-list li:last-child {
-  border-bottom: none;
-}
-
 .checkup-char {
   flex: none;
   font-size: 16px;

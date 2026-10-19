@@ -80,7 +80,7 @@ export async function collectGlyphInputs(items, { onStage } = {}) {
  */
 export async function buildFontFromPlan({ items, meta, woff2WasmUrl, excluded, onProgress, onStage }) {
   if (!items || !items.length) {
-    const err = new Error('没有可用的字形：先在第 2 步识别扫描件，并在第 2 步确认更正对应')
+    const err = new Error('没有可用的字形：先在第 2 步识别扫描件，并在第 2 步核对更正配对（配对默认生效，不需要点确认）')
     err.code = 'NO_GLYPHS'
     throw err
   }

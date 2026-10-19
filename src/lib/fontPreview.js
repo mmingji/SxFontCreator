@@ -120,7 +120,7 @@ export const PREVIEW_FALLBACK_STACK = '"Microsoft YaHei", "PingFang SC", "Hiragi
 
 // 本页已注册、还没释放的预览字体（模块级登记表）。
 // 为什么要它：FontFace 一旦 add 进 document.fonts 就**常驻并持有整份字节**，
-//   平时靠注册它的组件卸载时 release；但「清空项目」（决策 五-8）要求在那一刻当场放掉，
+//   平时靠注册它的组件卸载时 release；但第 3 步「清空全部数据」要求在那一刻当场放掉，
 //   不能指望"组件恰好会卸载"—— 注册与释放是同一份资源的两头，登记表让释放不依赖调用时机。
 const registeredFaces = new Set()
 

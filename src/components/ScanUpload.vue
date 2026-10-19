@@ -1,12 +1,12 @@
 <script setup>
 // 第 2 步：上传识别（阶段一「界面串联」B2；2026-10-11 起改用"从纸上认参考字定字序"的新模型）
 // 职责：① 指定一个文件夹（系统文件夹对话框）→ 挑图片与字序文件 → 串行识别，边跑边显示、可中止
-//   ② **收批闸门**（单页失败跳过；页脚读不出只提示，页号与字序由纸面参考字定）
+//   ② **收批闸门**（单页失败跳过；右侧方块读不出只提示，页号与字序由纸面参考字定）
 //   ③ 结果**一页一张卡片**（状态 / 一行统计 / 看格子 / 作废 / 重传；完整信息在 hover 里）
 //   ④ 格级视图与单格放大（收进「看格子」弹窗，点开才渲染）
 // 2026-10-15 用户拍板去掉的两条界面操作：**手选页序**（含拖动排序）与**逐格确认** ——
 //   前者把准确性交给用户填数字（顺序一错整批错字），后者在"每页自证"落地后已无必要：
-//   页脚那 12 位现在是"这一页那些字的指纹"，识别端能自己验出字序对不对（见 lib/pageCode.js）。
+//   右侧方块里那 12 位现在是"这一页那些字的指纹"，识别端能自己验出字序对不对（见 lib/pageCode.js）。
 // 数据来源：识别编排在 Worker 里（决策 六-15：预处理 / 切格 / 认参考字 / 提取四段重计算都搬过去了，
 //   主线程只收发消息，界面在几十页连跑时保持可滚动），客户端封装在 lib/scanWorkerClient.js；
 //   产物缓存（缩略图 / 掩膜）在 lib/scanCache.js，轻量页记录落盘在 store.scan —— 口径见 二-15 / 五-9。
@@ -175,13 +175,13 @@ const orderedPages = computed(() => pages.value
     (a.i - b.i))
   .map((x) => x.p))
 // 这一轮的字序：**只来自目录里的字序文件**（决策 一-18）—— 批次已彻底删除（2026-10-15），
-//   没有文件时这一项为空，每页的字完全由纸面参考字定（序列定位）或逐格认字 + 页脚校验码自证。
+//   没有文件时这一项为空，每页的字完全由纸面参考字定（序列定位）或逐格认字 + 右侧方块里的校验码自证。
 //   识别时把它透传给识别线程（scanFlow 的 orderChars）。
 const chars = computed(() => (orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : ''))
 
 // 补写清单（重写清单 / 未收录字）作为**候选全序**传给识别线程：重写模板与补写模板上的字既不在
 //   字序文件里、也不是任何预置全序的连续段（补写页的页号接在现有纸之后），所以单独带一份下去 ——
-//   补写页靠它 + 纸面参考字 + 页脚校验码自证（见 lib/scanFlow.js 的 ③.5 / ③.6）。一条都没有时返回 undefined。
+//   补写页靠它 + 纸面参考字 + 右侧方块里的校验码自证（见 lib/scanFlow.js 的 ③.5 / ③.6）。一条都没有时返回 undefined。
 function rewriteExtraSequences() {
   const text = store.rewriteChars.join('')
   if (!text) return undefined
@@ -260,12 +260,12 @@ function orderSourceLabel(page) {
   if (page.orderSource === 'barcode') return '来自底部条码（纸面自己写的字序）'
   if (page.orderSource === 'file') {
     const hit = page.located && page.located.seqKey === 'file'
-    return '来自文件夹里的字序文件' + (hit ? '（在文件里定位到第 ' + locatedStartPage(page) + ' 页起）' : '（按竖带页号取）')
+    return '来自文件夹里的字序文件' + (hit ? '（在文件里定位到第 ' + locatedStartPage(page) + ' 页起）' : '（按右侧方块里的页号取）')
   }
   if (page.orderSource === 'sequence') {
     return sequenceLabel(page.located ? page.located.seqKey : '') + ' · 第 ' + locatedStartPage(page) + ' 页起'
   }
-  if (page.orderSource === 'rewrite') return '补写清单（重写模板 / 未收录字，靠纸面参考字与竖带校验码认）'
+  if (page.orderSource === 'rewrite') return '补写清单（重写模板 / 未收录字，靠纸面参考字与右侧方块里的校验码认）'
   if (page.orderSource === 'cells') return '逐格认字'
   return ''
 }
@@ -697,7 +697,7 @@ const rescanning = ref(null) // 正在重传 / 补传（同一时刻只允许一
  *   · 传了 `fileIndex`（重传）：**原地覆盖**原来那一页 —— 卡片位置不跳、页序机制一行不动；
  *   · 没传（补传）：**按识别出的页号找同一个位置** —— 已经有这一页就覆盖它（连同落盘字形），
  *     没有就追加成一页新的。
- * 收不收这一页只由 `evaluateRescanAccept` 判（2026-10-15 起**不再用页脚校验码拦**，只拒"整页没识别"）。
+ * 收不收这一页只由 `evaluateRescanAccept` 判（2026-10-15 起**不再用右侧方块里的校验码拦**，只拒"整页没识别"）。
  *
  * 2026-10-15 修三处真缺陷（都在这一条路上）：
  *   ① **页记录的身份必须回写成落点**：补传不传 fileIndex，Worker 那边只能落成 0，而 target 是按页号
@@ -711,7 +711,7 @@ const rescanning = ref(null) // 正在重传 / 补传（同一时刻只允许一
  * @param {File} file 新扫的那一张
  * @param {object} [opts]
  * @param {number|null} [opts.fileIndex] 指定落点（重传传原页的 fileIndex）
- * @param {number|null} [opts.fallbackPageNumber] 页脚读不出时的兜底页号（重传传原页的页号）
+ * @param {number|null} [opts.fallbackPageNumber] 右侧方块读不出时的兜底页号（重传传原页的页号）
  * @returns {Promise<{ok:boolean, reason?:string, replaced?:boolean, target?:number,
  *   pageNumber?:number|null, written?:number, marked?:number, saved?:number,
  *   markedChanged?:boolean, markedCells?:string}>}
@@ -722,7 +722,7 @@ async function ingestOnePage(file, opts = {}) {
     // 字序来源与整批识别一致：文件夹里有字序文件就按文件定（决策 一-18），没有才走"认纸面参考字"
     orderChars: orderFile.value && orderFile.value.ok ? orderFile.value.file.chars : '',
     orderPages: orderFile.value && orderFile.value.ok ? orderFile.value.file.pageCount : undefined,
-    // 补写清单（重写清单 / 未收录字）作为候选全序：这类页的字不在字序文件里，靠它 + 页脚校验码认
+    // 补写清单（重写清单 / 未收录字）作为候选全序：这类页的字不在字序文件里，靠它 + 右侧方块里的校验码认
     extraSequences: rewriteExtraSequences(),
     fileIndex: opts.fileIndex === null || opts.fileIndex === undefined ? undefined : opts.fileIndex,
     pageNumberOverride: opts.fallbackPageNumber || undefined,
@@ -922,8 +922,8 @@ async function confirmVoid() {
     (removed && removed.removed ? '' : '（这一页本来就没有落盘的字形）'), 'info')
 }
 // ── 手选页序：**2026-10-15 用户拍板彻底去掉** ──────────────────────────────
-// 原来页脚读不出的页要靠用户在卡片上填页号、或拖着缩略图排页序（决策 二-7）。现在不做了：
-//   · 页脚读不出时，页号与整页字序由**纸面参考字序列定位**定（决策 五-9 的新模型）；
+// 原来右侧方块读不出的页要靠用户在卡片上填页号、或拖着缩略图排页序（决策 二-7）。现在不做了：
+//   · 右侧方块读不出时，页号与整页字序由**纸面参考字序列定位**定（决策 五-9 的新模型）；
 //   · 定不出来的页，页级校验码也帮不上（它本来就要求先猜出"这一页是哪些字"），整页明确失败、重扫即可。
 // 去掉的理由：这条操作把"识别准确性"的最后一公里交给了用户，而它本身极易出错（顺序一错整批错字）；
 //   而序列定位 + 页级校验码已经把这件事变成程序能自证的。相关字段（scan.orderOverrides）只留给旧数据兼容。
@@ -954,7 +954,7 @@ function cardStatusLabel(page) {
   return '已识别'
 }
 /** 被采用的那一份的文件名（"重复页"卡片上要说清结果里用的是哪一份）——
-    两种情形都走它：**识别成功但被判重**的页（`duplicateOf`），与**整页失败、页脚却同页号**的页
+    两种情形都走它：**识别成功但被判重**的页（`duplicateOf`），与**整页失败、右侧方块却同页号**的页
     （`failedDuplicateOf`，折角页 / 去阴影页那种） */
 function adoptedName(page) {
   const idx = page.duplicateOf !== undefined && page.duplicateOf !== null
@@ -964,13 +964,13 @@ function adoptedName(page) {
   return adopted ? adopted.fileName : ('第 ' + (idx + 1) + ' 个文件')
 }
 // 页号与"这个页号是怎么来的"（可信度不同，必须逐页说清）：
-//   条码 / 指纹反推 / 序列定位（都由纸面自证）> 竖带读出 > 重传沿用原页
+//   条码 / 指纹反推 / 序列定位（都由纸面自证）> 右侧方块读出 > 重传沿用原页
 function pageNumberLabel(page) {
   if (page.kind === 'correction' && page.pageNumber) return '更正册第 ' + page.pageNumber + ' 页'
   if (page.pageNumberSource === 'barcode') return '第 ' + page.pageNumber + ' 页（按底部条码）'
-  if (page.pageNumberSource === 'code') return '第 ' + page.pageNumber + ' 页（按竖带校验码反推）'
+  if (page.pageNumberSource === 'code') return '第 ' + page.pageNumber + ' 页（按右侧方块里的校验码反推）'
   if (page.pageNumberSource === 'sequence') return '第 ' + page.pageNumber + ' 页（按纸面参考字序定位）'
-  if (page.footerOk) return '第 ' + page.pageNumber + ' 页（竖带读出）'
+  if (page.footerOk) return '第 ' + page.pageNumber + ' 页（右侧方块读出）'
   if (page.pageNumber) return '第 ' + page.pageNumber + ' 页（沿用原页）'
   return '页号没定出来'
 }
@@ -985,12 +985,12 @@ function cardTitle(page) {
   }
   if (page.kind === 'correction') {
     bits.push(page.legacyPaper
-      ? '更正册（旧版本印的纸：那批页脚里没有本页校验码，按更正册收下）'
+      ? '更正册（旧版本印的纸：那批右侧方块里没有本页校验码，按更正册收下）'
       : '更正册（按页号区间识别，没有本页校验码）')
   }
-  // 2026-10-13：页脚区（现为右侧竖带）读不出、方向是按纸面参考字救回来的页，说清它是怎么定的
+  // 2026-10-13：右侧方块读不出、方向是按纸面参考字救回来的页，说清它是怎么定的
   if (page.orientation && page.orientation.rescuedByReference) {
-    bits.push('竖带读不出：方向按纸面参考字定（认得出 ' + (page.orientation.rescueSure || 0) + ' 格' +
+    bits.push('右侧方块读不出：方向按纸面参考字定（认得出 ' + (page.orientation.rescueSure || 0) + ' 格' +
       (page.orientation.rescueLocated ? '、字序也定位上了' : '') + '）')
   } else if (page.orientation && page.orientation.corrected) {
     bits.push('已自动转正 ' + page.orientation.turns * 90 + ' 度')
@@ -1293,7 +1293,7 @@ const zoomIsMarkedLabel = computed(() => {
       >
         <div class="scan-card-head">
           <!-- 2026-10-15 用户拍板：**拖动改页序这条操作已去掉**（连同卡片上的手选页序）——
-               竖带读不出时页号与字序由纸面参考字序列定位定，定不出来就整页失败重扫；
+               右侧方块读不出时页号与字序由纸面参考字序列定位定，定不出来就整页失败重扫；
                把准确性交给用户去填数字，本身就是最容易出错的一环（顺序一错整批错字）。 -->
           <span class="scan-card-name" :title="page.fileName">{{ page.fileName }}</span>
           <span class="scan-card-badge">{{ cardStatusLabel(page) }}</span>
@@ -1308,7 +1308,7 @@ const zoomIsMarkedLabel = computed(() => {
             这一页与「{{ adoptedName(page) }}」的页号相同：已自动忽略（结果里用的是那一份 ——
             程序按"认出的红圈数 → 能用的字形数"挑的）；想改用这一份，就在「看文件清单」里去掉那一张再识别
           </template>
-          <!-- 整页失败、但页脚读出了同一个页号：说清"它其实是同一页的另一份"（2026-10-15 用户口径）——
+          <!-- 整页失败、但右侧方块读出了同一个页号：说清"它其实是同一页的另一份"（2026-10-15 用户口径）——
                真机上的折角页与"去阴影"页就是这种：它们与主件是同一张纸，用户看到两页失败会以为漏了什么 -->
           <template v-else-if="page.failedDuplicateOf !== undefined && page.failedDuplicateOf !== null">
             这一页与「{{ adoptedName(page) }}」的页号相同（那一份已经识别成功）—— 这一份没能识别：{{ page.reason }}
@@ -1407,7 +1407,7 @@ const zoomIsMarkedLabel = computed(() => {
     <p v-if="!showResult && !running" class="panel-hint">
       选好文件夹后点「开始识别」：程序对每张图片逐页做「预处理 → 切格（方向不对会自动转正）→
       按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
-      并把每页的页号来源、写出格数与可疑格报给你；底部条码与竖带里的校验码会替你把这一页的字序再验一遍。
+      并把每页的页号来源、写出格数与可疑格报给你；底部条码与右侧方块里的校验码会替你把这一页的字序再验一遍。
     </p>
 
     <!-- 这批结果用的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。

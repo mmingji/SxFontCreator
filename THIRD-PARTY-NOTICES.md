@@ -12,6 +12,8 @@
 | pdf-lib | MIT | 生成模板与更正册 PDF（页面尺寸与格子坐标完全可控） |
 | @pdf-lib/fontkit | MIT | pdf-lib 嵌入自定义字体（含子集化）所必需 |
 | fonteditor-core | MIT | 把提取出的手写字形组装成 TTF / woff / woff2（步骤 1.9 起成为运行时依赖，决策 六-6 的预告兑现） |
+| jszip | MIT | 打包下载：模板压缩包（模板 PDF + 空白更正册 + 《使用说明》+ 字序文件）与字体包（TTF / woff / woff2 + CSS + 使用说明 + preview.html）。下载动作用原生 `Blob` + `a[download]`，**不引 `file-saver`**（决策 六-6） |
+| pdfjs-dist | Apache-2.0 | 第 1 步的模板预览（`pdfjsLoader.js` 运行时 import，把生成的 PDF 渲染成位图）；测试侧也用它做渲染级像素断言。产物走 `legacy/build/` 以兼容 Chrome 90+（决策 六-10），worker 字节内联（交付形态见 六-4） |
 | esm-potrace-wasm | **GPL-2.0** | 手写掩膜 → 矢量轮廓（步骤 1.9）。选型见《决策记录》六-7：**自用无分发义务**；对外分发软件本体须随附 GPL 许可文本与源码获取方式 —— **闭源商业分发不适用**，那时改用 `imagetracerjs`（Unlicense）或自研轮廓追踪 |
 
 ## 随产物分发的字体数据
@@ -40,10 +42,7 @@ OFL-1.1 的三条实际约束：① 再分发必须随附许可文本；② 不�
 | --- | --- | --- |
 | vite、@vitejs/plugin-vue | MIT | 构建与开发服务器 |
 | puppeteer-core | Apache-2.0 | 冒烟与端到端验证（调用本机 Edge / Chrome，不下载浏览器） |
-| pdfjs-dist | Apache-2.0 | 渲染级验证：把生成的 PDF 渲染成位图做像素断言 |
 
 ## 已定选型、待引入（阶段一后续步骤安装，引入时更新版本号）
 
-| 组件 | 许可 | 说明 |
-| --- | --- | --- |
-| jszip | MIT | 打包下载（字体 + CSS + 使用说明 + 项目包）。下载动作用原生 `Blob` + `a[download]`，**不引 `file-saver`**（决策记录 六-6） |
+（当前无待引入项：jszip 已在使用，见上面的运行时依赖表；项目包已于 2026-10-11 作废，决策 五-10。）

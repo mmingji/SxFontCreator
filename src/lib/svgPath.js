@@ -1,7 +1,7 @@
 // SVG path 解析、包围盒与坐标变换（阶段一步骤 1.9）
-// 来源：复用参考项目 sn-font-manager 的 `src/lib/svgNormalize.js`（已跑通多年），按本项目需要裁剪与改造：
+// 来源：参考项目 sn-font-manager 的 `src/lib/svgNormalize.js`（副本 2026-10-08 已删，来源与借鉴口径见《需求与技术方案》附录 A），按本项目需要裁剪与改造：
 //   **保留** parsePathCommands / arcToCubic / pathBBox / commandsToPathData（改造为支持 x、y 独立缩放）/ 从 SVG 提取 path；
-//   **不要** normalizeSvgImport 与 normalizeSvgForce —— 它们会把图形"按包围盒铺满 0~1000"，
+//   **不要**参考项目那套"按包围盒铺满 0~1000"的归一化（`normalizeSvgForce` 一类）—— 它会把图形撑满，
 //   而汉字必须**按书写格线性映射**（决策 四-4：按 bbox 铺满会让"一"和"国"一样大，是明确否掉的做法）；
 //   **不要**图标场景的 svg 字符串改写（本项目的产物直接是 path 数据，进字体构建）。
 // 职责边界：本文件只做"路径几何"，不碰位图（位图在 traceImage.js）、不碰字体（在 glyphBuilder.js）。
@@ -89,6 +89,9 @@ export function arcToCubic(x1, y1, rx, ry, phi, largeArc, sweep, x2, y2) {
   if (sweep === 1 && dtheta < 0) dtheta += 2 * Math.PI
   const segments = Math.max(1, Math.ceil(Math.abs(dtheta / (Math.PI / 2))))
   const delta = dtheta / segments
+  // 三次贝塞尔拟合圆弧的控制点系数：t = (8/3)·sin²(δ/4)/sin(δ/2)（δ 是这一段圆弧的圆心角）。
+  //   每段 ≤ 90°（上面 segments 的取法保证），δ→0 时 t→1/3 —— 正是常见的"kappa 系数"极限；
+  //   圆弧越长系数越小，所以按每段各自的 δ 算，而不是用固定 0.5523。
   const t = (8 / 3) * Math.sin(delta / 4) * Math.sin(delta / 4) / Math.sin(delta / 2)
   let px = x1
   let py = y1
@@ -272,6 +275,8 @@ export function commandsToPathData(cmds, scaleX = 1, scaleY = scaleX, offsetX = 
   let prevQx = 0
   let prevQy = 0
   let prevIsQ = false
+  // 坐标一律保留两位小数：1 单位 = 1/1000 em，舍入误差 < 0.005 单位，远小于越界容许量
+  //   OUT_TOLERANCE（0.5 单位）；顺带把 path 数据压短（产物是给字体构建读的，精度够用）
   const X = (v) => +((v * scaleX) + offsetX).toFixed(2)
   const Y = (v) => +((v * scaleY) + offsetY).toFixed(2)
 
@@ -422,8 +427,6 @@ export function collectPathCommands(svg) {
   return all
 }
 
-// 2026-10-13：这里原来还有一个 `clampToBox()`（把映射后的命令裁进 0~1000、"只裁不放大"）——
-// 它全库零引用，而且**判据也过时了**：决策 四-4 定的越界判据是"书写格映射出来的**设计框**
-// （横向 0~1000、竖向 −100~900）"，不是一个 0~1000 的正方形。真实实现在
-// `glyphGeometry.mapBBoxToDesignBox`（几何与阈值同源）+ `glyphBuilder` 里那次等比收缩与平移。
-// 留着它比没有更糟 —— 下一个人照它写就会发现与产物对不上。需要时从 git 历史取回。
+// 2026-10-13：这里原来还有一个 `clampToBox()`（全库零引用，判据也过时 —— 决策 四-4 的越界判据是
+//   "书写格映射出来的**设计框**：横向 0~1000、竖向 −100~900"，不是 0~1000 的正方形）。
+//   真实实现在 `glyphGeometry.mapBBoxToDesignBox` + `glyphBuilder` 的等比收缩与平移；需要时从 git 历史取回。

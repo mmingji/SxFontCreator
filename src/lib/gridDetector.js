@@ -1,12 +1,12 @@
 // 自动切格（阶段一步骤 1.5）—— 本项目的核心难点
 // 职责：把"一页扫描件"变成"页号 + 本页校验码 + 136 个格子的像素"：
 //   ① 在二值图上找四角定位块 → ② 用 4 组对应点解 3×3 透视矩阵 → ③ 把整页校正到设计坐标系
-//   → ④ 解码页脚 20 位编码（低 8 位页号 + 高 12 位本页校验码）→ ⑤ 按**已知网格坐标**切格。
+//   → ④ 解码右侧方块（页号 8 + 档位 4 + 指纹 12）与底部条码 → ⑤ 按**已知网格坐标**切格。
 // 与相邻模块的边界：算子（连通域 / 单应 / 重采样 / 阈值）全在 imageOps.js，本模块只做业务几何与判定；
 //   1.4 的 scanPreprocessor 负责把图弄干净并给中文质量提示（本模块吃它的**灰度图**）；
 //   1.6 字形提取吃本模块切出来的格子切片（写进 store 的 glyphs）。
 // 四条关键设计（都是为了"切错比不切更糟"这条底线）：
-//   ① **标记检测不走 Otsu 二值图**：页脚方块与定位块（中深青 #2E6E7E）灰度约 93，而 2026-10-03 调深后的
+//   ① **标记检测不走 Otsu 二值图**：右侧方块与定位块（中深青 #2E6E7E）灰度约 93，而 2026-10-03 调深后的
 //      格线与参考字（#A6A6A6）是 166。Otsu 阈值实测 174（旧色值时期）——格线 166 比它暗，会被判成前景；
 //      更麻烦的是 Otsu 会随格线深浅与占比漂移。所以这里用**固定阈值 150**（落在 93 与 166 之间 70 的余量
 //      正中），再与局部自适应阈值取交集挡住"手机拍摄的整片暗背景"，与"格线调到多深"彻底解耦。
@@ -15,12 +15,13 @@
 //   ③ **切片外扩量由版式推导、不写死**（见 CELL_PAD_PT）：上限是中缝 gapMid（书写格顶边 ↔ 参考字区域底边），
 //      扣掉实测校正残差（< 6px@300dpi）。这样"外扩后不会碰到参考字区域"这条约束由版式保证：
 //      将来改 4 : 2 : 4 的比例或参考字区域大小，外扩量自动跟着变，测试里还有一条断言钉住。
-//   ④ **失败即整页放弃**（决策 二-6）：定位块找不到、页脚读不出都明确失败并给中文提示，不做手动标四角；
+//   ④ **定位块找不到就整页放弃**（决策 二-6）：给中文提示、不做手动标四角；**右侧方块读不出仍照常切格**
+//      （页号置 0，由上层按纸面参考字定），不因此判整页失败；
 //      拿不准的坐标切出来的是一整批错位字形，比拒绝处理糟得多。
 //   ⑤ **方向自动纠正**（2026-10-04 补，决策 二-11）：扫描件整页被转着扫进来是常见操作（实测用户把 A4 横向的
 //      纸竖着放进平板扫描仪），而这时**四个定位块依然落在图的四角附近**，找四角照样"成功"、校正也照样"成功"，
-//      只有页脚解码会失败 —— 也就是说方向错了会静默切出整页错位的格子。所以页脚解不出时依次试 0/90/180/270
-//      （竖版图先试 90/270），取第一个"页脚能解出且校正残差在限内"的方向；四个都不成才明确失败。
+//      只有右侧方块解码会失败 —— 也就是说方向错了会静默切出整页错位的格子。所以右侧方块解不出时依次试 0/90/180/270
+//      （竖版图先试 90/270），取第一个"右侧方块能解出且校正残差在限内"的方向；四个都不成才明确失败。
 import {
   adaptiveThreshold, connectedComponents, globalThreshold, invert3x3, rotateQuarterTurns, solveHomography, warpGray
 } from './imageOps.js'
@@ -93,7 +94,7 @@ export const CELL_PAD_MAX_PT = LAYOUT.gapMid
 export const CELL_PAD_PT = Math.floor((CELL_PAD_MAX_PT - RECTIFY_RESIDUAL_PT) * 100) / 100
 
 export const DETECT_DEFAULTS = {
-  // 标记检测的固定阈值：定位块与页脚编码灰度约 93，调深后的格线与参考字 166 —— 150 在两者之间
+  // 标记检测的固定阈值：定位块与右侧方块灰度约 93，调深后的格线与参考字 166 —— 150 在两者之间
   markThreshold: 150,
   // 与局部自适应阈值取交集：手机拍摄时纸面一侧可能整体偏暗（灰度 < 150 会被固定阈值整片判成前景），
   // 局部自适应只保留"比周围背景暗"的像素，正好挡住这类背景，同时不影响定位块（远暗于其局部背景）
@@ -114,7 +115,7 @@ export const DETECT_DEFAULTS = {
   footOnRatio: 0.5, // 暗像素占比 ≥ 0.5 记为二进制 1
   footUncertainLow: 0.3, // 占比落在这个区间说明"读不准"（既不像空位也不像实心方块）
   footUncertainHigh: 0.7,
-  anchorMinFill: 0.8, // 锚点方块必须几乎填满采样区，否则判定页脚整排不可用
+  anchorMinFill: 0.8, // 锚点方块必须几乎填满采样区，否则判定右侧方块整排不可用
   anchorSearchPx: 6, // 锚点质心搜索半径：吸收整体对齐残差（实测 < 6px）
   // 底部条码采样（决策 一-20）：内缩比例 / 最小对比度 / 粗定位外扩像素 / 精搜索半径
   barcodeInset: 0.3,
@@ -125,7 +126,7 @@ export const DETECT_DEFAULTS = {
   cornerErrorWarn: 6, // 超过它给 warn（实测真实件 < 6px）
   cornerErrorLimit: 15, // 超过它判本页不可用：再切下去大概率整页错位
   verifyRectified: true,
-  // 方向自动纠正：页脚解不出时依次试其它 90° 方向（决策 二-11）。
+  // 方向自动纠正：右侧方块解不出时依次试其它 90° 方向（决策 二-11）。
   // 关掉它 = 只按送进来的方向处理（测试里用它验证"方向错了会明确失败、不会静默切错"）
   autoOrient: true
 }
@@ -286,7 +287,7 @@ export function measureCornerError(designGray, options = {}) {
   return { ok: found.ok, errors, max: Math.round(max * 10) / 10, marks: found.marks }
 }
 
-// ── 页脚 20 位编码解码 ────────────────────────────────────────────────────
+// ── 右侧方块解码（页号 8 + 档位 4 + 指纹 12）────────────────────────────────────────────────────
 
 // 方块中心区域内的暗像素占比。inset 为每边内缩比例（0.3 = 取中心 60%）。
 function darkRatio(gray, rect, inset, threshold, dx = 0, dy = 0) {
@@ -330,7 +331,7 @@ function darkCentroid(gray, rect, pad, threshold) {
 }
 
 /**
- * 解码页脚 20 位编码（低 8 位页号 + 高 12 位本页校验码）。
+ * 解码右侧方块（页号 8 + 档位 4 + 指纹 12；锚点只作对齐基准、不带信息）。
  * 判定**宁严勿宽**：读不准的位会让整页页序不可信，而页序错 = 整页字形对错字。
  * @param {{data:Uint8ClampedArray,width:number,height:number}} designGray 校正到设计坐标系的灰度图
  * @returns {{ok:boolean, reason:string|null, pageNumber:number|null, pageCode:number|null,
@@ -343,7 +344,7 @@ export function decodeFooterCode(designGray, options = {}) {
   const threshold = opt.markThreshold
   const { anchor: anchorRect, bits: bitRects } = SIDE_BAND_RECTS_PX
 
-  // 锚点：质心偏移作为整排的公共偏移（20 个数据位与锚点是同一张纸上一起印出来的，共享同一个对齐残差）
+  // 锚点：质心偏移作为整排的公共偏移（24 个数据位与锚点是同一张纸上一起印出来的，共享同一个对齐残差）
   const centroid = darkCentroid(designGray, anchorRect, opt.anchorSearchPx, threshold)
   let dx = 0
   let dy = 0
@@ -372,21 +373,21 @@ export function decodeFooterCode(designGray, options = {}) {
   if (!centroid || anchorFill < opt.anchorMinFill) {
     return {
       ...base, ok: false, reason: 'anchor', pageNumber: null, pageCode: null,
-      message: '页脚那排编码没读到（定位用的锚点方块不在预期位置）：可能是页脚被裁掉、被手指或阴影挡住、或扫描分辨率太低。' +
+      message: '右侧方块那排没读到（定位用的锚点方块不在预期位置）：可能是被裁掉、被手指或阴影挡住、或扫描分辨率太低。' +
         '这一页的页号与字序会改由纸面印的参考字定；两样都定不出来时，只能把这一页重扫一次'
     }
   }
   if (uncertain.length) {
     return {
       ...base, ok: false, reason: 'uncertain', pageNumber: null, pageCode: null,
-      message: '页脚编码有 ' + uncertain.length + ' 位读不准（第 ' + uncertain.map((i) => i + 1).join('、') +
-        ' 位）：可能是扫描分辨率低、纸面有污渍或页脚被裁。这一页的页号与字序会改由纸面参考字定'
+      message: '右侧方块有 ' + uncertain.length + ' 位读不准（第 ' + uncertain.map((i) => i + 1).join('、') +
+        ' 位）：可能是扫描分辨率低、纸面有污渍或右侧方块被裁。这一页的页号与字序会改由纸面参考字定'
     }
   }
   const { pageNumber, scopeField, pageCode } = decodeSideBandBits(bits)
   return {
     ...base, ok: true, reason: null, pageNumber, scopeField, pageCode,
-    message: '竖带解码成功：页号 ' + pageNumber + '，档位字段 ' + scopeField + '，本页校验码 ' + pageCode
+    message: '右侧方块解码成功：页号 ' + pageNumber + '，档位字段 ' + scopeField + '，本页校验码 ' + pageCode
   }
 }
 
@@ -451,8 +452,8 @@ export function sliceWritingBoxes(designGray, options = {}) {
       '）的灰度图，实际拿到 ' + designGray.width + ' × ' + designGray.height)
   }
   const padPt = typeof opt.cellPadPt === 'number' ? opt.cellPadPt : CELL_PAD_PT
-  // 页脚读不出时上层传 0：表示"页码未知"，不要在这里退回 1（那等于编造页序）——
-  // 页号只由页脚或纸面参考字序列定位给出（2026-10-15 起不再有"手选页序"这条界面操作）
+  // 右侧方块读不出时上层传 0：表示"页码未知"，不要在这里退回 1（那等于编造页序）——
+  // 页号只由右侧方块或纸面参考字序列定位给出（2026-10-15 起不再有"手选页序"这条界面操作）
   const pageNumber = typeof opt.pageNumber === 'number' ? opt.pageNumber : 1
   // 附加图层：只接受与设计坐标灰度同尺寸的层，尺寸对不上的直接跳过（宁缺勿错位）
   const layers = (opt.layers || []).filter((l) => l && l.gray && l.gray.width === designGray.width &&
@@ -506,7 +507,7 @@ export function sliceWritingBoxes(designGray, options = {}) {
     sliceSize = { width: w, height: h }
     boxes.push({
       index: i, // 页内格号 0~135（从左到右、从上到下）
-      pageNumber, // 页码（1 起，来自页脚解码；读不出时为 0）
+      pageNumber, // 页码（1 起，来自右侧方块解码；读不出时为 0）
       charIndex: (pageNumber - 1) * LAYOUT.perPage + i, // 全量字序，直接对应字表位置
       cellRect: cell, // 字位框（设计 pt）
       boxRect: box, // 书写格（设计 pt）
@@ -523,14 +524,25 @@ export function sliceWritingBoxes(designGray, options = {}) {
 }
 
 // 方向尝试顺序（决策 二-11）：竖版图（高 > 宽）说明纸很可能是竖着放进去扫的，先试 90 与 270；
-// 横版图先按送进来的方向，再试 180（整页上下颠倒时定位块仍在四角，但页脚会跑到纸的"上方"）。
+// 横版图先按送进来的方向，再试 180（整页上下颠倒时定位块仍在四角，但右侧方块会跑到纸的"上方"）。
 function orientationOrder(gray) {
   return gray.height > gray.width ? [1, 3, 0, 2] : [0, 2, 3, 1]
 }
 
-// 在**一个方向**上跑完整条链路：找四角 → 透视校正 → 校正自检 → 页脚解码。
+// 在**一个方向**上跑完整条链路：找四角 → 透视校正 → 校正自检 → 右侧方块解码。
 // 切格不在这里做：方向定下来之后，要切的是**选定方向**校正出来的那张设计坐标图，只切一次。
 // 复用调用方给的 opt.mask 只在原方向成立 —— 旋转后坐标全变，必须重算（调用方置空）。
+// 返回（失败时同样按这个形状返回，前面几步的产物能给多少给多少）：
+//   · ok         —— **这一页被可靠处理了**：右侧方块解得出 且 四角残差在限内（条码读不出不影响它）
+//   · stage      —— 走到哪一步停下：marks（没找到四角）/ transform（解不出透视）/ done
+//   · marks      —— 四角定位块的查找结果（含中文失败原因）
+//   · matrix     —— 原图 → 设计坐标的 3×3 透视矩阵（切格用它）
+//   · cornerErrors —— 校正后四角残差（像素）；verifyRectified 关掉时为 null
+//   · designGray —— 校正后的灰度图（设计坐标系，切格与采样都在它上面做）
+//   · footer     —— 右侧方块（页号 / 档位 / 指纹）的解码结果
+//   · barcode    —— 底部条码的解码结果（整页字序；**只在最终方向上解一次**）
+//   · timings    —— 各段的耗时（毫秒），排查慢件用
+//   · reason     —— 失败时给用户看的中文原因
 function analyzeOrientation(gray, opt) {
   const timings = {}
   const tMarks = now()
@@ -591,8 +603,8 @@ function analyzeOrientation(gray, opt) {
 // ── 单页总入口 ────────────────────────────────────────────────────────────
 
 /**
- * 处理一页扫描件：方向纠正 → 找四角 → 透视校正 → 页脚解码 → 切格。
- * 注意 ok 的含义是"这一页被机器可靠处理了"（含页脚解码成功、校正误差在限内）。
+ * 处理一页扫描件：方向纠正 → 找四角 → 透视校正 → 右侧方块解码 → 切格。
+ * 注意 ok 的含义是"这一页被机器可靠处理了"（含右侧方块解码成功、校正误差在限内）。
  * @param {{data:Uint8ClampedArray,width:number,height:number}} gray 预处理后的灰度图（已去噪）
  * @param {object} [options] DETECT_DEFAULTS + { slice, verifyRectified, keepDesignGray }
  */
@@ -603,8 +615,8 @@ export function analyzePage(gray, options = {}) {
   const messages = []
 
   // ── 方向纠正（决策 二-11）───────────────────────────────────────────────
-  // 页脚解不出就换方向再试：**方向错了也会"找得到四角、校正得成"**，唯一识破它的是页脚编码，
-  //   所以这里以"页脚能解出 且 校正残差在限内"为成功的判据，四个方向都不成才明确失败。
+  // 右侧方块解不出就换方向再试：**方向错了也会"找得到四角、校正得成"**，唯一识破它的是右侧方块，
+  //   所以这里以"右侧方块能解出 且 校正残差在限内"为成功的判据，四个方向都不成才明确失败。
   const order = opt.autoOrient ? orientationOrder(gray) : [0]
   const tried = []
   let picked = null
@@ -654,7 +666,7 @@ export function analyzePage(gray, options = {}) {
   } else if (opt.autoOrient && !picked.ok && tried.length > 1) {
     messages.push({
       level: 'error',
-      text: '这张扫描件在 ' + tried.length + ' 个方向上都读不出页脚编码：请确认打印时选的是实际大小、纸面平整没有翘边，' +
+      text: '这张扫描件在 ' + tried.length + ' 个方向上都读不出右侧方块：请确认打印时选的是实际大小、纸面平整没有翘边，' +
         '或把纸按横向放正后重扫一次'
     })
   }
@@ -707,7 +719,7 @@ export function analyzePage(gray, options = {}) {
 /**
  * 把多页的处理结果汇总成"这一批能不能收"的判定。
  * 规则（《决策记录》一-9 的 2026-10-15 修订，替代原"批次校验码不符即整批拦下"那套）：
- *   - 页脚读不出的页 → 只提示（页号与字序改由纸面参考字定；定不出来时那一页整页失败）
+ *   - 右侧方块读不出的页 → 只提示（页号与字序改由纸面参考字定；定不出来时那一页整页失败）
  *   - 页号重复 → error；非字表页（指纹 0 的打印自检页）→ info，不参与字形识别
  *   - 字表页有缺 → warn（不拦下：用户可以先识别已有的那几页）
  * @param {Array} pages analyzePage 的结果数组
@@ -750,7 +762,7 @@ export function summarizeBatch(pages, options = {}) {
         duplicates.push(row.pageNumber)
         problems.push({
           level: 'error',
-          text: '第 ' + seen.get(dupKey) + ' 个文件与第 ' + file + ' 个文件的页脚都写着' +
+          text: '第 ' + seen.get(dupKey) + ' 个文件与第 ' + file + ' 个文件的右侧方块都写着' +
             (row.kind === 'correction' ? '更正册第 ' : '第 ') + row.pageNumber + ' 页，请确认有没有重复上传同一页'
         })
       } else {
@@ -760,7 +772,7 @@ export function summarizeBatch(pages, options = {}) {
       if (row.kind === 'main') row.isSheetPage = typeof sheetPages !== 'number' || row.pageNumber <= sheetPages
     }
     if (footer && !footer.ok) {
-      // 页脚读不出**只提示**（2026-10-15 口径）：页号与字序由纸面参考字序列定位定，定不出来时
+      // 右侧方块读不出**只提示**（2026-10-15 口径）：页号与字序由纸面参考字序列定位定，定不出来时
       //   那一页自己会整页失败（扫描件那一层）。原来这里推 error，于是"被参考字救回来、照常可用的页"
       //   与"这一批被拦下"会同时出现在一屏上（两处结论打架，子代理实测指出）。
       problems.push({ level: 'warn', text: '第 ' + file + ' 个文件：' + footer.message })
@@ -768,13 +780,13 @@ export function summarizeBatch(pages, options = {}) {
     return row
   })
 
-  // 页脚读不出：只提示 —— 页号与字序会改由纸面参考字定（决策 五-9 的新模型），
+  // 右侧方块读不出：只提示 —— 页号与字序会改由纸面参考字定（决策 五-9 的新模型），
   //   不再要求"手选页序 + 显式确认批次"（那条界面操作已去掉）
   const noFooter = rows.filter((r) => r.kind === 'unknown')
   if (noFooter.length) {
     problems.push({
       level: 'warn',
-      text: '有 ' + noFooter.length + ' 页的页脚读不出（第 ' + noFooter.map((r) => r.file).join('、') +
+      text: '有 ' + noFooter.length + ' 页的右侧方块读不出（第 ' + noFooter.map((r) => r.file).join('、') +
         ' 个文件）：这些页的页号与字序会由纸面参考字定；定不出来的页会整页失败，只能重扫'
     })
   }

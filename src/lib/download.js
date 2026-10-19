@@ -12,7 +12,3 @@ export function downloadBytes(bytes, filename, mime = 'application/octet-stream'
   // 交给浏览器读完再回收
   setTimeout(() => URL.revokeObjectURL(url), 10000)
 }
-
-export function downloadText(text, filename, mime = 'text/plain;charset=utf-8') {
-  downloadBytes(new TextEncoder().encode(text), filename, mime)
-}

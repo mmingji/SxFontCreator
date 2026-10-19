@@ -1,4 +1,4 @@
-// 页级校验码（印在页脚高 12 位的那 12 位）—— 零依赖纯函数，单独成文件的原因与原来那个
+// 页级校验码（印在右侧方块里的 12 位的那 12 位）—— 零依赖纯函数，单独成文件的原因与原来那个
 // 批次校验码一样：生成端（templatePdf.js，依赖 pdf-lib 与 fontkit）与识别端（scanFlow /
 // referenceCharReader）都要用它，把它留在任何一边都会让另一边为了一个哈希函数多背一份依赖。
 //
@@ -73,9 +73,9 @@ export function pageCharsAt(chars, pageNumber, perPage) {
 }
 
 /**
- * 用指纹在候选字序里**反推页号**（识别端的救回路径：页脚页号位读错、或猜错了字序来源时）。
+ * 用指纹在候选字序里**反推页号**（识别端的救回路径：右侧方块里的页号位读错、或猜错了字序来源时）。
  * 逐页算指纹比对，命中即返回那一页 —— 全量 61 页只要 61 次哈希（每次 136 个字），耗时可忽略。
- * @param {number} pageCode 纸面页脚上的 12 位指纹
+ * @param {number} pageCode 纸面右侧方块上的 12 位指纹
  * @param {string|string[]} chars 候选全序字序
  * @param {number} perPage 每页格数
  * @param {{maxPages?:number}} [options] maxPages 限制试多少页（默认按字序长度算满）

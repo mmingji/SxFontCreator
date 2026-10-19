@@ -265,7 +265,7 @@ export const useProjectStore = defineStore('project', {
 
     /**
      * 记一笔"已经生成过模板"（决策 五-9 的收尾：第 1 步不再记批次，只留这条元信息）
-     * 为什么要它：进度判据里"第 1 步完成 / 能不能进第 2、3 步"原本靠 batchCount，而批次现在只由第 2 步
+     * 为什么要它：进度判据里"第 1 步完成 / 能不能进第 2、3 步"原本靠 batchCount，而那一层现在已经没有
      *   按需自动建 —— 不换判据的话，生成过模板也进不去下一步（flow.js 的 templatePages 读这里）。
      * 只存元信息、**不存 PDF 字节**：产物按需重建（五-5 的口径）。
      * @param {object} info { sheetPages, charCount, order, scope, fileName }
@@ -294,7 +294,7 @@ export const useProjectStore = defineStore('project', {
     //   原来它们负责"进第 2 步自动复用最近一个批次、没有就建一个"，只为给字形分片键提供命名空间；
     //   分片键改成只用页序（lib/glyphStore.js）之后，这一步没有存在意义了。
 
-    // 2026-10-15 用户拍板：「逐格确认」这条界面操作已去掉（页脚校验码让每页自证，字的归属由
+    // 2026-10-15 用户拍板：「逐格确认」这条界面操作已去掉（右侧方块里的校验码让每页自证，字的归属由
     //   "页号 + 格号 + 字序"唯一确定），因此 setScanPageChar 一并删除 —— 需要时从 git 历史取回。
 
     // 开始一轮识别：清掉上一轮的结果，记下这一轮用的字序（识别时按它把格号映射成字）
@@ -317,7 +317,7 @@ export const useProjectStore = defineStore('project', {
       schedulePersist(this)
     },
 
-    // 逐页追加（界面要边跑边显示；每页一次，靠防抖合并落盘，不会写出 51 次）
+    // 逐页追加（界面要边跑边显示；每页一次，靠防抖合并落盘，不会写出 61 次）
     appendScanPage(record) {
       this.scan.pages = [...this.scan.pages, record]
       this.markDirty()
@@ -342,7 +342,7 @@ export const useProjectStore = defineStore('project', {
      *   被圈数、更正配对全都按**未去重**的页算：真机上 12 份同一张纸让"被红笔圈 29 个"、
      *   更正配对里同一个字出现四行、下面一大片"没有对应格"。
      * @param {Array<{fileIndex:number, duplicateOf:number}>} duplicates
-     * @param {Array<{fileIndex:number, duplicateOf:number}>} [failedDuplicates] 整页失败、但页脚读出了同一个
+     * @param {Array<{fileIndex:number, duplicateOf:number}>} [failedDuplicates] 整页失败、但右侧方块读出了同一个
      *   页号的那些件（折角页 / 去阴影页…）：只用于**界面提示**，不影响统计
      */
     applyScanDuplicates(duplicates, failedDuplicates) {
@@ -704,7 +704,7 @@ export const useProjectStore = defineStore('project', {
      */
     async clearAllData() {
       this.$reset()
-      // $reset 会把批次表也清空 —— 这正是"回到刚打开软件"该有的样子；接下来只处理盘上那一份
+      // $reset 把内存里的项目状态整份复位 —— 这正是"回到刚打开软件"该有的样子；接下来只处理盘上那一份
       const res = await clearStorage()
       this.dirty = false
       return res

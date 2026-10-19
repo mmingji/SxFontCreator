@@ -8,32 +8,13 @@
 //   ④ **一次只跑一个任务**：Worker 是单例、内部循环是串行的，并发发起两个任务只会互相插队
 //      （整批识别与单页重传本来也互斥：界面在两处都做了 `running` 判断）。
 //
-// 为什么用注入式装载（`createWorker` 可替换）：`?worker&inline` 的导入方式绑在构建工具上，
-//   而 `test:scanflow` 这一类测试是在浏览器里**直接跑源码模块**（没有打包），
-//   所以真正的装载做成"默认实现 + 可替换"，测试里换成同一个 worker 文件的模块形态即可。
 // 装载方式的硬约束见 workers/scanRecognition.worker.js 的头注释：file:// 下只有内联 worker 可用。
 import { loadBuiltinFont } from '../lib/referenceFont.js'
 
-// 默认装载：构建期内联的经典 worker（Vite 的 `?worker&inline`，见 vite.config.js 的 worker.format）
-let createWorker = () => {
+// 装载：构建期内联的经典 worker（Vite 的 `?worker&inline`，见 vite.config.js 的 worker.format）
+const createWorker = () => {
   // 动态 import 只在真正识别时发生；`?worker&inline` 会把 worker 的字节内联进主包
   return import('../workers/scanRecognition.worker.js?worker&inline').then((mod) => new mod.default())
-}
-
-/**
- * 替换 Worker 的装载方式（**测试与降级用的注入口**）。
- * 用途有两条：
- *   ① 测试：在浏览器里直接跑源码模块时没有打包器，`?worker&inline` 用不了 —— 换成
- *      `new Worker(new URL('…/scanRecognition.worker.js', location.href), { type: 'module' })`；
- *   ② 降级：万一内联 worker 在真实交付物上出问题（清单 三-14 挂着的未实测项），
- *      把装载方式换成"主线程直接跑"的空实现即可退回旧路子 —— 识别计算代码一行不用改。
- * 传非函数时忽略（恢复默认要用 `resetWorker()` 之后的下一次装载）。
- */
-export function setWorkerFactory(factory) {
-  if (typeof factory !== 'function') return
-  createWorker = factory
-  // 换装载方式必须丢掉旧实例与旧状态，否则会连到上一个 worker 上
-  resetWorker()
 }
 
 let worker = null
@@ -72,15 +53,6 @@ export function resetWorker() {
   workerReady = null
   activeRid = null
   fontSent = false
-}
-
-/**
- * Worker 是否已经装载（**调试与测试用的探针**）。
- * 生产路径不需要它：`recognizeBatchInWorker` / `recognizePageInWorker` 自己会按需装载；
- * 留着是为了排查"到底有没有起后台线程"（清单 三-14 那条未实测项就是要人在真机上确认这件事）。
- */
-export function isWorkerReady() {
-  return !!worker
 }
 
 /** File → ArrayBuffer（读失败给中文原因，不让它变成一个看不懂的异常） */
@@ -136,7 +108,7 @@ function runTask(payload, hooks = {}) {
     // 重复页的去重结论（2026-10-14 修）：它是在 Worker 的逐页循环**之后**算出来的，逐页那批 page 消息里
     //   还没有 `duplicateOf` —— 只能随 `done` 一起回来，再由界面补写进 store（见 store.applyScanDuplicates）
     let duplicates = []
-    // 整页失败但页脚同页号的那些件（同样只能随 done 回来，见 scanFlow.markDuplicatePages）
+    // 整页失败但右侧方块同页号的那些件（同样只能随 done 回来，见 scanFlow.markDuplicatePages）
     let failedDuplicates = []
     // 单页任务只有一条 `page` 消息，**没有** `done`（见 worker 的 handlePage）——
     // 所以那一类必须"收到 page 就结束"。整批任务靠 `done` 结束，并留一条兜底：

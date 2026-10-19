@@ -17,7 +17,7 @@ const store = useProjectStore()
 // 下次启动时它会被判定为较新的一份并被固化回 IndexedDB（机制见 lib/persist.js 顶部说明）。
 // 无条件写快照会让每次刷新都留一份多余副本，下次打开还会多走一次恢复流程。
 // **内容必须是整份项目数据**（store.projectData()）：曾经这里手写了 `{ rev, meta, template }`，
-//   漏掉 selection / batches / scan / correction / font —— 于是"改完选字立刻刷新"会把选字丢成空
+//   漏掉 selection / scan / correction / font —— 于是"改完选字立刻刷新"会把选字丢成空
 //   （2026-10-07 冒烟的三处诊断数据抓到）。字段清单只留在 store 那一处。
 // **2026-10-16 加固（清单 四-52：冒烟里兜底偶发失败过一次）**：
 //   ① **两条事件都挂**（pagehide + visibilitychange(hidden)）—— 页切到后台时浏览器保证先发后者，

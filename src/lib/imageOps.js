@@ -2,7 +2,7 @@
 // 职责：**只做像素运算**，不碰 DOM、不碰业务、不读文件 —— 切格（1.5）、字形提取（1.6）、红圈识别（1.7）
 //   都从这里取算子；将来要换实现（例如真需要 OpenCV 时）只替换这一层（《决策记录》二-3）。
 // 为什么自研：本项目要的四件事都是**小图上的简单算子** —— 灰度化、阈值、连通域、按已知坐标重采样，
-//   而 OpenCV.js 的代价与体积无关（常驻数十 MB、首次使用要等 WebAssembly 编译、内部报错只有错误码）。
+//   而 OpenCV.js 的代价与收益不成比例（常驻数十 MB、首次使用要等 WebAssembly 编译、内部报错只有错误码）。
 // 数据结构约定（三套，互不混用）：
 //   RGBA = { data: Uint8ClampedArray(4×w×h), width, height }  与 ImageData 同构，通道交错 R,G,B,A
 //   Gray = { data: Uint8ClampedArray(w×h),   width, height }  单通道 0~255，行优先
@@ -15,11 +15,11 @@
 // 建一张单通道灰度图（fill 默认白底 255：纸面是白的，背景即"无墨"）
 export function createGray(width, height, fill = 255) {
   const data = new Uint8ClampedArray(width * height)
-  if (fill) data.fill(fill)
+  if (fill) data.fill(fill) // 省略 / 传 0 时不填：Uint8ClampedArray 的初值本来就是 0
   return { data, width, height }
 }
 
-// RGBA → 灰度。权重用 ITU-R BT.601（0.299/0.587/0.114），与需求 5.2 写死的公式一致
+// RGBA → 灰度。权重用 ITU-R BT.601（0.299/0.587/0.114）—— 与《实施计划》步骤 1.4「灰度化」写死的公式一致
 export function rgbaToGray(rgba) {
   const { data, width, height } = rgba
   const out = new Uint8ClampedArray(width * height)
@@ -173,7 +173,7 @@ export function adaptiveThreshold(gray, { blockSize = 32, offset = 12 } = {}) {
 // ── 去噪与形态学 ──────────────────────────────────────────────────────────
 
 // 3×3 中值滤波：去掉纸面孤立的小黑点（椒盐噪声），同时**几乎不改变笔画粗细**。
-// 为什么不用均值滤波：均值会把细笔画"糊淡"，1cm 格里的细横（约 8 像素宽）经不起。
+// 为什么不用均值滤波：均值会把细笔画"糊淡"，1cm 格里的细横（实测笔画宽度 p90 中位约 6 像素）经不起。
 // 实现：把 9 个邻域值装进定长数组做插入排序 —— 邻域数据通常高度重复，插入排序在这种输入上
 //   接近线性；**必须是完整排序**（曾写成"只排前一半就取中位"，取到的是前缀最大值，不是中位数，
 //   被 test/image-ops.mjs 的直边断言抓住）。
@@ -269,8 +269,8 @@ export function closeMask(mask, radius = 1) {
 
 // 距离变换（chamfer 5-7-11 两遍扫描）：每个前景像素到**最近背景像素**的距离 × 5。
 // 为什么需要它：判"笔画有多粗"只能从掩膜量（字形本身没有笔画宽度字段），而逐像素数
-//   到边界的距离正是笔画半宽 —— 离背景最远的那些像素就在笔画中轴上（阶段三 3.1 的
-//   "逐字按字面框规整"要用它做笔画保护：放大 k 倍等于笔画也粗 k 倍）。
+//   到边界的距离正是笔画半宽 —— 离背景最远的那些像素就在笔画中轴上（阶段三 3.2 的字形体检
+//   用它量笔画宽度；早先那条"逐字按字面框规整"2026-10-07 已放弃，见决策 四-7）。
 // 为什么用 chamfer 近似而不是精确欧氏距离：两遍扫描、整数运算、O(wh)，误差 < 2%
 //   （5-7-11 权重是对欧氏距离 ×5 的拟合），而精确算法要么带开方、要么要更复杂的下包络扫描。
 // 注意：图外的像素按**背景**处理不到（没有外圈），贴边的笔画会被低估半宽 —— 本项目里
@@ -336,7 +336,8 @@ export function distanceTransform(mask) {
 // 笔画宽度统计（像素）：对前景像素取距离变换值的分位数 ×2（距离是半宽，宽度要乘 2）。
 // 为什么给三个分位数而不是一个"笔画宽度"：手写笔画粗细不匀（起笔顿、收笔尖）——
 //   median 代表"典型笔画"、p90 接近"最粗的那一笔"、max 是单点最粗（容易被顿笔拉高）。
-//   **要保护笔画不被放大变粗，该用哪个由调用方选**（阶段三 3.1 的口径待拍板，三个都留着）。
+//   **口径已定：调用方只用 median**（"笔画偏细" = median < 3% 格宽，决策 四-9 ⑥）——
+//   p90 与 max 保留作诊断参考（校准阈值时看得到最粗的那一笔）。
 // 返回：{ pixels, median, p90, max }（单位像素；pixels = 前景像素数）
 export function strokeWidthEstimate(mask) {
   const dt = distanceTransform(mask)
@@ -360,7 +361,7 @@ export function strokeWidthEstimate(mask) {
 // 连通域标记（8 邻域）＋按面积过滤，返回每个连通块的外接矩形、面积与质心。
 // 用途：1.5 找四角定位块（按面积与长宽比过滤）、1.6 剔除参考字残留的小笔画、1.7 找红圈。
 // 实现用**显式栈**而不是递归：整页前景可能有上万像素一块，递归会爆调用栈。
-// keepPixels = true 时同时返回该块的像素坐标（找红圈要判"环形"）。默认不返回到处是血的数组。
+// keepPixels = true 时同时返回该块的像素坐标（找红圈要判"环形"）；默认不返回坐标数组 —— 整页前景可达上万像素，逐块存下来很占内存。
 export function connectedComponents(mask, { minArea = 1, maxArea = Infinity, keepPixels = false, maxComponents = 5000 } = {}) {
   const { data, width, height } = mask
   const labels = new Int32Array(width * height).fill(-1)
@@ -623,8 +624,9 @@ export function meanGray(gray) {
   return data.length ? sum / data.length : 0
 }
 
-// 前景占比（0~1）：阈值化后有多少像素被判成"有墨"。用于判断"这页是不是空白纸"、
-// 以及后续切格时判断"这一格有没有写字"（决策 八-8 的三态判定依赖它）。
+// 前景占比（0~1）：阈值化后有多少像素被判成"有墨"。唯一的生产调用点是 `scanPreprocessor`
+//   （光照均匀度评估 + 空白件自检）；**逐格"这一格有没有写字"不走这里** —— 那是
+//   `handwritingExtractor` 按 inkPixels 判的（决策 二-10 / 八-8 的四态）。
 export function foregroundRatio(mask) {
   const { data } = mask
   let n = 0

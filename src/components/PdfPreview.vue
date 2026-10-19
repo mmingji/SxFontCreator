@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
     <div ref="bodyRef" class="pdf-preview-body" :style="placeholderHeight ? { minHeight: placeholderHeight + 'px' } : null">
       <canvas ref="canvasRef" class="pdf-preview-canvas" :class="{ hidden: status !== 'ready' }" @click="openZoom"></canvas>
       <p v-if="status === 'idle'" class="pdf-preview-empty">
-        {{ loading ? '正在生成，稍后显示预览…' : (emptyText || '还没有预览：先在下面点「生成模板 PDF」或「更新预览」') }}
+        {{ loading ? '正在生成，稍后显示预览…' : (emptyText || '还没有预览：先在下面点「下载模板」或「更新预览」') }}
       </p>
       <p v-else-if="status === 'rendering' && !pageCount" class="pdf-preview-empty">正在渲染预览…</p>
       <p v-else-if="status === 'error'" class="pdf-preview-empty error">{{ errorText }}</p>

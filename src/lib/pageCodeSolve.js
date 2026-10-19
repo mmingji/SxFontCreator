@@ -1,7 +1,7 @@
-// 指纹反解：用页脚那 12 位校验码，把"逐格认字认错的格"纠正回来（2026-10-18 新增）
+// 指纹反解：用右侧方块里那 12 位校验码，把"逐格认字认错的格"纠正回来（2026-10-18 新增）
 //
 // 为什么需要它：逐格认字是**没有候选字序时**的最后一条路（自定义档丢了 字序.sxorder、参考字又被
-//   红圈 / 手写序号盖住时尤其容易错几个字）。而页脚指纹是"这一页的字"的整页哈希 —— 错一个字就全变，
+//   红圈 / 手写序号盖住时尤其容易错几个字）。而右侧方块里的指纹是"这一页的字"的整页哈希 —— 错一个字就全变，
 //   于是现在只能整页失败、写过的字白写（用户实测问出来的）。可**每格的候选其实已经算好了**：
 //   referenceCharReader 的 `cells[i].candidates` 就是 top-5（带分数与 margin），这里做一件小事 ——
 //   在"最可疑的 U 格"的 top-K 候选里穷举，找出使指纹与纸面一致的那一组。
@@ -39,7 +39,7 @@ export const SOLVE_DEFAULTS = {
 /**
  * 在每格候选里穷举，找出与目标指纹一致、且"最像"的整页字序。
  * @param {Array} cells referenceCharReader 产出的格（每格 `{ index, empty, char, candidates:[{char,score}], margin }`）
- * @param {number} pageCode 纸面页脚读出的 12 位指纹（0 表示没读出来 → 无法反解）
+ * @param {number} pageCode 纸面右侧方块读出的 12 位指纹（0 表示没读出来 → 无法反解）
  * @param {object} [options]
  * @returns {{chars:string[], code:number, fixed:number, tried:number, matches:number, gain:number}|null}
  *   `chars` 是**整页**字序（空格格是 null，与调用方约定一致）；`fixed` = 与逐格认字结果相比改了几格；
@@ -120,8 +120,6 @@ export function solvePageCharsByCode(cells, pageCode, options = {}) {
   const second = matches[1]
   const gain = second ? (second.score - best.score) / (second.score || 1) : 1
   if (second && gain < opt.minGain) return null
-  // 只有一个匹配时也要确认它"像"：候选分数总和过大说明每格都是硬凑的（真值不在候选里）
-  if (!second && best.score > (opt.maxScore || Infinity)) return null
 
   let fixed = 0
   for (let i = 0; i < best.chars.length; i++) if ((best.chars[i] || null) !== (original[i] || null)) fixed++

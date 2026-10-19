@@ -107,7 +107,7 @@ export function dedupeDuplicatePages(pages) {
  * 单页重传 / 补传能不能收下这一页（清单 一-8，决策 八-14 ③；**2026-10-15 用户口径后收敛为一条判据**）。
  *
  * **只拒绝"整页没能识别"** —— 把失败原因原样带出来，让用户知道重扫要注意什么。
- * 这里不再做任何校验码比对：页脚那 12 位现在是"这一页那些字的指纹"（lib/pageCode.js），
+ * 这里不再做任何校验码比对：右侧方块里那 12 位现在是"这一页那些字的指纹"（lib/pageCode.js），
  *   它的自证发生在识别内部（对不上就整页失败，见 scanFlow 的 ③.6）—— 走到这一步的记录已经自证过了。
  * @param {object} input
  * @param {object|null} input.record 新识别出来的页记录（recognizePage 的产物）
@@ -154,10 +154,10 @@ export function collectGlyphStats(pages) {
 /**
  * 收批闸门：这批识别结果能不能进入下一步（更正核对 / 字体构建）。
  * 规则（《决策记录》二-6、五-9 的 2026-10-15 口径）：
- *   · **单页失败**（找不到四角定位块、校正超限、页脚校验码与字序对不上）→ **跳过并标红**，不拦整批
- *   · **页脚读不出的页** → 页号与字序由纸面参考字序列定位定；定不出来时那一页会自己整页失败
+ *   · **单页失败**（找不到四角定位块、校正超限、右侧方块里的校验码与字序对不上）→ **跳过并标红**，不拦整批
+ *   · **右侧方块读不出的页** → 页号与字序由纸面参考字序列定位定；定不出来时那一页会自己整页失败
  *     （"手选页序"这条界面兜底已去掉 —— 页级校验码让识别端能自证，不必让用户填数字）
- *   · **整批拦下**只剩一条：同一页被重复上传（页号重复）；「批次校验码不符」与「批次作废」都已删
+ *   · **整批拦下**只剩一条：同一页被重复上传（页号重复）；「批次」这一层与批次校验码都已删
  *   · 缺页只是提醒（warn），不拦 —— 用户可以先把已经写好的页做完
  * 判据全部来自 summarizeBatch 的 rows（按"种类"分拣），**不靠匹配提示文案** —— 文案会改，种类不会。
  * @param {object} input
@@ -173,12 +173,12 @@ export function evaluateScanGate(input = {}) {
   const notes = []
   const skipped = []
   let usablePages = 0
-  let footerlessFailed = 0 // 页脚读不出、且整页失败的页数（见下面失败分支的注释）
+  let footerlessFailed = 0 // 右侧方块读不出、且整页失败的页数（见下面失败分支的注释）
   let duplicatePages = 0 // 重复页里**没被采用**的页数（去重结果，见 dedupeDuplicatePages）
 
   // 判据优先用 summarizeBatch 的 rows，但**只在行数与页数对得上时**才信它 ——
   // 汇总可能来自上一轮（或还没重算），那时 rows 与 pages 描述的不是同一批件，
-  // 混着用会得出自相矛盾的结论（实测踩到：行说"页脚没读出"、页记录说"页脚读出了第 1 页"）。
+  // 混着用会得出自相矛盾的结论（实测踩到：行说"右侧方块没读出"、页记录说"右侧方块读出了第 1 页"）。
   // 对不上时退回页记录本身：识别是逐页回调的，"这一页刚处理完、摘要还没算"本来就是常态。
   const useRows = rows.length === pages.length
   const rowOf = (i) => {
@@ -204,7 +204,7 @@ export function evaluateScanGate(input = {}) {
       continue
     }
     // 单页失败：跳过并标红（决策 二-6：明确失败、提示重扫那一页）。
-    // 2026-10-15 起这里不再有任何"校验码比对"的分支 —— 页脚那 12 位改成本页指纹，识别端在
+    // 2026-10-15 起这里不再有任何"校验码比对"的分支 —— 右侧方块里那 12 位改成本页指纹，识别端在
     // scanFlow 里已经拿它自证过（对不上就整页失败），走到这一步的记录都是自证通过的。
     if (!row.ok || !page.ok) {
       skipped.push({ fileIndex: page.fileIndex, fileName: page.fileName, reason: page.reason || '这一页没能识别' })
@@ -212,16 +212,16 @@ export function evaluateScanGate(input = {}) {
       continue
     }
     if (!row.footerOk) {
-      // 页脚读不出：页号与字序由纸面参考字序列定位定（决策 五-9）；定不出来的页在识别里就会整页失败，
-      //   所以走到这里而 pageNumber 为空的极罕见（例如序列定位给了页号、页脚却坏）——只提示，不拦
+      // 右侧方块读不出：页号与字序由纸面参考字序列定位定（决策 五-9）；定不出来的页在识别里就会整页失败，
+      //   所以走到这里而 pageNumber 为空的极罕见（例如序列定位给了页号、右侧方块却坏）——只提示，不拦
       if (page.pageNumber) {
         if (isCorrection) correctionPages++
         else usablePages++
-        notes.push(label + ' 的页脚读不出：页序按' +
+        notes.push(label + ' 的右侧方块读不出：页序按' +
           (page.pageNumberSource === 'sequence' ? '纸面参考字序定位得到' : '沿用原页') +
           '第 ' + page.pageNumber + ' 页')
       } else {
-        notes.push(label + ' 的页脚读不出，页号也没定出来：这一页不进字形，请重扫一次')
+        notes.push(label + ' 的右侧方块读不出，页号也没定出来：这一页不进字形，请重扫一次')
       }
       continue
     }
@@ -242,9 +242,9 @@ export function evaluateScanGate(input = {}) {
       '，其余 ' + duplicatePages + ' 页已忽略、不计入结果；想换用另一份，就在「看文件清单」里去掉不想要的那张再识别一遍')
   }
   // 2026-10-15：「手选页序」这条界面操作已去掉，所以这里不再有"请去手选页序"的提示。
-  //   页脚读不出时页号与字序由纸面参考字序列定位定；定不出来时识别本身就会把那一页判为失败。
+  //   右侧方块读不出时页号与字序由纸面参考字序列定位定；定不出来时识别本身就会把那一页判为失败。
   if (footerlessFailed > 0) {
-    notes.push('有 ' + footerlessFailed + ' 页的页脚没读出来、方向也就认不准：整页没能识别 —— ' +
+    notes.push('有 ' + footerlessFailed + ' 页的右侧方块没读出来、方向也就认不准：整页没能识别 —— ' +
       '把纸按横向放正重拍或重扫这一页')
   }
   for (const m of summary.problems || []) {

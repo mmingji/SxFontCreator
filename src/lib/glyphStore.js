@@ -44,6 +44,16 @@ export async function maskToPngDataUrl(mask, width, height) {
   })
 }
 
+/**
+ * 掩膜 PNG（dataURL）→ 掩膜数组（1 = 笔迹）。
+ * @param {string} dataUrl 落盘时由 maskToPngDataUrl 编出来的那一份
+ * @param {number} width 落盘时记录的切片宽（正常为 LAYOUT 推导出的切片尺寸）
+ * @param {number} height 落盘时记录的高
+ * @returns {Promise<Uint8Array>} 长度 = width × height
+ * **为什么要显式传宽高、而不是从位图读**：分片的宽高随页记录一起落盘，解码时若发现位图比记录小
+ *   （历史分片、或写入被截断），按**左上角对齐**截断 / 补 0 —— 这是有意的宽容：宁可让个别边缘像素缺失，
+ *   也不让一整页字形因为尺寸对不上而读不出来（掩膜是自产自销的中间产物，不存在"别人给的奇怪图片"）。
+ */
 export async function pngDataUrlToMask(dataUrl, width, height) {
   const blob = await (await fetch(dataUrl)).blob()
   const bitmap = await createImageBitmap(blob)
@@ -74,7 +84,7 @@ export async function pngDataUrlToMask(dataUrl, width, height) {
  * 保存一页的字形掩膜（分片键：`v2.<页序>`）。
  * @param {object} input
  * @param {number} input.fileIndex 第几个文件（页序里的位置，也是分片键）
- * @param {number|null} input.pageNumber 页号（可能为 null：页脚读不出且序列定位也没成）
+ * @param {number|null} input.pageNumber 页号（可能为 null：右侧方块读不出且序列定位也没成）
  * @param {Array} input.glyphs `[{ char, cellIndex, mask, width, height, boxInSlice }]`（只传有笔迹的格）
  * @returns {Promise<{ok:boolean, count:number, bytes:number, error?:string}>}
  */

@@ -4,8 +4,8 @@
 //   界面固定传**内置楷体子集**（2026-10-11 起不再提供"选本机字体"：纸上印的那套参考字必须能被认出来，见决策 五-9）。
 // 版式几何（页面 A4 横向、每行 17 格 / 1.6cm、每页 8 行、书写格 1cm、参考字楷体 14pt、线宽与表格居中）
 //   实测自做字体网标准模板 V4.0（**历史来源，不是必须对齐的基准**，见《决策记录》一-1~一-4）；
-//   其余为自研：四角定位块、页脚页码编码（一-9）、参考字区域 1.02em 与逐字居中、田字格辅助线、
-//   色值体系（#A6A6A6 / #D9D9D9 / #2E6E7E）、表格上方那行要点、右侧中间的可见页码（一-4、一-19）。
+//   其余为自研：四角定位块、底部条码与右侧方块（一-20）、参考字区域 1.02em 与逐字居中、田字格辅助线、
+//   色值体系（#A6A6A6 / #D9D9D9 / #2E6E7E）、表格上方那行要点、右侧竖带最底端的可见页码（一-4、一-20）。
 // 为什么用 pdf-lib：页面尺寸与每个格子的坐标完全可控，用户按 100% 打印即与设计一致（一-10）。
 import { PDFDocument } from 'pdf-lib'
 // pdf-lib 嵌入自定义字体（TTF + 子集化）必须先注册 fontkit；@pdf-lib/fontkit 是它配套的 fork。
@@ -18,11 +18,11 @@ import { computePageCode, isBlankChar } from './pageCode.js'
 import { payloadToRows, packBarcodePayload, KIND, encodeScopeField } from './pageBarcode.js'
 import { CM, LAYOUT, cellRect, writingBoxRect, encodeSideBandBits, sideBandBlockRects, correctionPageNumber } from './layout.js'
 
-// 版面常量（LAYOUT、格位换算、页脚编码）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
+// 版面常量（LAYOUT、格位换算、右侧方块）已抽到 lib/layout.js（零依赖）：切格模块要用这些常量，
 // 但不能为此把 pdf-lib + fontkit（构建后约 1.16MB）拖进首屏 —— 与 computePageCode 抽到 lib/pageCode.js
 // 是同一个理由。这里 import 后再导出，保持既有引用（测试、界面、切格模块）不变。
 // 注意 `export { x } from './y'` 是再导出、不会在当前模块创建绑定，本文件内部要用就必须先 import（踩过这个坑）。
-// computePageCode 一并再导出：它是"生成端印在页脚、识别端拿去自证"的同一个算法，调用方从这里取。
+// computePageCode 一并再导出：它是"生成端印在右侧方块、识别端拿去自证"的同一个算法，调用方从这里取。
 export { CM, LAYOUT, cellRect, writingBoxRect, computePageCode }
 
 // 参考字的基线：字在**参考字区域内居中** —— 按该字自己的墨迹外框（glyphBox）算，
@@ -36,7 +36,7 @@ export function referenceBaselineY(cell, fontSize = LAYOUT.referenceFontSize, gl
   return centerY - mid * fontSize
 }
 
-// 画一页的公共部分：四角定位块 + **底部条码** + **右侧竖带**（《决策记录》一-20；旧"页脚 20 位横排"已删）
+// 画一页的公共部分：四角定位块 + **底部条码** + **右侧方块**（《决策记录》一-20；旧"页脚 20 位横排"已删）
 // input.pageCode：**本页校验码**（这一页那些字的 12 位指纹，见 lib/pageCode.js）——
 //   主区字表页按这一页实际印的字算；更正册与打印自检页传 0（它们没有"这一页的字"，0 是专用值）
 // input.payload：底部条码的整条码字（packBarcodePayload 的 bytes）—— 没有字序的件同样要印
@@ -63,12 +63,12 @@ function drawRegisterMarks(page, input) {
   })
 }
 
-// ── 底部条码与右侧竖带（《决策记录》一-20；取代原来的"页脚 20 位横排"）────────────────────
+// ── 底部条码与右侧方块（《决策记录》一-20；取代原来的"页脚 20 位横排"）────────────────────
 
 /**
  * 画底部横向条码：把载荷按 LAYOUT.barcode 的网格画成模块矩形（深色 = 1）。
  * **连续暗模块合并成一个矩形**：逐个模块画会在相邻矩形之间留出抗锯齿浅缝，合并后既没有缝、也少画很多条。
- * 行 0 = 最上面那一行（紧贴表格底边），与 payloadToRows 的位流顺序一致。
+ * 行 0 = 最上面那一行（与表格底边留约 0.67mm 间隙），与 payloadToRows 的位流顺序一致。
  * @param {object} page pdf-lib 的页面
  * @param {Uint8Array} bytes packBarcodePayload 的 bytes（整条码字，299 字节）
  * @returns {{x:number,y:number,width:number,height:number}[]} 实际画出的矩形（供测试核对几何）
@@ -119,7 +119,7 @@ export function drawSideBand(page, input) {
     }
     bitIndex++
   }
-  // 可见页码：竖带最底端、紧贴表格底边之上，居中于竖带
+  // 可见页码：竖带最底端、紧贴表格底边之上，**右沿对齐定位块右边缘**（不居中）
   if (input.font) {
     const label = input.visibleNumber === undefined ? input.pageNumber : input.visibleNumber
     const text = String(label)
@@ -137,8 +137,8 @@ export function drawSideBand(page, input) {
 }
 
 /**
- * 右侧中间的**可见页码**（2026-10-15 用户口径）。
- * 为什么要有它：页脚那串方块是给机器读的，人一眼看不出这一页是第几页；而写更正册时要按
+ * 右侧竖带最底端的**可见页码**（2026-10-15 用户口径；2026-10-18 挪到竖带最底端）。
+ * 为什么要有它：右侧那串方块是给机器读的，人一眼看不出这一页是第几页；而写更正册时要按
  *   "主区页号的先后顺序"写圈出来的字（一-7 / 二-13），没有可见页码就只能靠人自己记 —— 顺序一乱，
  *   整册更正就全错位。所以纸面上必须有一个**人一眼能看懂的页码**。
  * 位置口径（2026-10-18 起，决策 一-20）：**表格右侧竖带的最底端**、紧贴表格底边之上 ——
@@ -166,8 +166,8 @@ function drawVisiblePageNumber(page, pageNumber, font) {
 // 之后这三样都在表内了，但约束本身不变：新文案仍要过测试里那条"逐字符核字表"的断言）。
 // 表格上方那一行提示（**每页都印**）：把"打印 + 书写 + 扫描"的关键点压成一行 —— 打印设置（A4 彩打、
 // 质量选高、不缩放、不勾无边距）、用笔（0.5mm 黑色中性笔）、写法（居中书写、别出格、不描不改）、纠错（写错用红笔
-// 圈参考字）、纸张（防翘边折叠受潮）、扫描设置（照片模式、彩色、300dpi）。原来只在页脚左侧印一句打印要求，
-// 位置偏、容量只有约 40 字（2026-10-03 按用户要求改到顶部，并删掉页脚那句 —— 同一件事不在纸上说两遍）。
+// 圈参考字）、纸张（防翘边折叠受潮）、扫描设置（照片模式、彩色、300dpi）。原来只在右侧方块左侧印一句打印要求，
+// 位置偏、容量只有约 40 字（2026-10-03 按用户要求改到顶部，并删掉右侧方块那句 —— 同一件事不在纸上说两遍）。
 // **写法的措辞迭代（每一次都是同一句话被读成了别的意思，或口径本身不够准）**：① "笔画最好顶着田字格"
 // （易读成"要写出格"）→ ② "笔画别出田字格"（2026-10-04；装机实测发现字普遍写小、墨迹高度中位只有书写格的
 // 81.6%，清单 一-5，而它只剩"别写出去"的意思）→ ③ "居中写满格子(笔画贴到格子边、别出格)"（2026-10-04，
@@ -187,7 +187,7 @@ function drawVisiblePageNumber(page, pageNumber, font) {
 //   ① **更正册留空 = 保留主区原字形**（一-7 / 二-13），那一格的手写笔迹仍要用 —— 圈在书写格上会盖住
 //      笔迹、影响成字效果；圈在参考字上损失的只是"认参考字"这一条**佐证**路径。
 //   ② **字序不再依赖认参考字**（底部条码，一-18）：条码直接给出整页字序，被圈参考字认不出来的代价随之
-//      消失；但"认参考字"这一步**不删** —— 它作为条码字序的佐证保留（与页脚指纹互相印证）。
+//      消失；但"认参考字"这一步**不删** —— 它作为条码字序的佐证保留（与右侧方块里的指纹互相印证）。
 //   所以这一行**一字未动**（与 2026-10-07 定稿一致），改动只落在文档与《使用说明》的解释上。
 export const PAGE_HINT_LINES = [
   'A4彩打,质量选高,不缩放,不勾无边距;0.5mm黑色中性笔,居中书写,别出格,不描不改,写错用红笔圈参考字,防止纸张翘边,折叠,受潮;扫描用照片模式,图像类型彩色,300dpi。'
@@ -246,8 +246,13 @@ function drawCenteredText(page, text, centerX, y, size, font, color) {
   page.drawText(text, { x: centerX - width / 2, y, size, font, color })
 }
 
-// 打印自检页：放在文末，用户拿尺子量方框与标尺即可自证"打印缩放 = 100%"，
-// 黑白激光或按"适合页面"打印这类错误，能在浪费 51 页纸之前发现（决策记录 一-12）
+/**
+ * 打印自检页（文末那一页）：1cm 标准方框 + 10cm 标尺 + 说明文字 —— 用户先打这页、拿尺子量，
+ *   即可自证"打印缩放 = 100%"，在黑白银光 / 按"适合页面"打印这类错误浪费整套纸（全量 61 页）
+ *   之前发现（决策记录 一-12）。
+ * 它照样带四角定位块、底部条码与右侧方块（件类型 = 自检页），识别端因此不会把它当成字表页；
+ *   **指纹固定传 0**：这一页没有字，0 是"没有字"的专用值（一-19）；条码载荷里 charCount = 0、无字序。
+ */
 function drawSelfCheckPage(page, pageNumber, font) {
   const { pageWidth, pageHeight, markColor, gridColor } = LAYOUT
   const centerX = pageWidth / 2
@@ -391,13 +396,13 @@ function drawReferenceChar(page, cell, char, font, glyphBoxes) {
  * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（TTF）
  * @param {boolean} [options.includeSelfCheck] 是否在文末附一页打印自检页（默认附）
  * @param {number} [options.startPage] 起始页号（默认 1）。**重写模板 / 补写模板**用它把页号接在现有纸之后 ——
- *   页脚编的是"第几页"，接着编才不会与已经写过的纸撞号（撞号会被当成同一页覆盖掉）
+ *   右侧方块编的是"第几页"，接着编才不会与已经写过的纸撞号（撞号会被当成同一页覆盖掉）
  * @param {number} [options.onlyPage] **只生成这一页**（绝对页号，1 起，`sheetPages+1` = 自检页）——
- *   第 1 步预览按需生成用；不传 = 整份。页码与页脚指纹照整份算，所以与下载件里的同一页逐格一致
+ *   第 1 步预览按需生成用；不传 = 整份。页码与右侧方块里的指纹照整份算，所以与下载件里的同一页逐格一致
  * @param {(done:number,total:number)=>void} [options.onProgress] 进度回调（按字表页）
  * @returns {Promise<{bytes:Uint8Array, pageCount:number, sheetPages:number, selfCheck:boolean, glyphCount:number, perPage:number, pageCodes:number[], onlyPage:number}>}
  *   onlyPage = 0 表示整份，否则是这次生成的那一页；单页时 pageCodes 只含那一页（自检页为 [0]）
- *   pageCodes 是**每一页各自的 12 位校验码**（这一页那些字的指纹，印在页脚高 12 位）：
+ *   pageCodes 是**每一页各自的 12 位校验码**（这一页那些字的指纹，印在右侧方块里的 12 位）：
  *   识别端拿"猜出来的这一页的字"再算一遍比对，一致就说明页号与字序来源都对（决策 一-9 的 2026-10-15 修订）
  */
 export async function buildTemplatePdf({
@@ -416,7 +421,7 @@ export async function buildTemplatePdf({
   // **只生成一页**（2026-10-16 新增，第 1 步预览用；不传 = 整份，下载路径与既有测试的行为一个字不变）：
   //   传的是**绝对页号**（1 起，含自检页）。为什么要有它：预览一次只看一页，而整份生成在全量档要
   //   1.5 秒（书写示意还要 2.9 秒）—— 按需生成把"切档位等几秒"变成"等几十毫秒"。
-  //   **页码与页脚指纹照整份算**（页号由 p 推、指纹由这一页的字算，都不依赖"这一份里画了几页"），
+  //   **页码与右侧方块里的指纹照整份算**（页号由 p 推、指纹由这一页的字算，都不依赖"这一份里画了几页"），
   //   所以预览里看到的那一页与下载件里的同一页逐格一致（test:template 比对同一页的指纹）。
   const only = Number.isFinite(onlyPage) ? Math.min(Math.max(1, Math.trunc(onlyPage)), pageCount) : 0
 
@@ -428,11 +433,11 @@ export async function buildTemplatePdf({
   // 参考字外框表：让每个字在"参考字区域"里按自己的墨迹外形居中（解析失败时为 null，退回典型外框）
   const glyphBoxes = buildGlyphBoxTable(fontBytes)
 
-  // 画一页字表页（第 p 页，0 起），返回这一页的页脚指纹
+  // 画一页字表页（第 p 页，0 起），返回这一页的右侧方块里的指纹
   const drawSheetPage = (p) => {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     // 这一页的字：**先切出来、再算指纹、再用它印参考字** —— 三处必须用同一份，
-    // 否则"印在纸上的字"与"页脚指纹描述的字"就会不是一回事（识别端永远对不上）
+    // 否则"印在纸上的字"与"右侧方块里的指纹描述的字"就会不是一回事（识别端永远对不上）
     const slice = list.slice(p * perPage, (p + 1) * perPage)
     // **空白字符要当作"这一格没有字"**（2026-10-16 修）：字表里恰好有一个半角空格（基础字符 169 的第 1 个），
     //   它落在常用档第 48 页第 109 格、全量档第 60 页第 82 格。参考字字体给空格的是空字形 → 纸上没墨迹 →
@@ -463,15 +468,6 @@ export async function buildTemplatePdf({
       font,
       payload: packed.bytes
     })
-    // 把**这一页实际印进去的条码内容**记下来（数据区，不含纠错码字）：测试与排查用 ——
-    //   可以据此验证"生成端印的字序"与"识别端解出来的字序"是同一个东西（不用渲染 PDF 也能核）。
-    barcodes.push({
-      pageNumber: startPage + p,
-      charCount: indexes.length,
-      indexes,
-      data: packed.data,
-      dataLen: packed.dataLen
-    })
     drawHint(page, font, PAGE_HINT_LINES)
     for (let i = 0; i < pageChars.length; i++) {
       if (pageChars[i] === null) continue // 空白格：印出来什么都没有，跳过（指纹也把它排除了）
@@ -481,7 +477,6 @@ export async function buildTemplatePdf({
   }
 
   const pageCodes = []
-  const barcodes = []
   if (only) {
     // 单页模式：只画请求的那一页（自检页 = sheetPages + 1，它的指纹是专用值 0）
     if (only > sheetPages) {
@@ -496,23 +491,23 @@ export async function buildTemplatePdf({
       pageCodes.push(drawSheetPage(p))
       if (onProgress) {
         onProgress(p + 1, sheetPages)
-        // 让出一次主线程：否则生成 51 页时界面完全卡住，进度条也不会刷新
+        // 让出一次主线程：否则生成整套纸（全量 61 页）时界面完全卡住，进度条也不会刷新
         await new Promise((resolve) => setTimeout(resolve, 0))
       }
     }
     // 自检页放文末：不打乱字表页的编号（第 n 页编码 n−1 保持成立）。
     // 它带上"页号 = 字表页数 + 1、指纹 = 0"这组标记，识别端据此判定"这不是字表页"（0 是专用值）
-    if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font, 0)
+    if (selfCheck) drawSelfCheckPage(pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]), sheetPages + 1, font)
   }
 
   const bytes = await pdf.save()
-  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes, barcodes, onlyPage: only }
+  return { bytes, pageCount, sheetPages, selfCheck, glyphCount: list.length, perPage, pageCodes, onlyPage: only }
 }
 
 /**
  * 生成更正册 PDF（空白册：只有书写格与格号，用于按顺序重写写错的字）
  * 格号跨页连续，便于人工核对"更正册第 k 格 → 主区哪个字"（决策记录 一-6、清单四-4）
- * 页脚页号用**更正册专用区间**（第 n 页编 128+n−1，见 layout.js 的 CORRECTION_PAGE_BASE），
+ * 右侧方块里的页号用**更正册专用区间**（第 n 页编 128+n−1，见 layout.js 的 CORRECTION_PAGE_BASE），
  *   件类型因此靠页号区分、不再靠"校验码 0"；指纹一律 0（这一册没有"这一页的字"）。
  * **可见页码从 1 起、独立编号**（2026-10-15 用户确认）：更正册是另一本册子，页码接着主区编会让人
  *   以为"第 63 页"是模板的第 63 页；它自己的第 1 页就印 1。
@@ -612,7 +607,7 @@ function drawSampleChar(page, cell, char, font, glyphBoxes) {
  * 生成"书写示意"PDF（仅界面预览用，**不进正式模板**）
  * 与模板**同版式**（同样的 17 × 8 字位、参考字、书写格与田字格），差别只有两处：
  *   ① 每个书写格里已经用工整手写体写好了那一格的字（示范"怎么写"）；
- *   ② **不画四角定位块与页脚编码标记** —— 它是给人看的，不是给机器认的，也避免被误当成可打印的模板。
+ *   ② **不画四角定位块与右侧方块标记** —— 它是给人看的，不是给机器认的，也避免被误当成可打印的模板。
  * @param {object} options
  * @param {string[]} [options.chars] 要排的字（按当前范围**逐页**生成，页数与模板一致）
  * @param {ArrayBuffer|Uint8Array} options.fontBytes 参考字字体字节（与模板同一字体）
@@ -643,9 +638,9 @@ export async function buildSamplePdf({ chars, fontBytes, sampleFontBytes, onlyPa
   for (let p = from0; p < Math.min(to0, pageCount); p++) {
     const page = pdf.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight])
     drawGrid(page)
-    // **可见页码**（2026-10-16 用户要求）：与模板**同一画法、同一位置**（表格右侧空白带里居中、12pt、中深青），
+    // **可见页码**（2026-10-16 用户要求）：与模板**同一画法、同一位置**（表格右侧竖带最底端、右沿对齐定位块右边缘、12pt、中深青），
     //   页号也是同一个（示意第 p 页 ↔ 模板第 p 页）—— 这样把示意页打印出来当字帖时能一页页对上模板。
-    //   它与"页脚编码"是两回事：示意页**仍然不画定位块、不印页脚编码**，不参与识别（决策 一-14）。
+    //   它与"右侧方块"是两回事：示意页**仍然不画定位块、不印右侧方块**，不参与识别（决策 一-14）。
     drawVisiblePageNumber(page, startPage + p, font)
     const from = p * LAYOUT.perPage
     const slice = list.slice(from, from + LAYOUT.perPage)
