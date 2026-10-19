@@ -137,6 +137,9 @@ export const LAYOUT = (() => {
     //   原来是"方块在空白带里居中"，结果比定位块少半个方块宽、看着参差；右对齐之后一列方块、可见页码、
     //   四角定位块共用同一条竖直基准线。
     const x = pageWidth - markOffset - blockSize
+    // 锚点比数据位方块大（8pt vs 6pt），**必须单独算 x**：若沿用同一个左边缘，它的右沿会越过
+    //   定位块右边缘 2pt（2026-10-19 用户对着渲染图指出来的）。锚点同样右沿对齐。
+    const anchorX = pageWidth - markOffset - anchorSize
     let cursor = tableTop
     const laid = parts.map((p) => {
       const top = cursor
@@ -148,7 +151,7 @@ export const LAYOUT = (() => {
       blockSize, gap, anchorSize, pageBits, scopeBits, codeBits,
       dataBits: pageBits + scopeBits + codeBits,
       blocks: 1 + pageBits + scopeBits + codeBits,
-      bandLeft, bandWidth, x, parts: laid,
+      bandLeft, bandWidth, x, anchorX, parts: laid,
       stackHeight: tableTop - cursor,
       // 可见页码（12pt 数字）：竖带**最底端**、紧贴表格底边之上
       pageNumberSize: 12,
@@ -229,7 +232,7 @@ export function sideBandBlockRects() {
   for (const p of S.parts) parts[p.key] = p
   const out = []
   const a = parts.anchor
-  out.push({ key: 'anchor', index: 0, x: S.x, y: a.top - a.size, width: a.size, height: a.size })
+  out.push({ key: 'anchor', index: 0, x: S.anchorX, y: a.top - a.size, width: a.size, height: a.size })
   for (const key of ['page', 'scope', 'code']) {
     const group = parts[key]
     for (let i = 0; i < group.count; i++) {
