@@ -652,7 +652,7 @@ export function analyzePage(gray, options = {}) {
   if (picked.stage === 'marks' || picked.stage === 'transform') {
     return {
       ok: false, stage: picked.stage, marks: picked.marks, matrix: null, cornerErrors: null,
-      designGray: null, footer: null, boxes: [], orientation,
+      designGray: null, footer: null, barcode: null, boxes: [], orientation,
       messages: [{ level: 'error', text: picked.reason }], timings
     }
   }
@@ -705,6 +705,11 @@ export function analyzePage(gray, options = {}) {
     cornerErrors,
     designGray: opt.keepDesignGray === false ? null : designGray,
     footer,
+    // 底部条码的整页字序（决策 一-20）：**必须一起带出来** —— scanFlow 的"字序优先级
+    //   file → barcode → sequence → cells"读的就是 page.barcode。2026-10-20 重锚新纸时发现
+    //   这里漏传（analyzeOrientation 解了、但没往上返回），条码这条主路整条静默失效；
+    //   测试当时只测了 decodeBarcode 本身，没有一条断言从 analyzePage 的返回值上读它。
+    barcode: picked.barcode || null,
     boxes: sliced.boxes,
     padPt: sliced.padPt,
     sliceSize: sliced.sliceSize,
@@ -734,7 +739,12 @@ export function summarizeBatch(pages, options = {}) {
     const file = i + 1
     const footer = p && p.footer
     const footerOk = !!(footer && footer.ok)
-    const rawPageNumber = footerOk ? footer.pageNumber : null
+    // **原始页号优先用 footer.rawPageNumber**（scanFlow 的 footerShape 会把更正册的 128 还原成人读的 1，
+    //   原始值单列在 rawPageNumber 里）：2026-10-20 重锚新更正册时发现这里只读了 pageNumber，
+    //   于是汇总行把"128"报成了"1"（人读页号对、机器页号错），与页记录的 rawPageNumber 对不上。
+    const rawPageNumber = footerOk
+      ? (typeof footer.rawPageNumber === 'number' ? footer.rawPageNumber : footer.pageNumber)
+      : null
     const pageCode = footerOk ? footer.pageCode : null
     // 件类型与页号：**优先用识别时已经解释好的那一份**（`footer.kind` / `footer.pageNumber`，
     // 由 scanFlow 的 footerShape 经 layout.classifyFooterPage 得出，并且包含"旧纸宽容"那条口径）——

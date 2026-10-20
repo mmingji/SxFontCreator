@@ -597,14 +597,29 @@ export function sampleBarcodeModules(gray, xPt, yPt, options = {}, layout = LAYO
   }
   let coarseDy = 0
   {
-    const minRun = Math.max(2, Math.round((x1 - x0) * 0.3))
+    // **下边界不能要求"这一行有 30% 宽度的暗像素"**（2026-10-20 重锚新纸时实测踩出来的）：
+    //   单页试打 106 字 / 更正册 8 字节这类**稀疏载荷**，最底一行可能只有同步图案
+    //   （每行起始 4 + 结束 4 个暗模块 ≈ 40px，只占行宽 1.3%）—— 按 30% 行宽（约 920px）去找，
+    //   会跳过最底行、把窗口抬到上面某一行（实测条码整体偏一行，RS 全部失败）；
+    //   而 test:barcode 用的样本恰好是 136 个乱序字的密集载荷，底行暗像素足够，所以一直没暴露。
+    //   判据改成"连续 3 行都有暗像素（每行 ≥ 20 个）"，取最底那一段：
+    //   条码下方是 5mm 空白纸，纸面噪点通常只有个位像素、且不会连续 3 行。
+    const minDark = 20
+    const minRows = 3
+    let run = 0
     for (let y = projBottom; y >= projTop; y--) {
       const base = y * gray.width
       let dark = 0
       for (let x = x0; x < x1; x++) if (gray.data[base + x] < threshold) dark++
-      if (dark >= minRun) {
-        coarseDy = y - bottomPx
-        break
+      if (dark >= minDark) {
+        run++
+        if (run >= minRows) {
+          // 从下往上扫：最底一行是 y + run − 1（y 递减），它约等于条码 row3 的底边
+          coarseDy = (y + run - 1) - bottomPx
+          break
+        }
+      } else {
+        run = 0
       }
     }
   }

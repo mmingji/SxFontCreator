@@ -60,11 +60,16 @@ export function countByClass() {
 // 字 → 它在字表里的下标（0 基）—— **底部条码打包字序要用**（《决策记录》一-20）：
 //   把一个字映射成 0~8273 的序号写进条码，识别端凭序号就能从字表还原"这一页是哪些字"，
 //   不必再去认参考字。缓存一份 Map：生成一页要查 136 次，逐次 indexOf 是 O(8274) 太浪费。
+// **必须按码点遍历**（2026-10-20 重锚新纸时抓到的真缺陷）：原来写 `for (let i = 0; i < CHARSET.length; i++)`
+//   是**按 UTF-16 码元**走的 —— 字表里有 196 个扩展 B 区汉字（代理对，占两个码元），它们之后的字
+//   索引会逐个多 1（全角标点实测 8203 → 8399，超出字表长度）。生成端把 8399 写进条码，识别端却按
+//   `getAllChars()` 的码点下标还原，拿不到字（条码给出的字序最后两个标点变成 null）。
+//   `Array.from(CHARSET)` 与 `getAllChars()` 同一口径，两边才对得上。
 let charIndexCache = null
 export function charIndexMap() {
   if (!charIndexCache) {
     charIndexCache = new Map()
-    const all = CHARSET
+    const all = Array.from(CHARSET)
     for (let i = 0; i < all.length; i++) if (!charIndexCache.has(all[i])) charIndexCache.set(all[i], i)
   }
   return charIndexCache
