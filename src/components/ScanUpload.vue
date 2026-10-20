@@ -245,9 +245,15 @@ const runSummary = computed(() => {
 })
 
 // ── 页级结果里的"新模型"信息（定位到的字序 / 还要确认几格）──────────────────
-// 序列标签：与 lib/referenceCharReader.js 的两份全序一一对应（页记录里只留了 key）
+// 序列标签：与 lib/referenceCharReader.js 的两份全序一一对应（页记录里只留了 key）。
+// 2026-10-20：原来只认 rank、其余一律"笔画序" —— 内置的试打页字序（single）也被误标成"笔画序"
+//   （冒烟里 hover 显示"字序：笔画序"、而纸面条码写的是"单页试打 · 按使用频率"）。
 function sequenceLabel(seqKey) {
-  return seqKey === 'rank' ? '使用频率序' : '笔画序'
+  if (seqKey === 'rank') return '使用频率序'
+  if (seqKey === 'single') return '单页试打的名句序'
+  if (seqKey === 'barcode') return '底部条码给的字序'
+  if (seqKey === 'file') return '字序文件里的字序'
+  return '笔画序'
 }
 // 序列定位命中时，这一页是全序里从第几个字开始的一段 —— 页号由它反推（纸面自己说得清是第几页）
 function locatedStartPage(page) {
