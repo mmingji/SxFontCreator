@@ -42,38 +42,53 @@ export function usableForGlyphs(page) {
 }
 
 /**
- * 重复页去重（2026-10-14 用户拍板，**修订**"不自动去重、只提示"的旧口径）。
+ * 重复页去重（2026-10-14 用户拍板，**修订**"不自动去重、只提示"的旧口径；2026-10-21 C1 再修订）。
  *
  * 背景（用户真机实测）：把同一张纸的不同来源（手机拍、扫描 App 各档、重复拷贝）一起放进目录时，
  *   识别出的"可用 12 页"其实只有 1 页的内容 —— 于是"被红笔圈 29 个""更正册覆盖 9 处"这类统计
  *   全部翻倍错乱，更正配对也跟着乱（同一个字被配到好几行、下面一大片"没有对应格"）。
  * 口径：**同一页号出现多份时，自动采用"效果最好"的一份**，其余打上 `duplicateOf: <采用的 fileIndex>`；
  *   界面上它们显示成"重复页"（灰），既不算可用页、也不算失败页。
+ *
+ * **判重键 = 件类型 + 页号 + 页级指纹（2026-10-21 C1）**：
+ *   原来只看页号，混批扫描时"旧纸第 1 页"与"新纸第 1 页"会被当成重复、互相顶掉 —— 它们的字序根本不同，
+ *   去的不是重、是两页真结果。指纹（右侧方块里那 12 位"本页是哪些字"）正是"同一张纸"的身份，
+ *   指纹不同 = 不是同一页。旧纸 / 无指纹件（pageCode 为 null）彼此之间仍按页号去重（同批重复上传）。
+ *   件类型进键是因为**更正册第 1 页与主区第 1 页的页号都是 1**，不分类会把主区页与更正册互相当成重复。
+ *   更正册（2026-10-21 起）也参与去重：同一页更正册扫了多份时同样只留效果最好的一份。
+ *
  * 判据（效果最好），按优先级：
  *   ① **认出的红圈数多的** —— 为什么它在最前（2026-10-14 真夹具实测补的）：同一张纸的多份来源里，
  *      某些档（去底色 / 转黑白 / 锐化）会把红圈洗掉。只按"能用的字形数"挑，真夹具上挑中的那份
  *      **被圈 0 个** —— 而去重一旦生效，被圈清单就从 29 变 0、更正配对 0 处、更正册那 9 格全成
  *      "多写的格"（用户白写一册）。红圈是用户特意留下的信息，丢了补不回来；字形质量差一点还有
- *      "可疑格"提示兜着。
+ *      "可疑格"提示兜着。更正册也适用：作废圈数同样是用户特意留下的信息。
  *   ② 再比"能用的字形数"（写出格数 − 可疑格数）多的：不同来源的曝光不同，写出多不等于写得准，
  *      扣掉可疑格之后更接近"这一份好不好用"。
  *   ③ 再比四角误差小的；④ 最后按文件顺序（结果可复现）。
- * 不参与去重的情形：更正册（它是另一类件）、没有页号的页（页号没定出来就谈不上判重）。
+ * 不参与去重的情形：没有页号的页（页号没定出来就谈不上判重）、整页失败的页（`ok` 为假）。
  * @param {Array} pages 页记录（store.scan.pages）
  * @returns {{groups:Array, ignored:Map<number,number>}} groups 供界面/文案说明，ignored 是 fileIndex → 采用的 fileIndex
  */
 export function dedupeDuplicatePages(pages) {
-  const byPage = new Map()
+  const byKey = new Map()
+  const keyOf = (p) => {
+    const kind = p.kind === 'correction' ? 'correction' : 'main'
+    // 指纹 null（旧纸 / 竖带坏）单独成键：它证明不了"与另一份是同一页"，但仍要捕捉同批重复上传
+    const code = p.pageCode === null || p.pageCode === undefined ? 'none' : String(p.pageCode)
+    return kind + '|' + p.pageNumber + '|' + code
+  }
   for (const p of pages || []) {
-    if (!p || !p.ok || p.kind === 'correction') continue
+    if (!p || !p.ok) continue
     const pageNumber = p.pageNumber
     if (pageNumber === null || pageNumber === undefined) continue
-    if (!byPage.has(pageNumber)) byPage.set(pageNumber, [])
-    byPage.get(pageNumber).push(p)
+    const key = keyOf(p)
+    if (!byKey.has(key)) byKey.set(key, [])
+    byKey.get(key).push(p)
   }
   const groups = []
   const ignored = new Map()
-  for (const [pageNumber, group] of byPage) {
+  for (const [, group] of byKey) {
     if (group.length < 2) continue
     const scored = group.map((p) => ({
       page: p,
@@ -87,7 +102,8 @@ export function dedupeDuplicatePages(pages) {
     const dropped = scored.slice(1).map((s) => s.page)
     for (const p of dropped) ignored.set(p.fileIndex, adopted.fileIndex)
     groups.push({
-      pageNumber,
+      pageNumber: adopted.pageNumber,
+      kind: adopted.kind === 'correction' ? 'correction' : 'main',
       adoptedFileIndex: adopted.fileIndex,
       adoptedName: adopted.fileName,
       adoptedMarked: scored[0].marked,
@@ -99,8 +115,27 @@ export function dedupeDuplicatePages(pages) {
       droppedWithMarks: dropped.filter((p) => ((p.counts && p.counts.marked) || 0) > scored[0].marked).length
     })
   }
-  groups.sort((a, b) => a.pageNumber - b.pageNumber)
+  groups.sort((a, b) => (a.pageNumber - b.pageNumber) || (a.kind === b.kind ? 0 : a.kind === 'main' ? -1 : 1))
   return { groups, ignored }
+}
+
+/**
+ * 主区"空白格上的红圈"过滤（D1，2026-10-21 用户拍板）。
+ *
+ * 背景（旧-电脑扫描2 真件实测）：旧纸底部的红色手写注释压在第 8 行空白格上，其中"圈"字本身
+ *   就是一个环 —— 环形判据分不开它；但"这一格纸面本来就没有参考字"是硬事实：用户不会去圈一个没印字的格。
+ * 判据用 `pageChars`（这一页应当有哪些字，来自字序文件 / 条码 / 序列定位）：
+ *   数组里为 null / undefined 的格 = 这一页没有字 → 该格上的红圈不计入被圈清单。
+ * 边界：字序来自逐格认字（`cells` / `rewrite`）时**不要过滤** —— 被红圈盖住的参考字可能被认成空，
+ *   再拿它过滤会把真圈反过来删掉（调用方按 `orderSource` 判断）；更正册也不过滤（它每格都有效）。
+ * @param {number[]} markedCells 页内格号
+ * @param {Array<string|null>} pageChars 这一页的字序（含空白格位）
+ * @returns {number[]} 过滤后的格号
+ */
+export function dropMarksOnEmptyCells(markedCells, pageChars) {
+  if (!Array.isArray(markedCells) || !markedCells.length) return []
+  if (!Array.isArray(pageChars) || !pageChars.length) return markedCells.slice()
+  return markedCells.filter((i) => pageChars[i] !== null && pageChars[i] !== undefined)
 }
 
 /**

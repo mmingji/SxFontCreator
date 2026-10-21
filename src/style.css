@@ -828,6 +828,15 @@ button.text:hover {
   color: var(--text-2);
 }
 
+/* 「识别结果」这一块的标题（G，2026-10-21）：把汇总 / 提示 / 卡片归到一个名下，字号按辅助文字下限 12px */
+.scan-result-title {
+  margin: 14px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: 0.04em;
+}
+
 /* 收批闸门与逐页提示：error 是"整页失败/被拦下"，warn 是"跳过某页"，info 是提醒 */
 .scan-problems {
   list-style: none;
@@ -986,6 +995,11 @@ button.text:hover {
 
 .scan-card.is-failed .scan-card-stats {
   color: var(--danger);
+}
+
+/* 无条码的降级标记（A1）：与统计文字同字号、用中性灰 —— 是提示不是错误 */
+.scan-card-degraded {
+  color: #6b7280;
 }
 
 .scan-card-actions {

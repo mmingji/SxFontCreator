@@ -193,6 +193,14 @@ const gate = computed(() => evaluateScanGate({
   summary: store.scan.summary || { problems: [] },
   pages: pages.value
 }))
+// 消息区折叠（G，2026-10-21 用户口径）：提示条目经常有五六条，全铺开把结果挤出首屏。
+// 默认只留 2 条摘要，其余收进「展开全部 N 条」—— 拦下原因（blockers）不折叠，它必须一眼看到。
+const NOTES_LIMIT = 2
+const notesExpanded = ref(false)
+const visibleNotes = computed(() => notesExpanded.value
+  ? gate.value.notes
+  : gate.value.notes.slice(0, NOTES_LIMIT))
+const hiddenNoteCount = computed(() => Math.max(0, gate.value.notes.length - NOTES_LIMIT))
 
 // 这一轮的识别汇总（2026-10-13 用户口径）：原来"识别完成：N 页，用时 X 秒"与"这批共 N 页：可用…"
 // 各占一行、还分处两块，现在并成一句，跟在「已选文件夹「X」· N 张图片」后面 —— 一眼看完"选了什么、跑出什么"。
@@ -1004,6 +1012,11 @@ function cardTitle(page) {
   if (page.cornerMaxError !== null && page.cornerMaxError !== undefined) bits.push('四角误差 ' + page.cornerMaxError + ' 像素')
   if (bits.length) lines.push(bits.join(' · '))
   if (page.orderSource) lines.push('字序：' + orderSourceLabel(page))
+  // A1（2026-10-21 用户口径）：没有底部条码的页 = 降级路径 —— 字序只能靠序列定位 / 逐格认字推断，
+  //   与"条码自证"不是一个可靠性。卡片上给一个短标记，hover 里说清字序从哪来。
+  if (page.ok && page.barcodeOk === false && page.kind !== 'correction') {
+    lines.push('无底部条码：字序来自' + (orderSourceLabel(page) || '推断') + '（降级路径，可靠性低于条码自证）')
+  }
   if (page.ok) {
     lines.push('写出 ' + page.counts.written + ' 格（可疑 ' + page.counts.suspect + '）· 被圈 ' + page.counts.marked + ' 个' +
       (page.counts.uncertain ? ' · 归属待确认 ' + page.counts.uncertain : ''))
@@ -1219,7 +1232,7 @@ const zoomIsMarkedLabel = computed(() => {
             看文件清单
           </button>
           <button v-if="showResult && gate.skipped.length" class="text" type="button" data-role="skipped-open" @click="skippedOpen = true">
-            看跳过的 {{ gate.skipped.length }} 页
+            看失败的 {{ gate.skipped.length }} 页
           </button>
         </span>
       </div>
@@ -1228,6 +1241,8 @@ const zoomIsMarkedLabel = computed(() => {
            上一批的汇总 / 拦下结论 / 卡片都收起来 —— 下面那段"选好文件夹后点「开始识别」…"就是这一步的引导 -->
 
       <template v-if="showResult">
+        <!-- G（2026-10-21 用户口径）：这一块给一个标题，汇总 / 提示 / 卡片都归在它下面 -->
+        <p class="scan-result-title" data-role="result-title">识别结果</p>
         <!-- 两行描述：识别汇总（含更正册的识别结果，分号分隔）→ 字形落盘 -->
         <p v-if="runSummary" class="panel-hint" data-role="run-summary">{{ runSummary }}</p>
         <p v-if="savedStats && savedStats.glyphs" class="panel-hint" data-role="glyph-saved">
@@ -1251,8 +1266,16 @@ const zoomIsMarkedLabel = computed(() => {
           <li v-for="(text, i) in gate.blockers" :key="'b' + i" class="error">拦下：{{ text }}</li>
         </ul>
         <ul v-if="!running && gate.notes.length" class="scan-problems">
-          <li v-for="(text, i) in gate.notes" :key="'n' + i" class="info">{{ text }}</li>
+          <li v-for="(text, i) in visibleNotes" :key="'n' + i" class="info">{{ text }}</li>
         </ul>
+        <!-- 提示条数多时默认只留 2 条，其余折叠（G）—— 拦下原因不折叠 -->
+        <button
+          v-if="!running && hiddenNoteCount"
+          class="text"
+          type="button"
+          data-role="notes-toggle"
+          @click="notesExpanded = !notesExpanded"
+        >{{ notesExpanded ? '收起' : '展开全部 ' + gate.notes.length + ' 条' }}</button>
         <!-- 识别进行中不给"可以继续"这类结论（2026-10-13 用户口径：还没结束，别下结论） -->
         <p v-if="gate.canProceed && !running" class="panel-message done">
           这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里可以逐行核对与调整（不改就是程序按识别结果配的那一套，直接用于生成字体）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 3 步「生成」了</span>
@@ -1322,7 +1345,10 @@ const zoomIsMarkedLabel = computed(() => {
           <template v-else-if="page.ok">
             写出 {{ page.counts.written }} 格（可疑 {{ page.counts.suspect }}）· 被圈 {{ page.counts.marked }} 个<span
               v-if="page.counts.uncertain"
-            > · 归属待确认 {{ page.counts.uncertain }}</span>
+            > · 归属待确认 {{ page.counts.uncertain }}</span><span
+              v-if="page.barcodeOk === false && page.kind !== 'correction'"
+              class="scan-card-degraded"
+            > · 无条码</span>
           </template>
           <template v-else>{{ page.reason }}</template>
         </p>
@@ -1504,11 +1530,11 @@ const zoomIsMarkedLabel = computed(() => {
       </div>
     </div>
 
-    <!-- 跳过的页（详情弹窗）：整批被跳过时往往几十条、原因还一模一样，收在这里看 -->
+    <!-- 失败的页（详情弹窗）：整批被跳过时往往几十条、原因还一模一样，收在这里看 -->
     <div v-if="skippedOpen" class="backup-overlay" @click.self="skippedOpen = false">
-      <div class="backup-modal" role="dialog" aria-label="跳过的页" data-role="skipped-modal">
+      <div class="backup-modal" role="dialog" aria-label="失败的页" data-role="skipped-modal">
         <div class="backup-head">
-          <h3>跳过的 {{ gate.skipped.length }} 页</h3>
+          <h3>失败的 {{ gate.skipped.length }} 页</h3>
           <button class="text" type="button" data-role="skipped-close" @click="skippedOpen = false">关闭</button>
         </div>
         <ul class="scan-problems">

@@ -13,7 +13,7 @@
 //     更正核对与「看格子」都走这条兜底）；整页缩略图没有第二份来源，刷新后就是没有了（它只是"看一眼这页长什么样"）。
 import { preprocessFile } from './scanPreprocessor.js'
 import { analyzePage, summarizeBatch, DESIGN } from './gridDetector.js'
-import { attachRedMarks, defaultCellRects } from './markRecognizer.js'
+import { attachRedMarks, defaultReferenceRects } from './markRecognizer.js'
 import { extractPage } from './handwritingExtractor.js'
 import { rotateQuarterTurns } from './imageOps.js'
 import { LAYOUT, classifyFooterPage, CORRECTION_PAGE_BASE } from './layout.js'
@@ -21,7 +21,7 @@ import { computePageCode, matchPageCode } from './pageCode.js'
 // 指纹反解（2026-10-18）：字序来自逐格认字时，用每格候选 + 右侧方块里的指纹把认错的格纠正回来
 import { solvePageCharsByCode } from './pageCodeSolve.js'
 import { getAllChars } from './charset.js'
-import { charAtCell, dedupeDuplicatePages, usableForGlyphs } from './scanMeta.js'
+import { charAtCell, dedupeDuplicatePages, dropMarksOnEmptyCells, usableForGlyphs } from './scanMeta.js'
 import { readPage as readReferenceChars } from './referenceCharReader.js'
 // **单页试打那一页的字序是程序里的常量**（决策 八-21）：丢了字序文件时它就是"这一页可能是哪些字"的
 //   唯一可信候选 —— 不给它，名句页只能靠逐格认字，认不全就整页失败、写过的字白写（见下面 candidates 的说明）
@@ -84,9 +84,15 @@ export function markDuplicatePages(pages) {
   // 整页失败 —— 原来连一句"它与某页重复"都没有，用户看到两页失败会以为漏了什么。
   // 判据用**右侧方块原始结果**（`p.footer`）：切格失败时 record.pageNumber 是 null，右侧方块却照常解得出页码。
   // 这类页不参与"采用哪一份"的竞争（它本来就没识别成功），只作为提示。
+  // **键带件类型 + 原始页号**（2026-10-21 C1）：主区第 1 页与更正册第 1 页的"人读页号"都是 1，
+  //   但原始页号不同（更正册从 128 起），不分开会把失败的更正册页挂到主区页上。
   const okByPage = new Map()
   for (const p of list) {
-    if (p && usableForGlyphs(p) && p.pageNumber) okByPage.set(p.pageNumber, p)
+    if (p && usableForGlyphs(p) && p.pageNumber) {
+      const kind = p.kind === 'correction' ? 'c' : 'm'
+      const raw = typeof p.rawPageNumber === 'number' ? p.rawPageNumber : p.pageNumber
+      okByPage.set(kind + '|' + raw, p)
+    }
   }
   const failedDuplicates = []
   for (const p of list) {
@@ -94,7 +100,9 @@ export function markDuplicatePages(pages) {
     //   "与某页重复、这一份没能识别"，把用户看糊涂了）
     if (!p || usableForGlyphs(p) || p.voided) continue
     const footerPage = p.footer && p.footer.ok ? p.footer.pageNumber : null
-    const adopted = footerPage ? okByPage.get(footerPage) : null
+    if (!footerPage) continue
+    const footerKind = p.footer && p.footer.kind === 'correction' ? 'c' : 'm'
+    const adopted = okByPage.get(footerKind + '|' + footerPage)
     if (adopted && adopted.fileIndex !== p.fileIndex) {
       p.failedDuplicateOf = adopted.fileIndex
       failedDuplicates.push({ fileIndex: p.fileIndex, duplicateOf: adopted.fileIndex })
@@ -377,7 +385,7 @@ export async function recognizePage(file, options = {}) {
     // attachRedMarks 在这些前提不满足时返回 null（页面不可用 / 没有矩阵 / 没开 keepDesignGray / 没彩色像素）：
     // 那就退回"不剔红圈"的切格结果，绝不因为拿不到红掩膜就整页失败
     const attached = attachRedMarks(page, rgba, {
-      cellRects: defaultCellRects(),
+      referenceRects: defaultReferenceRects(),
       turns: page.orientation ? page.orientation.turns : 0
     })
     if (attached) {
@@ -424,6 +432,9 @@ export async function recognizePage(file, options = {}) {
   //   2026-10-21 真实自定义档纸（72 字 / 136 格 = 52.9%）就是被覆盖率闸门误判的：红圈盖住的 5 个参考字
   //   让逐格认字算出的指纹对不上，页还没走到条码就被判成"不是本程序生成的模板"。
   const barcodeCode = barcodeChars ? computePageCode(barcodeChars) : null
+  // 条码解出 = 这一页的字序由纸面自己给出（A1：没有条码的页要在记录与界面上标成"降级"，
+  //   因为它的字序只能靠序列定位 / 逐格认字，可靠性低一档 —— 旧纸与无条码件走的就是这条路）
+  record.barcodeOk = !!barcodeChars
   // 条码里的页号比右侧方块读出来的更可信（条码整块带纠错，竖带只有 24 个小方块）：有就用它
   if (barcodeChars && page.barcode.payload.pageNumber) {
     record.pageNumber = page.barcode.payload.pageNumber
@@ -490,8 +501,10 @@ export async function recognizePage(file, options = {}) {
     //   低于 60%，而被红圈盖住的参考字又必然让逐格认字算错指纹（这一档正是条码要兜的场景，一-20 / 二-12 ⑩）。
     //   覆盖率只在"条码读不出"时兜底（此时"认出的字 ≥ 1 且指纹一致"仍可用）。
     if (sparse && !barcodeCertified && !(read.printedChars.length >= opt.minRewriteChars && selfAgree)) {
-      record.reason = '这不是本程序生成的模板：这一页 ' + LAYOUT.perPage + ' 格里有 ' + read.emptyCount +
-        ' 格取不到模板的参考字。请确认用的是第 1 步「下载模板」得到的那份文件、按实际大小（100%）打印的纸。'
+      // B1（2026-10-21 用户拍板）：这一类**只报"不是本程序的模板"** —— 原来还写"136 格里有 N 格取不到
+      //   参考字、请确认按实际大小打印"，那个数字对用户没有可操作性（他无法据此判断该改什么），
+      //   反而让人怀疑"是不是我打错了"。真需要排查时看卡片 hover 里的识别统计与认字结果。
+      record.reason = '这不是本程序的模板'
       record.messages = [{ level: 'error', text: record.reason }]
       return { record, cache: { thumb: null, sheet: null, masks: null } }
     }
@@ -623,6 +636,25 @@ export async function recognizePage(file, options = {}) {
         }
       }
       record.pageCheck = check
+    }
+  }
+
+  // ③.7 主区空白格不认圈（D1，2026-10-21 用户拍板）
+  // 为什么放在字序之后：判断"这一格该不该有参考字"用的是 `pageChars`（这一页应当有哪些字），
+  //   它在 ③.5 才定下来。旧纸底部的红色手写注释压在第 8 行空白格上、其中"圈"字本身就是一个环，
+  //   环形判据分不开 —— 但"这一格本来就没有参考字"是硬事实：用户不会去圈一个没印字的格。
+  // 为什么 `cells` / `rewrite` 来源不过滤：那两档的字序本身就是逐格认出来的，被红圈盖住的参考字
+  //   可能被认成空 —— 再拿它过滤，会把真圈反过来删掉（宁可多认几个，交给核对界面）。
+  // 更正册不过滤：它每格都印着序号，没有"空白格"这回事（圈序号 = 作废这一格）。
+  if (opt.dropMarksOnEmptyCells !== false && record.kind !== 'correction' &&
+      Array.isArray(record.pageChars) && record.pageChars.length &&
+      record.orderSource !== 'cells' && record.orderSource !== 'rewrite') {
+    const before = (record.markedCells || []).length
+    const keep = dropMarksOnEmptyCells(record.markedCells, record.pageChars)
+    if (keep.length !== before) {
+      record.markedCells = keep
+      record.uncertainCells = (record.uncertainCells || []).filter((i) => keep.includes(i))
+      record.marksDroppedEmptyCells = before - keep.length
     }
   }
 
