@@ -119,8 +119,10 @@ export const SCAN_DEFAULTS = {
   extraSequences: null,
   // 这一页上"有参考字的格"占比低于它 → 判定**不是本程序生成的模板**，整页失败
   // （用户 2026-10-11 拍板：只认自家模板产出的纸，外来图片一个字形也不产生）。
-  // 实测自家模板在这条上是 0.99~1.00（参考字是印上去的，即使模糊也能取到）。
-  // **补写页例外**（重写清单 / 未收录字模板，一页只印几个字）：闸门按件类型分档，见 minInkRatioRewrite。
+  // 实测满页模板在这条上是 0.99~1.00（参考字是印上去的，即使模糊也能取到）。
+  // **2026-10-21 起降级为兜底**：底部条码解出、且与右侧方块指纹互证通过时直接放行（自定义档只选几十个字
+  //   时覆盖率天然低于它；被红圈盖住的参考字又必然让逐格认字算错指纹，这一档正是条码要兜的场景，一-20）。
+  //   覆盖率只在"条码读不出"时起作用；**补写页例外**（重写清单 / 未收录字模板）见 minRewriteChars。
   minInkRatio: 0.6,
   // 补写页的闸门：一页只印几个字也照收，判据改成"认出的字 ≥ 1 且指纹一致"
   minRewriteChars: 1,
@@ -417,6 +419,11 @@ export async function recognizePage(file, options = {}) {
     const chars = idx.map((i) => (i >= 0 && table[i] ? table[i] : null))
     return chars.some((c) => c !== null) ? chars : null
   })()
+  // 条码字序的页级指纹：与右侧方块里的那 12 位互证（一-20）。条码自己带 CRC16 + RS 纠错，
+  //   所以"条码解出 + 指纹一致"是**两条独立印刷通道**共同证明"这一页是哪些字"——比参考字覆盖率硬得多。
+  //   2026-10-21 真实自定义档纸（72 字 / 136 格 = 52.9%）就是被覆盖率闸门误判的：红圈盖住的 5 个参考字
+  //   让逐格认字算出的指纹对不上，页还没走到条码就被判成"不是本程序生成的模板"。
+  const barcodeCode = barcodeChars ? computePageCode(barcodeChars) : null
   // 条码里的页号比右侧方块读出来的更可信（条码整块带纠错，竖带只有 24 个小方块）：有就用它
   if (barcodeChars && page.barcode.payload.pageNumber) {
     record.pageNumber = page.barcode.payload.pageNumber
@@ -473,11 +480,16 @@ export async function recognizePage(file, options = {}) {
     // 这是 2026-10-15 新口径的核心 —— 一致就说明"这一页是第几页、上面是哪些字"确定无疑。
     const selfCode = computePageCode(read.printedChars)
     const selfAgree = !!record.pageCode && selfCode === record.pageCode
+    // **条码自证**（2026-10-21）：条码解出 = 这一页的字序由纸面自己给出；右侧方块能读时两者必须一致。
+    //   `!record.pageCode` 也收：竖带被裁 / 污损时，条码的 CRC + RS 本身就是足够强的"自家纸"证据。
+    const barcodeCertified = !!barcodeChars && (!record.pageCode || barcodeCode === record.pageCode)
     const sparse = read.inkRatio < opt.minInkRatio
     // 闸门分档（2026-10-15 用户拍板）：主区字表页要求"有参考字的格 ≥ 60%"（整版纸 136 格基本都印着字）；
-    //   补写页（重写清单 / 未收录字模板，一页只印几个字）改成"认出的字 ≥ 1 且右侧方块里的指纹对得上" ——
-    //   否则重写清单只有几个字时永远过不了 60% 那道闸，补写模板等于收不回来（真缺陷）。
-    if (sparse && !(read.printedChars.length >= opt.minRewriteChars && selfAgree)) {
+    //   补写页（重写清单 / 未收录字模板，一页只印几个字）改成"认出的字 ≥ 1 且右侧方块里的指纹对得上"。
+    //   **2026-10-21 起再加一条**：条码与右侧方块互证通过时直接放行 —— 自定义档只选几十个字时覆盖率天然
+    //   低于 60%，而被红圈盖住的参考字又必然让逐格认字算错指纹（这一档正是条码要兜的场景，一-20 / 二-12 ⑩）。
+    //   覆盖率只在"条码读不出"时兜底（此时"认出的字 ≥ 1 且指纹一致"仍可用）。
+    if (sparse && !barcodeCertified && !(read.printedChars.length >= opt.minRewriteChars && selfAgree)) {
       record.reason = '这不是本程序生成的模板：这一页 ' + LAYOUT.perPage + ' 格里有 ' + read.emptyCount +
         ' 格取不到模板的参考字。请确认用的是第 1 步「下载模板」得到的那份文件、按实际大小（100%）打印的纸。'
       record.messages = [{ level: 'error', text: record.reason }]
@@ -538,8 +550,15 @@ export async function recognizePage(file, options = {}) {
     //   全量 61 页只要 61 次哈希），反推命中就纠正页号与字序；仍然对不上 → 整页失败。
     //   为什么宁严勿宽：按错字序识别出来的是一整页"看着挺好、其实全是别的字"的字形（与二-6 同一条底线）。
     if (record.pageCode) {
-      const check = { code: selfCode, agree: selfAgree, from: 'self' }
-      if (!selfAgree) {
+      // 指纹来源：条码自证时用**条码字序**算出的指纹（前面已与右侧方块比对过），否则用纸面逐格认字算出的指纹。
+      // 为什么（2026-10-21）：条码解出时"这一页是哪些字"由纸面自己给出，被红圈盖住的参考字不该再把校验
+      //   判成"对不上"，更不该触发"已按校验码反推"这种误导文案 —— 这一页的页号本来就来自条码。
+      const check = {
+        code: barcodeCertified ? barcodeCode : selfCode,
+        agree: barcodeCertified || selfAgree,
+        from: barcodeCertified ? 'barcode' : 'self'
+      }
+      if (!check.agree) {
         // **先试"指纹反解"**（2026-10-18 新增；用户实测问"字序文件丢了写的字就报废吗"之后做的）：
         //   字序来自**逐格认字**时（没有候选字序），每格的 top-2 候选其实已经算好了 —— 在"最可疑的
         //   十几格"里穷举，找出使右侧方块里的指纹与纸面一致、且候选分数最像的那一组，就把认错的格纠正回来了。
