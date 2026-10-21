@@ -17,6 +17,7 @@ import { commandsToPathData, parsePathCommands, pathBBox } from './svgPath.js'
 import { charToCodePoint, classifyChar } from './charset.js'
 import { ensureInlineAsset, hasInlineAssets } from './inlineAssets.js'
 import { FONT_DEFAULTS, OUT_TOLERANCE, glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
+import { ensureFullHorizontalMetrics } from './ttfMetrics.js'
 
 // woff2 编码器要一个单独的 wasm（710KB）。**不能**从 node_modules 里 import：
 //   fonteditor-core 的 package.json `exports` 只声明了 `.` 与 `./lib/*`，`fonteditor-core/woff2/woff2.wasm` 会被拦下
@@ -326,7 +327,14 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
 
   // ⑤ 写 TTF → woff → woff2
   const font = fonteditor.createFont(ttfObj)
-  const ttf = font.write({ type: 'ttf', toBuffer: false })
+  // **hmtx 必须补全**（2026-10-21 用户实测）：fonteditor 会把尾部同 advance 的字形压缩成
+  //   "numberOfHMetrics 很小 + 其余字形继承最后一项"。TTF 规范允许，但 Word 不认这条继承
+  //   （字间距读成 0 → 所有字挤在一起），而 PS 按规范读是正常的。详见 lib/ttfMetrics.js 的注释。
+  //   注意 woff / woff2 也要基于修复后的 ttf 再编码，否则三个产物行为不一致。
+  //   另外 fonteditor 的 ttf2woff / woff2.encode 要的是 ArrayBuffer（不是 Uint8Array 视图），
+  //   所以这里把修复结果切成精确的 ArrayBuffer 再往下传。
+  const ttfFixed = ensureFullHorizontalMetrics(font.write({ type: 'ttf', toBuffer: false }))
+  const ttf = ttfFixed.buffer.slice(ttfFixed.byteOffset, ttfFixed.byteOffset + ttfFixed.byteLength)
   const woff = fonteditor.ttf2woff(ttf)
   let woff2 = null
   try {
