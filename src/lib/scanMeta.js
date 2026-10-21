@@ -73,10 +73,18 @@ export function usableForGlyphs(page) {
 export function dedupeDuplicatePages(pages) {
   const byKey = new Map()
   const keyOf = (p) => {
-    const kind = p.kind === 'correction' ? 'correction' : 'main'
-    // 指纹 null（旧纸 / 竖带坏）单独成键：它证明不了"与另一份是同一页"，但仍要捕捉同批重复上传
+    if (p.kind === 'correction') {
+      // 更正册没有页级指纹（右侧方块里固定是 0），条码也不带"这一册写了哪些字" ——
+      // 所以**只能用内容当身份**（2026-10-21 修）：有笔迹的格号 + 被圈的格号。
+      // 为什么必须这样：混批扫描时"自定义档的更正册"与"名句页的更正册"都是第 1 页、指纹 0，
+      //   只按页号判重会把其中一份顶掉，核对表就会配到另一册的字形（真机踩到）。
+      // 同一册重复扫两份时这两组格号一致 → 仍能去重。
+      const inked = (p.cells || []).filter((c) => c.verdict !== 'empty').map((c) => c.index).join('.')
+      const marked = (p.markedCells || []).slice().sort((a, b) => a - b).join('.')
+      return 'correction|' + p.pageNumber + '|' + inked + '|' + marked
+    }
     const code = p.pageCode === null || p.pageCode === undefined ? 'none' : String(p.pageCode)
-    return kind + '|' + p.pageNumber + '|' + code
+    return 'main|' + p.pageNumber + '|' + code
   }
   for (const p of pages || []) {
     if (!p || !p.ok) continue
@@ -136,6 +144,75 @@ export function dropMarksOnEmptyCells(markedCells, pageChars) {
   if (!Array.isArray(markedCells) || !markedCells.length) return []
   if (!Array.isArray(pageChars) || !pageChars.length) return markedCells.slice()
   return markedCells.filter((i) => pageChars[i] !== null && pageChars[i] !== undefined)
+}
+
+/**
+ * 选出"这一批真正使用的那一份更正册"（2026-10-21）。
+ *
+ * 背景（混批实测）：一个目录里可能同时放着两批纸的更正册 —— 它们都是"更正册第 1 页"、页级指纹都是 0，
+ *   内容却完全不同（一份写的是自定义档的 5 个字，另一份写的是名句页的 9 个字）。程序没有批次信息，
+ *   **无法判断哪一份对应哪批主区**；原来的做法是"全都收下"，结果配对时两册的格混在一起、
+ *   核对表显示的字形与配的对不是同一册（真机踩到）。
+ * 口径：**每个更正册页号只取一份**（按文件序取第一份），其余进 `conflicts` 交给界面明确提示 ——
+ *   不静默混用，也不自动猜"哪份对"。要换用另一份，就按提示在「看文件清单」里去掉不用的那张再识别。
+ * @param {Array} pages 页记录
+ * @returns {{pages:Array, conflicts:Array<{pageNumber:number, chosen:object, others:Array}>}}
+ */
+export function pickCorrectionBookPages(pages) {
+  const byPage = new Map()
+  for (const p of pages || []) {
+    if (!p || p.kind !== 'correction' || !usableForGlyphs(p)) continue
+    if (!byPage.has(p.pageNumber)) byPage.set(p.pageNumber, [])
+    byPage.get(p.pageNumber).push(p)
+  }
+  const chosen = []
+  const conflicts = []
+  for (const [pageNumber, group] of byPage) {
+    group.sort((a, b) => a.fileIndex - b.fileIndex)
+    chosen.push(group[0])
+    if (group.length > 1) conflicts.push({ pageNumber, chosen: group[0], others: group.slice(1) })
+  }
+  return { pages: chosen, conflicts }
+}
+
+/**
+ * 更正册的"逻辑字数"（2026-10-21 用户口径）：用来和主区被圈的字数对账。
+ *
+ * 规则（用户原话拆开）：
+ *   · **留空的格也算一个数** —— 更正册是按被圈字顺序一格一个字写的，第 4 格留空 = 第 4 个字不更正，
+ *     它仍然占一个位置（所以从第 1 格数到最后一个有字 / 作废的格，中间的空白都算）。
+ *   · **写错再次更正的只算一个** —— 作废格（红圈）与被它推到后面的补写格是同一个被圈字，只占一个位置；
+ *     所以逻辑字数 = 最后用到的格号 − 作废格数。
+ * 判据：逻辑字数与主区被圈字数**不相等**就一定是出问题了（写多 / 写少 / 漏补写），必须人工核对。
+ * @param {Array} pages 页记录
+ * @returns {{logical:number, lastUsed:number, blank:number, discarded:number, inked:number}}
+ *   lastUsed = 最后用到的连续格号（1 起）；blank = 其中完全没写的格数；discarded = 作废格数；
+ *   inked = 有字且未作废的格数
+ */
+export function correctionBookStats(pages) {
+  const book = pickCorrectionBookPages(pages).pages
+  const used = new Set()
+  const discarded = new Set()
+  let lastUsed = 0
+  for (const p of book) {
+    for (const c of p.cells || []) {
+      const k = continuousIndex(p.pageNumber, c.index)
+      if (c.verdict !== 'empty' || c.marked) {
+        used.add(k)
+        if (k > lastUsed) lastUsed = k
+      }
+      if (c.marked) discarded.add(k)
+    }
+  }
+  const inked = used.size - discarded.size
+  const blank = Math.max(0, lastUsed - used.size)
+  return {
+    logical: Math.max(0, lastUsed - discarded.size),
+    lastUsed,
+    blank,
+    discarded: discarded.size,
+    inked
+  }
 }
 
 /**
@@ -307,9 +384,12 @@ export function buildCorrectionInputs(pages) {
   const circled = []
   const rawCells = []
   const discardedCells = []
+  // 更正册只取"这一批真正使用的那一份"（同页号多份时按文件序取第一份，冲突由界面提示）
+  const bookFileIndexes = new Set(pickCorrectionBookPages(pages).pages.map((p) => p.fileIndex))
   for (const p of pages || []) {
     if (!usableForGlyphs(p)) continue
     if (p.kind === 'correction') {
+      if (!bookFileIndexes.has(p.fileIndex)) continue
       for (const c of p.cells || []) {
         rawCells.push({ index: c.index, pageNumber: p.pageNumber, verdict: c.verdict, inkPixels: c.inkPixels, charIndex: null })
         if (c.marked) discardedCells.push(continuousIndex(p.pageNumber, c.index))
@@ -385,9 +465,10 @@ export function applyCorrectionOverrides(pairs, overrides) {
 export function buildFinalGlyphPlan(pages, correction = {}) {
   const list = pages || []
   // 更正册的格：连续格号 → 它落在哪一页哪一格（掩膜按 fileIndex + cellIndex 取）
+  // 只收"这一批真正使用的那一份"更正册（同页号多份时按文件序取第一份），与配对初值同一口径。
   const byContinuous = new Map()
-  for (const p of list) {
-    if (p.kind !== 'correction' || !usableForGlyphs(p)) continue
+  const book = pickCorrectionBookPages(list).pages
+  for (const p of book) {
     for (const c of p.cells || []) {
       byContinuous.set(continuousIndex(p.pageNumber, c.index), {
         fileIndex: p.fileIndex,

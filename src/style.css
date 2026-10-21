@@ -828,6 +828,17 @@ button.text:hover {
   color: var(--text-2);
 }
 
+/* 更正册与主区字数对不上（2026-10-21）：用户要求"明显"，用红色提示条、正文 14px */
+.scan-mismatch {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 4px solid var(--danger);
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
 /* 「识别结果」这一块的标题（G，2026-10-21）：把汇总 / 提示 / 卡片归到一个名下，字号按辅助文字下限 12px */
 .scan-result-title {
   margin: 14px 0 4px;

@@ -13,6 +13,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { SCAN_DEFAULTS, evaluateRescanAccept, evaluateScanGate, markDuplicatePages, summarizeBatch } from '../lib/scanFlow.js'
+import { correctionBookStats, pickCorrectionBookPages, usableForGlyphs } from '../lib/scanMeta.js'
 import { cancelTask, recognizeBatchInWorker, recognizePageInWorker } from '../lib/scanWorkerClient.js'
 import { clearPageCache, getPageCache, putPageCache } from '../lib/scanCache.js'
 import { clearGlyphs, deleteGlyphPage, glyphStoreStats, savePageGlyphs } from '../lib/glyphStore.js'
@@ -201,6 +202,24 @@ const visibleNotes = computed(() => notesExpanded.value
   ? gate.value.notes
   : gate.value.notes.slice(0, NOTES_LIMIT))
 const hiddenNoteCount = computed(() => Math.max(0, gate.value.notes.length - NOTES_LIMIT))
+// 更正册与主区的"字数对账"（2026-10-21 用户口径）：两边的数量对不上就一定是出问题了，
+// 必须在识别完成后用红字提醒、让人去核对 —— 否则更正册错位，成字会悄悄换错字。
+// 计数口径见 scanMeta.correctionBookStats：留空的格也算一个位置、作废后补写只算一个。
+const correctionMismatch = computed(() => {
+  if (running.value || !showResult.value) return null
+  const mainCircled = pages.value
+    .filter((p) => usableForGlyphs(p) && p.kind !== 'correction' && p.counts)
+    .reduce((sum, p) => sum + (p.counts.marked || 0), 0)
+  if (!mainCircled) return null
+  const book = correctionBookStats(pages.value)
+  if (!book.lastUsed) return null // 没有更正册：由「更正核对」那一块说"还没有更正册"，不重复
+  if (book.logical === mainCircled) return null
+  return { mainCircled, ...book }
+})
+// 同页号有多份"内容不同"的更正册（混批）：程序按文件序先用第一份，其余不参与配对 —— 必须明说
+const correctionBookConflicts = computed(() => (running.value || !showResult.value)
+  ? []
+  : pickCorrectionBookPages(pages.value).conflicts)
 
 // 这一轮的识别汇总（2026-10-13 用户口径）：原来"识别完成：N 页，用时 X 秒"与"这批共 N 页：可用…"
 // 各占一行、还分处两块，现在并成一句，跟在「已选文件夹「X」· N 张图片」后面 —— 一眼看完"选了什么、跑出什么"。
@@ -1012,6 +1031,11 @@ function cardTitle(page) {
   if (page.cornerMaxError !== null && page.cornerMaxError !== undefined) bits.push('四角误差 ' + page.cornerMaxError + ' 像素')
   if (bits.length) lines.push(bits.join(' · '))
   if (page.orderSource) lines.push('字序：' + orderSourceLabel(page))
+  // 重复页（2026-10-21 用户口径）：卡片正文说"已自动忽略"、hover 却只报统计，会让人以为两边信息打架。
+  // 这里说清"统计是它自己的、未计入结果"，与卡片正文同一口径。
+  if (isDuplicateDropped(page)) {
+    lines.push('重复页：与「' + adoptedName(page) + '」的页号相同，已自动忽略（下面的统计是这一页自己的，未计入结果）')
+  }
   // A1（2026-10-21 用户口径）：没有底部条码的页 = 降级路径 —— 字序只能靠序列定位 / 逐格认字推断，
   //   与"条码自证"不是一个可靠性。卡片上给一个短标记，hover 里说清字序从哪来。
   if (page.ok && page.barcodeOk === false && page.kind !== 'correction') {
@@ -1276,6 +1300,21 @@ const zoomIsMarkedLabel = computed(() => {
           data-role="notes-toggle"
           @click="notesExpanded = !notesExpanded"
         >{{ notesExpanded ? '收起' : '展开全部 ' + gate.notes.length + ' 条' }}</button>
+        <!-- 同页号多份"内容不同"的更正册（混批）：程序只用第一份，必须说清用哪份、怎么换 -->
+        <ul v-if="correctionBookConflicts.length" class="scan-problems">
+          <li v-for="(c, i) in correctionBookConflicts" :key="'cc' + i" class="warn">
+            第 {{ c.pageNumber }} 页的更正册有 {{ c.others.length + 1 }} 份、内容不同：程序按文件顺序先用
+            「{{ c.chosen.fileName }}」，其余 {{ c.others.map((o) => '「' + o.fileName + '」').join('、') }} 不参与配对。
+            要改用另一份，就在「看文件清单」里去掉「{{ c.chosen.fileName }}」再识别一次。
+          </li>
+        </ul>
+        <!-- 更正册与主区被圈字对不上（2026-10-21 用户口径）：红字、常驻、识别完成后才给 -->
+        <p v-if="correctionMismatch" class="scan-mismatch" data-role="correction-mismatch">
+          更正册与主区对不上：主区被红笔圈了 {{ correctionMismatch.mainCircled }} 个字，更正册写到第
+          {{ correctionMismatch.lastUsed }} 格（其中留空 {{ correctionMismatch.blank }} 格、作废
+          {{ correctionMismatch.discarded }} 格，合逻辑 {{ correctionMismatch.logical }} 个）——
+          两边的数量不一致，更正册无法一一对应。请人工核对下面的「更正核对」，或按被圈字的数量重写更正册。
+        </p>
         <!-- 识别进行中不给"可以继续"这类结论（2026-10-13 用户口径：还没结束，别下结论） -->
         <p v-if="gate.canProceed && !running" class="panel-message done">
           这一批可以继续：<span v-if="(store.correction.circled || []).length">被红笔圈掉的字在下面的「更正核对」里可以逐行核对与调整（不改就是程序按识别结果配的那一套，直接用于生成字体）</span><span v-else>主区没有被红笔圈掉的字，可以直接进第 3 步「生成」了</span>

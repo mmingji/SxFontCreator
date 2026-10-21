@@ -11,6 +11,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { SCAN_DEFAULTS, buildFinalGlyphPlan, pairCorrections } from '../lib/scanFlow.js'
+import { pickCorrectionBookPages } from '../lib/scanMeta.js'
 import { getPageCache } from '../lib/scanCache.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
 import { continuousIndex } from '../lib/correctionMapper.js'
@@ -33,7 +34,11 @@ const rebuilding = ref({})
 const sheetError = ref({})
 
 const pages = computed(() => store.scan.pages)
-const correctionPages = computed(() => pages.value.filter((p) => p.ok && p.kind === 'correction'))
+// 参与核对的更正册：**只收被采用的那一份**（2026-10-21 修）。
+// 为什么必须这样：混批时同一页号可能有多份更正册（内容不同），配对初值只按文件序取第一份；
+//   correctionCellMap 若把其余几份也收进来，后写会覆盖先写 —— 核对表显示的就是另一册的字形
+//   （真机：主区是自定义档、核对表右列却是名句页的字）。两处必须用同一个"选册"函数。
+const correctionPages = computed(() => pickCorrectionBookPages(pages.value).pages)
 const hasCorrectionBook = computed(() => correctionPages.value.length > 0)
 
 // 更正册的格（连续格号 → 页 / 格 / 判定），供候选下拉与"这一格有没有笔迹"判断
