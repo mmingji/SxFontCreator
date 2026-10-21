@@ -276,19 +276,22 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     throw err
   }
 
-  // ① **补一个空格字形**（2026-10-16 用户拍板："补空格字形、advance 取 500"）。
+  // ① **补一个空格字形**（2026-10-16 用户拍板"补空格"；**2026-10-21 修：advance 从半角 500 改成全角 1000**）。
   //   为什么补：这份字体原来不含 U+0020 —— 用户打空格只能走系统回退；更要紧的是 **Adobe 的「字形保护」**
   //   （Glyph Protection，Photoshop 默认开启）：输入里只要有一个字符不在字体里，它就把**整个文字图层**
   //   换成系统字体（2026-10-16 实测：PS 新建文字图层默认预置的 "Lorem Ipsum" 就把这份只含汉字的字体
   //   当场换掉了；那次的实际触发字符是拉丁字母，见《使用说明》第五节 —— 空格同样是最常见的触发字符）。
-  //   形状：**空轮廓**（没有任何笔画）+ **半角 advance 500**（与数字/字母同档，见决策 四-3；中文里约半个
-  //   汉字宽，与宋体等中文字体的半角空格一致）。
+  //   **为什么不能用半角 500（2026-10-21 真机 + Word 导出 PDF 实测）**：Word 对 CJK 字体拿"空格宽度"
+  //   当混排基准 —— 空格 500、汉字 1000 的字体，Word 会把整段汉字压紧（字与字重叠）；
+  //   同一份字体把空格改成 1000、或者干脆没有空格，Word 里都正常。Excel / 记事本 / PS / 浏览器全都不受影响，
+  //   只有 Word 这样（1016 版没补空格 → 正常；补了半角空格之后就挤）。所以这里用 **fullWidth（1000）**，
+  //   与汉字同宽；它仍是空轮廓，只占位。
   //   它**不计入"收录"**：coverage / mapping / 界面上的"N 个字"说的都是"用户写了多少字"（八-21 的口径），
   //   程序补的这一格不算用户的书写成果 —— 只在 stats 里用 spaceGlyph 标出来，供测试与说明引用。
   const fontGlyphs = built.slice()
   const hasSpaceGlyph = !byChar.has(' ')
   if (hasSpaceGlyph) {
-    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.halfWidth, clamped: false })
+    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.fullWidth, clamped: false })
   }
 
   // ② SVG font（中间格式）：glyph 的 unicode 决定 cmap、horiz-adv-x 决定字宽

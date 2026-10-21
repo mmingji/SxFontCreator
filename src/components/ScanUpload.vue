@@ -220,6 +220,18 @@ const correctionMismatch = computed(() => {
 const correctionBookConflicts = computed(() => (running.value || !showResult.value)
   ? []
   : pickCorrectionBookPages(pages.value).conflicts)
+// 主区有红圈、却**没有任何更正文**（没传更正册 / 册子一个字没写）：这些字会保留主区原字形（写错的那一版），
+// 用户 2026-10-21 要求提到识别结果这块、用红字说清 —— 灰字提示在「更正对应」里太靠下，容易被当成"没配上也正常"。
+const missingCorrectionBook = computed(() => {
+  if (running.value || !showResult.value) return null
+  const mainCircled = pages.value
+    .filter((p) => usableForGlyphs(p) && p.kind !== 'correction' && p.counts)
+    .reduce((sum, p) => sum + (p.counts.marked || 0), 0)
+  if (!mainCircled) return null
+  if (correctionBookStats(pages.value).lastUsed) return null // 有更正文 → 交给"对不上"那条判
+  const hasBookPage = pages.value.some((p) => usableForGlyphs(p) && p.kind === 'correction')
+  return { mainCircled, hasBookPage }
+})
 
 // 这一轮的识别汇总（2026-10-13 用户口径）：原来"识别完成：N 页，用时 X 秒"与"这批共 N 页：可用…"
 // 各占一行、还分处两块，现在并成一句，跟在「已选文件夹「X」· N 张图片」后面 —— 一眼看完"选了什么、跑出什么"。
@@ -1308,6 +1320,12 @@ const zoomIsMarkedLabel = computed(() => {
             要改用另一份，就在「看文件清单」里去掉「{{ c.chosen.fileName }}」再识别一次。
           </li>
         </ul>
+        <!-- 有红圈、却没有更正册（或册子一个字没写）：红字、常驻（2026-10-21 用户口径） -->
+        <p v-if="missingCorrectionBook" class="scan-mismatch" data-role="missing-correction-book">
+          主区有 {{ missingCorrectionBook.mainCircled }} 个被红笔圈掉的字，但{{ missingCorrectionBook.hasBookPage ? '更正册上一个字也没写' : '这一批没有更正册' }}：
+          这些字会<strong>保留主区原字形（写错的那一版）</strong>，不会用更正册的字形。
+          要更正的话，把第 1 步压缩包里的空白更正册按被圈字的顺序写好，和主区放进同一个文件夹再识别一次。
+        </p>
         <!-- 更正册与主区被圈字对不上（2026-10-21 用户口径）：红字、常驻、识别完成后才给 -->
         <p v-if="correctionMismatch" class="scan-mismatch" data-role="correction-mismatch">
           更正册与主区对不上：主区被红笔圈了 {{ correctionMismatch.mainCircled }} 个字，更正册写到第

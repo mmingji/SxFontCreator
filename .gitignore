@@ -43,3 +43,6 @@ desktop.ini
 *.log
 npm-debug.log*
 *.tmp
+
+# 用户放的对比材料（字体与 Word 文档），只在本机用，不入库
+test/新旧对比/
