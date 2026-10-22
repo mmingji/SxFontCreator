@@ -34,7 +34,9 @@ export const useProjectStore = defineStore('project', {
     // 字体名称表字段（决策 四-1：**全部给默认值**，零配置也能导出可用字体；想改的在第 3 步页面上改）
     meta: {
       familyName: DEFAULT_FAMILY_NAME,
-      fullName: '我的手写体 SxFontCreator',
+      // 2026-10-22 用户拍板：不再单独填全名 —— 全名跟着族名走（Word 只看族名，改全名区分不了版本）。
+      //   字段留着只为兼容旧项目数据，构建时不再读它。
+      fullName: '',
       version: '1.0',
       designer: '',
       copyright: '',

@@ -14,7 +14,7 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
     '========================================',
     '',
     '字体族名：' + familyName,
-    fullName ? '全名：' + fullName : '',
+    fullName && fullName !== familyName ? '全名：' + fullName : '',
     '版本：' + version,
     designer ? '设计者：' + designer : '',
     copyright ? '版权：' + copyright : '',

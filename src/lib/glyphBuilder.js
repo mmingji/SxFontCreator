@@ -316,7 +316,11 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     fontFamily: familyName,
     fontSubFamily: 'Regular',
     uniqueSubFamily: familyName + ' Regular ' + version,
-    fullName: meta.fullName || familyName,
+    // 全名**跟着族名走**（2026-10-22 用户拍板）：Word / PS 的字体列表只看 Family（ID 1），
+    //   全名（ID 4）被 Windows 用在安装注册与字体预览上。两者不一致时会出现"注册名是 A、Word 里找 B"，
+    //   同族名的多份字体还会互相覆盖 —— 而且文件名只跟族名走，改全名根本区分不了版本。
+    //   所以这里不再接受单独填写的全名：全名 = 族名（要区分版本请改族名）。
+    fullName: familyName,
     version: 'Version ' + version,
     postScriptName: psName,
     copyright: meta.copyright || ('Copyright ' + (meta.designer || '') + ' 由 SxFontCreator 生成'),

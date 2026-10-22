@@ -65,8 +65,7 @@ const prevStateNote = computed(() => {
 })
 
 const META_FIELDS = [
-  { key: 'familyName', label: '字体族名', placeholder: 'SxFontCreator', hint: 'Word / PS 字体列表里的名字' },
-  { key: 'fullName', label: '全名', placeholder: '我的手写体 SxFontCreator', hint: '' },
+  { key: 'familyName', label: '字体族名', placeholder: 'SxFontCreator', hint: 'Word / PS 字体列表里的名字；全名与文件名都跟着它走' },
   { key: 'version', label: '版本', placeholder: '1.0', hint: '只写数字与点' },
   { key: 'designer', label: '设计者', placeholder: '（可留空）', hint: '' },
   { key: 'copyright', label: '版权', placeholder: '（留空则自动生成一行）', hint: '' },
@@ -223,7 +222,6 @@ async function downloadZip() {
       woff2: built.woff2,
       css: built.css,
       familyName: built.familyName,
-      fullName: store.meta.fullName,
       version: store.meta.version,
       designer: store.meta.designer,
       copyright: store.meta.copyright,
