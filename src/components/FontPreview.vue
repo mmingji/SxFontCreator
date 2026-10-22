@@ -121,9 +121,10 @@ function clearText() {
   <div class="font-preview">
     <!-- 标题行（2026-10-15 用户口径）：左边「字体预览」四个字，**后面紧跟生成结论**（"字体已生成：…"），
          最右边由父组件塞进来的动作（查看字形总览 / 查看网页预览 / 下载 zip，最后那个是主按钮）——
-         这一块现在**同时承担「生成结果」**（那个独立框已并入这里） -->
+         这一块现在**同时承担「生成结果」**（那个独立框已并入这里）。
+         2026-10-22 用户口径：标题后面带字体名称（"字体预览 - 族名"），多版字体并存时一眼看出是哪一个。 -->
     <div class="panel-head">
-      <h3>字体预览</h3>
+      <h3>字体预览<template v-if="familyName"> - {{ familyName }}</template></h3>
       <slot name="head-note" />
       <span class="panel-head-actions"><slot name="head-actions" /></span>
     </div>

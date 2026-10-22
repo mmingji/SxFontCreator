@@ -65,7 +65,7 @@ const prevStateNote = computed(() => {
 })
 
 const META_FIELDS = [
-  { key: 'familyName', label: '字体族名', placeholder: 'SxFontCreator', hint: 'Word / PS 字体列表里的名字；全名与文件名都跟着它走' },
+  { key: 'familyName', label: '字体族名', placeholder: 'SxFontCreator', hint: 'Word / PS 字体列表里的名字' },
   { key: 'version', label: '版本', placeholder: '1.0', hint: '只写数字与点' },
   { key: 'designer', label: '设计者', placeholder: '（可留空）', hint: '' },
   { key: 'copyright', label: '版权', placeholder: '（留空则自动生成一行）', hint: '' },

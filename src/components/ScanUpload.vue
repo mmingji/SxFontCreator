@@ -22,7 +22,8 @@ import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, naturalCompare,
 import { clearScanDirHandle, loadScanDirHandle, requestScanDirPermission, saveScanDirHandle } from '../lib/scanDirHandle.js'
 import { setScanRunning } from '../lib/scanRunState.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
-import { LAYOUT } from '../lib/layout.js'
+import { LAYOUT, CM } from '../lib/layout.js'
+import { CELL_PAD_PT } from '../lib/gridDetector.js'
 import CorrectionConfirm from './CorrectionConfirm.vue'
 
 // ── 参考字候选库：现在归 Worker 所有（决策 六-15）────────────────────────────
@@ -1070,11 +1071,17 @@ function sheetSummary(page) {
 const sheetPage = computed(() => pages.value.find((p) => p.fileIndex === openIndex.value) || null)
 
 // ── 格级视图（在「看格子」弹窗里渲染）────────────────────────────────────
+// 2026-10-22 用户口径：卡片上的按钮**固定写「看格子」**，它只负责打开 / 切到这一页，
+//   不负责关闭（弹窗右上角已有「关闭」）—— 按钮不再随弹窗状态改文案。
 function togglePage(page) {
   if (!page.ok) return
-  openIndex.value = openIndex.value === page.fileIndex ? null : page.fileIndex
+  openIndex.value = page.fileIndex
   zoomIndex.value = null
-  if (openIndex.value !== null) ensureSheet(page)
+  ensureSheet(page)
+}
+function closeSheet() {
+  openIndex.value = null
+  zoomIndex.value = null
 }
 
 /**
@@ -1154,8 +1161,12 @@ const zoomStyle = computed(() => {
     backgroundPosition: (col / (COLS - 1)) * 100 + '% ' + (row / (ROWS - 1)) * 100 + '%'
   }
 })
-const zoomIsMarkedLabel = computed(() => {
-  const z = zoomCell.value
+// 越线冗余说明（2026-10-22 用户要求）：把"多收多少、什么收得进、什么收不进"写在单格弹窗里。
+// 数值取自版式契约（CELL_PAD_PT 由中缝推导，改版式时自动跟着变），不在这里手写死。
+const zoomOverflowHint = '笔画越线：每格切片会多收书写格外 ' + CELL_PAD_PT + 'pt（约 ' +
+  (CELL_PAD_PT / CM * 10).toFixed(1) + 'mm）—— 这个范围内的越线笔画会进字形' +
+  '（越出设计框时整体等比缩小、不裁掉笔画）；再往外就切不到、不会收进字体。'
+const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
   if (!z) return ''
   const c = z.cell
   const parts = []
@@ -1411,7 +1422,7 @@ const zoomIsMarkedLabel = computed(() => {
         </p>
         <div class="scan-card-actions">
           <button class="text" type="button" :disabled="!page.ok" data-role="view-cells" @click="togglePage(page)">
-            {{ openIndex === page.fileIndex ? '收起格子' : '看格子' }}
+            看格子
           </button>
           <!-- 单页重传（清单 一-8）：只重扫这一页、原地替换它的结果与字形，不必整批重来。
                2026-10-12 按用户口径由实体按钮改成文本按钮「重传」，位置紧跟「看格子」之后 -->
@@ -1445,11 +1456,11 @@ const zoomIsMarkedLabel = computed(() => {
 
     <!-- 单页详情（弹窗）：136 格视图 + 单格放大（手选页序那块已随该功能一起去掉）。
          为什么收进弹窗：60 页时行内展开会把列表撑得很长，而且每页那 136 个格子的覆盖层与格子拼图会常驻 DOM -->
-    <div v-if="sheetPage" class="backup-overlay" @click.self="togglePage(sheetPage)">
+    <div v-if="sheetPage" class="backup-overlay" @click.self="closeSheet()">
       <div class="backup-modal scan-sheet-modal" role="dialog" aria-label="这一页的格子" data-role="scan-sheet">
         <div class="backup-head">
           <h3>{{ sheetPage.fileName }}</h3>
-          <button class="text" type="button" data-role="sheet-close" @click="togglePage(sheetPage)">关闭</button>
+          <button class="text" type="button" data-role="sheet-close" @click="closeSheet()">关闭</button>
         </div>
         <p class="panel-hint">{{ sheetSummary(sheetPage) }}</p>
 
@@ -1486,6 +1497,7 @@ const zoomIsMarkedLabel = computed(() => {
           <div class="scan-cell-zoom-info">
             <strong>第 {{ zoomCell.cell.index + 1 }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
+            <p class="panel-hint" data-role="overflow-hint">{{ zoomOverflowHint }}</p>
           </div>
         </div>
       </div>
