@@ -1165,7 +1165,7 @@ const zoomStyle = computed(() => {
 // 数值取自版式契约（CELL_PAD_PT 由中缝推导，改版式时自动跟着变），不在这里手写死。
 const zoomOverflowHint = '笔画越线：每格切片会多收书写格外 ' + CELL_PAD_PT + 'pt（约 ' +
   (CELL_PAD_PT / CM * 10).toFixed(1) + 'mm）—— 这个范围内的越线笔画会进字形' +
-  '（越出设计框时整体等比缩小、不裁掉笔画）；再往外就切不到、不会收进字体。'
+  '（越线时字形等比缩小、不裁掉笔画）；再往外就切不到、不会收进字体。'
 const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
   if (!z) return ''
   const c = z.cell
