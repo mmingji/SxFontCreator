@@ -12,6 +12,7 @@
 // 阈值来自 68 格真件实测（2026-10-07，第一页写满 4 行；分位数见《决策记录》四-9）：
 //   占格率（映射后外框高 / 书写格）：p10 0.63 / 中位 0.82 / p90 0.98；
 //   笔画宽度（p90，占书写格）：中位 5.0% / p90 7.1%；碎块：多数 1 块。
+import { classifyChar } from './charset.js'
 import { glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
 import { connectedComponents, strokeWidthEstimate } from './imageOps.js'
 
@@ -50,10 +51,9 @@ export function inspectGlyphMask(cell, options = {}) {
   const box = cell.boxInSlice || { x: 0, y: 0, width: 118, height: 118 }
   const width = cell.width || box.x + box.width
   const height = cell.height || box.y + box.height
-  // **2026-10-22 起数字/字母也按全角 1000 判**：字体构建端已经不再把半角压进 500 宽
-  //   （Word 2016 对 numberOfHMetrics>2 的字体会读错字宽，见 glyphBuilder ⑤），体检必须同一口径，
-  //   否则数字/字母会被按半角格算出虚高的占格率。`half` 参数保留在 glyphGeometry 里给几何回归用。
-  const half = false
+  // 数字/字母与汉字同一套全角映射（构建端也按全角映射、advance 另按实际宽度给），
+  //   但体检对它们**不判"偏小/偏大"**（手写数字本来就窄），所以 `half` 只用于跳过这两条判断。
+  const half = classifyChar(cell.char || '') === 'halfwidth'
   const messages = []
 
   // ① 掩膜口径：面积、外框（按**书写格**口径，越界与否要和纸面规则对得上）、碎块
@@ -104,17 +104,17 @@ export function inspectGlyphMask(cell, options = {}) {
   //       （它要减 `box.x`），喂相对坐标会白差一个 box.x（实测：写满格被算成越界 118 单位）；
   //    ② **跨度要按"面"算（+1）**—— 墨迹像素是 1×1 的面，`maxX − minX` 只有 117（写满格时），
   //       按点算每个字都会少 1 像素（0.85% 格宽）。
-  const mapping = glyphMapping({ boxInSlice: { x: box.x, y: box.y, width: box.width, height: box.height }, half })
+  const mapping = glyphMapping({ boxInSlice: { x: box.x, y: box.y, width: box.width, height: box.height }, half: false })
   const rawBox = { minX, minY, maxX: maxX + 1, maxY: maxY + 1 } // 绝对切片坐标
   const localBox = { minX: minX - box.x, minY: minY - box.y, maxX: maxX + 1 - box.x, maxY: maxY + 1 - box.y }
-  const { mapped, outside, clampScale } = mapBBoxToDesignBox(rawBox, mapping, half)
+  const { mapped, outside, clampScale } = mapBBoxToDesignBox(rawBox, mapping, false)
   const boxW = mapping.box.width
   const boxH = mapping.box.height
   const glyphW = mapped.maxX - mapped.minX
   const glyphH = mapped.maxY - mapped.minY
   // 占格率：**长边**占设计框的比例（字面率的口径；只看高会把"一"这类扁字误判成太小 ——
   // 与 1.6 的 tooSmall"宽与高都小于阈值"同一考虑）
-  const fill = Math.max(glyphW / (half ? mapping.opt.halfWidth : mapping.opt.glyphBox), glyphH / mapping.opt.glyphBox)
+  const fill = Math.max(glyphW / mapping.opt.glyphBox, glyphH / mapping.opt.glyphBox)
 
   // ③ 逐项判定（只产提示，不改字形）
   const sides = []

@@ -12,8 +12,8 @@ export const FONT_DEFAULTS = {
   glyphLeft: 0, // 占位框左边距：书写格左边落在 x = 0、右边落在 x = 1000
   glyphTop: 900, // 书写格顶边映射到 y = 900
   glyphBottom: -100, // 书写格底边映射到 y = -100（基线在格底上方 0.1em）
-  fullWidth: 1000, // 汉字与中文标点的 advanceWidth（2026-10-22 起数字/字母也用全角，见下）
-  halfWidth: 500, // **历史口径**：数字与拉丁字母曾按半角 500；2026-10-22 起构建/体检都不再使用
+  fullWidth: 1000, // 汉字与中文标点的 advanceWidth
+  halfWidth: 500, // 补的空格字形的 advanceWidth（数字/字母按实际宽度，不用这个值）
   turdsize: 2, // 透传给 potrace 的去噪点
   alphamax: 1
 }

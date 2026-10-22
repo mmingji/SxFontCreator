@@ -6,8 +6,8 @@
 //   本项目只借它的骨架：走 SVG font 中间格式 → `fonteditor.svg2ttfobject` → 修 name 表 → `createFont().write()`。
 // 关键参数（决策 四-2、四-3、四-4）：
 //   em 方格 1000；字形占位 1000×1000（字面率 100%，书写格横向 0~1000、竖向 −100~900 —— 2026-10-04 由 900×900 抬高，清单 一-5）；
-//   **所有正文字形统一全角 1000**（2026-10-22 起数字/拉丁字母不再压半角 500 —— 字体里只有一种正文字宽，
-//   hmtx 压缩后才不会触发 Word 2016 的读宽缺陷，见 ⑤）；
+//   汉字与中文标点全角 1000；数字/拉丁字母按**实际宽度**（0.3~0.8em，比例字体）；补的空格 **500**；
+//   **hmtx 全量**（`numberOfHMetrics = numGlyphs`，与系统手写体一致，见 ⑤）；
 //   映射按**书写格线性映射**（用户写多大就是多大），**不按包围盒铺满** —— 否则"一"和"国"会一样大。
 // 运行环境：需要打包器（fonteditor-core 的发布产物是 CJS 包装，浏览器不能直接加载）；
 //   potrace 是 WASM、woff2 还要一个单独的 wasm 文件（放在 public/woff2.wasm，见下面的常量说明）——
@@ -15,9 +15,10 @@
 import fonteditor from 'fonteditor-core'
 import { maskToPathData } from './traceImage.js'
 import { commandsToPathData, parsePathCommands, pathBBox } from './svgPath.js'
-import { charToCodePoint } from './charset.js'
+import { charToCodePoint, classifyChar } from './charset.js'
 import { ensureInlineAsset, hasInlineAssets } from './inlineAssets.js'
 import { FONT_DEFAULTS, OUT_TOLERANCE, glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
+import { ensureFullHorizontalMetrics } from './ttfMetrics.js'
 
 // woff2 编码器要一个单独的 wasm（710KB）。**不能**从 node_modules 里 import：
 //   fonteditor-core 的 package.json `exports` 只声明了 `.` 与 `./lib/*`，`fonteditor-core/woff2/woff2.wasm` 会被拦下
@@ -121,13 +122,12 @@ function glyphName(char) {
  */
 export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, options = {}) {
   const opt = { ...FONT_DEFAULTS, ...options }
-  // **2026-10-22 起数字/字母也按全角 1000 构建**（用户拍板，真机 Word 2016 实测）：
-  //   Word 2016 对"numberOfHMetrics 被展开"的字体读错字宽 —— 只要字体里出现第二种宽度
-  //   （汉字 1000 + 数字字母 500），fonteditor 压缩后的 numberOfHMetrics 就必然 > 2，
-  //   实测 nhm=3/4/10/72/73/74 全部把整段汉字挤成一团；nhm=2（全字体只有一种正文字宽）才正常。
-  //   所以数字/字母不再压成半角 500，与汉字一样占满 1em。代价（用户知情）：正文里数字/字母
-  //   比系统半角宽，字形本身仍按用户写在 1cm 格里的样子保留。
-  const advanceWidth = opt.fullWidth
+  // 数字 / 拉丁字母：**按字形实际宽度给 advance（比例字体）**，对照系统里的手写体：
+  //   方正小楷数字 287~430、悠哉 539~718、飞波 376~766；固定全角 1000 太宽、固定半角 500
+  //   又不能反映"写得宽 / 窄"。这里按墨迹宽度 + 左右各 0.05em，夹在 0.3~0.8em。
+  //   汉字与中文标点仍是全角 1000。
+  const isHalf = classifyChar(char) === 'halfwidth'
+  let advanceWidth = opt.fullWidth
   const traced = await maskToPathData(mask, {
     width, height, turdsize: opt.turdsize, alphamax: opt.alphamax
   })
@@ -138,8 +138,7 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
   //    都按设计框算（见 glyphGeometry.mapBBoxToDesignBox 与本文件下面的收缩逻辑）。
   //    注意要**合并 potrace 自己的 transform**：它的 path 坐标是"像素 × 10"且 y 反向（见 traceImage 的说明），
   //    所以像素坐标 = (c·x + a, d·y + b)。漏掉这一步会让坐标差 10 倍、上下颠倒（实测踩到）。
-  //    `half` 仍传 false：glyphGeometry 保留了半角分支（给旧口径与几何回归用），但构建端
-  //    2026-10-22 起不再使用 —— 数字/字母与汉字同一套全角映射（决策 四-3 的本轮修订）。
+  //    数字/字母也用全角映射（书写格 0~1000），字形保持用户写的位置，再按实际宽度定 advance。
   const bb = pathBBox(traced.cmds)
   const box = boxInSlice || { x: 0, y: 0, width, height } // 缺省退化成"整张切片都算书写格"（与 1.6 同口径）
   const tr = traced.transform || { a: 0, b: 0, c: 1, d: 1 }
@@ -166,7 +165,19 @@ export async function buildGlyphPath({ mask, width, height, boxInSlice, char }, 
     if (yy0 < designBox.bottom) dy = designBox.bottom - yy0
     if (yy1 + dy > designBox.top) dy = designBox.top - yy1
   }
-  const d = commandsToPathData(traced.cmds, scaleX * k, scaleY * k, offsetX * k + dx, offsetY * k + dy)
+  const baseD = commandsToPathData(traced.cmds, scaleX * k, scaleY * k, offsetX * k + dx, offsetY * k + dy)
+  // 数字/字母：按墨迹宽度定 advance，并把字形左移到 0.05em 边距处
+  let shift = 0
+  if (isHalf) {
+    const pre = pathBBox(parsePathCommands(baseD))
+    const inkWidth = pre.maxX - pre.minX
+    const pad = 50
+    advanceWidth = Math.max(300, Math.min(800, Math.round(inkWidth + pad * 2)))
+    shift = pad - pre.minX
+  }
+  const d = shift
+    ? commandsToPathData(traced.cmds, scaleX * k, scaleY * k, offsetX * k + dx + shift, offsetY * k + dy)
+    : baseD
   // 最终包围盒：解析回命令再算（供体检与测试断言；d 是自己生成的规范格式，解析成本可忽略）
   const bbox = pathBBox(parsePathCommands(d))
   return {
@@ -276,21 +287,19 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     throw err
   }
 
-  // ① **补一个空格字形**（2026-10-16 用户拍板"补空格"；2026-10-21 改全角 1000；2026-10-22 再确认保留）。
+  // ① **补一个空格字形**（2026-10-16 用户拍板"补空格"；2026-10-22 改为半角 500）。
   //   为什么补：这份字体原来不含 U+0020 —— 用户打空格只能走系统回退；更要紧的是 **Adobe 的「字形保护」**
   //   （Glyph Protection，Photoshop 默认开启）：输入里只要有一个字符不在字体里，它就把**整个文字图层**
   //   换成系统字体（2026-10-16 实测：PS 新建文字图层默认预置的 "Lorem Ipsum" 就把这份只含汉字的字体
   //   当场换掉了；那次的实际触发字符是拉丁字母，见《使用说明》第五节 —— 空格同样是最常见的触发字符）。
-  //   **为什么用全角 1000**：空格与汉字同宽，中文段落里不会出现"忽宽忽窄"的空格；它仍是空轮廓、只占位。
-  //   **2026-10-22 更正**：Word 里汉字挤成一团的**真因不是空格宽度**，而是生成时把 hmtx 展开成
-  //   "每字一条"（numberOfHMetrics 变成字形数）—— Word 2016 对这种表读错字宽（见 ⑤）。空格 1000
-  //   本身无害，保留。
+  //   **宽度 500（半角）**：对照系统手写体（方正小楷 296、悠哉 333、飞波正点 500）与宋体等中文字体，
+  //   空格应是半角；全角 1000 在 Word 里太宽。它仍是空轮廓、只占位。
   //   它**不计入"收录"**：coverage / mapping / 界面上的"N 个字"说的都是"用户写了多少字"（八-21 的口径），
   //   程序补的这一格不算用户的书写成果 —— 只在 stats 里用 spaceGlyph 标出来，供测试与说明引用。
   const fontGlyphs = built.slice()
   const hasSpaceGlyph = !byChar.has(' ')
   if (hasSpaceGlyph) {
-    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.fullWidth, clamped: false })
+    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.halfWidth, clamped: false })
   }
 
   // ② SVG font（中间格式）：glyph 的 unicode 决定 cmap、horiz-adv-x 决定字宽
@@ -333,21 +342,14 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
 
   // ⑤ 写 TTF → woff → woff2
   const font = fonteditor.createFont(ttfObj)
-  // **不要补全 hmtx**（2026-10-22 用户拍板，真机 Word 2016 实测）：
-  //   fonteditor 写 TTF 时会把尾部同 advance 的字形压缩成 "numberOfHMetrics 很小 + 其余继承"，
-  //   TTF 规范允许、PS / WPS / Word 2007 都正常。2026-10-21 曾反过来把它展开成"每字一条"，
-  //   结果 **Word 2016 读错字宽**：numberOfHMetrics 大于 2 时整段汉字挤成一团（实测 nhm=3/4/10/72/73/74
-  //   全部挤，nhm=2 正常；与空格、loca 格式、首字符索引都无关）。所以这里保持 fonteditor 的原样，
-  //   **只保证字体里只有一种正文字宽（全角 1000）**，nhm 自然落在 2。
-  //   历史模块 lib/ttfMetrics.js 保留作诊断工具，但不再参与生成。
-  //   另外 fonteditor 的 ttf2woff / woff2.encode 要的是 ArrayBuffer（不是 Uint8Array 视图），
-  //   所以这里把写出的字节切成精确的 ArrayBuffer 再往下传。
-  const ttfBytes = font.write({ type: 'ttf', toBuffer: false })
-  // fonteditor 的 write 可能给 ArrayBuffer 也可能给 Uint8Array 视图（两类都见过），
-  // 统一切成"从 0 开始的精确 ArrayBuffer"——ttf2woff / woff2.encode 只认后者。
-  const ttf = ttfBytes instanceof ArrayBuffer
-    ? ttfBytes
-    : ttfBytes.buffer.slice(ttfBytes.byteOffset, ttfBytes.byteOffset + ttfBytes.byteLength)
+  // **hmtx 必须补全成"每字一条"**（2026-10-22 对照系统手写体实测）：
+  //   Word 2016 对"中文字体槽位"的字体，会拿空格字形的 hmtx 条目当 CJK 基准；只要空格不是
+  //   半角 + hmtx 压缩到 2 条，整段汉字就会挤。系统里的方正小楷 / 悠哉 / 飞波正点都是
+  //   "空格半角 + numberOfHMetrics 覆盖全部字形"；本项目实测同样的组合在 Word 2016 里正常。
+  //   所以这里展开成"每字 4 字节"，同时保证 hhea.numberOfHMetrics = numGlyphs。
+  //   ttf2woff / woff2.encode 要 ArrayBuffer（不是 Uint8Array 视图），下面统一切一次。
+  const ttfFixed = ensureFullHorizontalMetrics(font.write({ type: 'ttf', toBuffer: false }))
+  const ttf = ttfFixed.buffer.slice(ttfFixed.byteOffset, ttfFixed.byteOffset + ttfFixed.byteLength)
   const woff = fonteditor.ttf2woff(ttf)
   let woff2 = null
   try {
@@ -376,6 +378,8 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
       built: built.length,
       skipped: skipped.length,
       clamped: built.filter((g) => g.clamped).length,
+      // 数字/字母按比例宽度构建（advance 在 300~800 之间），这里统计窄字形的数量
+      halfwidth: built.filter((g) => g.advanceWidth < opt.glyphBox).length,
       // 程序补的空格字形（不进 built / mapping，见 ① 的说明）—— 界面统计与测试都靠它
       spaceGlyph: hasSpaceGlyph
     }

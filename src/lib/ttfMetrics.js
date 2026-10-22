@@ -2,14 +2,12 @@
 //
 // 职责：把 TTF 的 hmtx 表补成"每个字形一条完整度量"（hhea.numberOfHMetrics = maxp.numGlyphs）。
 //
-// 为什么要做（2026-10-21 用户实测）：
-//   fonteditor-core 写 TTF 时会**压缩 hmtx**（`hmtx.size()` 从最后一个字形往前数，把 advance 相同的
-//   尾部字形合并）—— 生成的文件里 numberOfHMetrics 可能只有 3，而字形有 108 个。按 TTF 规范这是
-//   合法的："numberOfHMetrics 之后的字形继承最后一项的 advanceWidth，只额外存 lsb"。
-//   但 Word 的排版实现不认这条继承：它把 gid ≥ numberOfHMetrics 的字形的 advanceWidth 当成 0，
-//   于是"山不在高"四个字挤成一团（字间距消失）；Photoshop 按规范读，显示正常。
-//   实测样本（test/.tmp/font-sample.ttf）：numberOfHMetrics = 3 / numGlyphs = 108，
-//   第 3 项之后 advance 全是 1000，Word 里却全挤在一起。
+// 为什么要做（2026-10-22 对照系统手写体定案）：
+//   fonteditor-core 写 TTF 时会**压缩 hmtx**（尾部同 advance 的字形合并、其余继承最后一条）。
+//   按 TTF 规范这是合法的，PS / 浏览器也正常；但 Word 的「中文字体」槽位会拿**空格字形的
+//   hmtx 条目**当 CJK 基准 —— 空格半角 + hmtx 全量 是系统手写体（方正小楷 / 悠哉 / 飞波正点）
+//   共同的形态，实测 Word 2016 正常；空格全角 + 压缩到 2 条时整段汉字会被压紧。
+//   所以生成端保持"每字一条 + 空格 500"。
 //
 // 为什么不改 fonteditor-core：它是 node_modules 里的第三方包、打补丁不可持续；
 //   而且在写出后重排一次表数据成本很低（全量 8274 字只多约 16KB）。
