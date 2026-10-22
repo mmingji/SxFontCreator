@@ -1500,7 +1500,7 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
             <p class="panel-hint" data-role="overflow-hint">{{ zoomOverflowHint }}</p>
             <p class="panel-hint" data-role="zoom-bitmap-note">
-              这里显示的是识别时切出的位图（每格 96 像素，放大后有锯齿）；字形轮廓是矢量，要到「生成」那一步才由笔迹追踪出来。
+              这里显示的是识别时切出的位图（每格 146 像素，放大后有锯齿）；字形轮廓是矢量，要到「生成」那一步才由笔迹追踪出来。
             </p>
           </div>
         </div>

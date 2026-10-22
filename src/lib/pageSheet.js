@@ -40,18 +40,29 @@ export function cellSheet(cells, size) {
     cellCtx.fillRect(0, 0, size, size)
     const mask = cell.mask
     if (mask) {
-      // 掩膜按最近邻放大（保持笔画形状，不糊）
+      // 掩膜 → 缩略图：**按区域取墨**，不是最近邻采样。
+      //   为什么改（2026-10-22 用户实测）：每格 96 像素、书写格 118 像素，最近邻会跳过约 19% 的源列；
+      //   手写的"点"和数字细笔画只有 1~2 像素宽，正好被跳掉 —— 界面上看着像"没识别到"，
+      //   其实掩膜与字体里都有（实测 Sx1022 字体里"案/室/3"的 bbox 都到顶）。
+      //   现在每个目标像素覆盖的源区域里只要有 1 个墨迹像素就画黑：细笔画不会整条消失，代价是略粗。
       const mw = cell.width
       const mh = cell.height
       const box = cell.boxInSlice
       const img = cellCtx.createImageData(size, size)
       for (let y = 0; y < size; y++) {
+        const sy0 = box.y + Math.floor((y / size) * box.height)
+        const sy1 = Math.max(sy0 + 1, box.y + Math.ceil(((y + 1) / size) * box.height))
         for (let x = 0; x < size; x++) {
-          // 只画书写格那一块（切片含 14 像素外扩，缩略图里不需要）
-          const sx = box.x + Math.floor(((x / size) * box.width))
-          const sy = box.y + Math.floor(((y / size) * box.height))
-          const inside = sx >= 0 && sy >= 0 && sx < mw && sy < mh
-          const v = inside && mask[sy * mw + sx] ? 0 : 255
+          const sx0 = box.x + Math.floor((x / size) * box.width)
+          const sx1 = Math.max(sx0 + 1, box.x + Math.ceil(((x + 1) / size) * box.width))
+          let ink = false
+          for (let sy = sy0; sy < sy1 && !ink; sy++) {
+            if (sy < 0 || sy >= mh) continue
+            for (let sx = sx0; sx < sx1; sx++) {
+              if (sx >= 0 && sx < mw && mask[sy * mw + sx]) { ink = true; break }
+            }
+          }
+          const v = ink ? 0 : 255
           const o = (y * size + x) * 4
           img.data[o] = img.data[o + 1] = img.data[o + 2] = v
           img.data[o + 3] = 255
@@ -85,12 +96,13 @@ export function blobToDataUrl(blob) {
  * 口径：落盘只存"有笔迹"的格，所以重建出来的拼图里空白格就是浅灰底 —— 与识别时那张图观感一致。
  * @param {object} input
  * @param {number} input.fileIndex 第几个文件（分片键）
- * @param {number} [input.cellThumbSize] 每格像素边长，与识别时保持一致
+ * @param {number} [input.cellThumbSize] 每格像素边长，与识别时保持一致（默认 146 = 切片原分辨率，
+ *   与 `SCAN_DEFAULTS.cellThumbSize` 同值；这里不 import 它，避免 pageSheet 与 scanFlow 互相依赖）
  * @param {number[]} [input.markedCells] 这一页被红笔圈掉的格号（**落盘的掩膜里没有这个信息**，
  *   由调用方从页记录里取，否则重建的图会丢掉红框）
  * @returns {Promise<{ok:boolean, sheet:string|null, count:number, reason:string}>}
  */
-export async function buildPageSheetFromStore({ fileIndex, cellThumbSize = 96, markedCells = [] }) {
+export async function buildPageSheetFromStore({ fileIndex, cellThumbSize = 146, markedCells = [] }) {
   try {
     const page = await loadGlyphPage({ fileIndex })
     if (!page || !(page.glyphs || []).length) {

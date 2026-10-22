@@ -128,8 +128,12 @@ const coveredChars = computed(() => plan.value.replaced)
 // 有没有手动调整过（改派 / 删除）：决定「恢复默认」能不能点
 const hasOverrides = computed(() => Object.keys(store.correction.overrides || {}).length > 0)
 const extraCells = computed(() => {
+  // 被红圈作废的格**不是"多写"**（2026-10-22 修）：它在补写区里被跳过、字从后面的格补写，
+  //   但它本身仍有墨迹；不排掉它就会被当成"多写的格"（真机：第 15 格作废、第 16 格补写，
+  //   核对表底端却提示"第 15 格多写"）。作废格由 correctionMapper 的 discarded 给出。
+  const discarded = new Set((store.correction.discarded || []).map((d) => d.continuousIndex))
   const used = new Set(rows.value.list.map((r) => r.assigned).filter((v) => v !== null))
-  return inkedCells.value.filter((c) => !used.has(c.contiguous) && c.contiguous > rows.value.list.length)
+  return inkedCells.value.filter((c) => !used.has(c.contiguous) && !discarded.has(c.contiguous) && c.contiguous > rows.value.list.length)
 })
 
 function setMessage(text, type) {

@@ -80,7 +80,6 @@ export function renderGuideHtml() {
     <p class="sub">${esc(GUIDE_SUBTITLE)}</p>
     <p class="intro">${inline(GUIDE_INTRO)}</p>
     <nav>
-      <p>目录</p>
       <ul>
 ${toc}
       </ul>

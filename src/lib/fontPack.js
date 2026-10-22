@@ -37,7 +37,7 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
     '怎么用',
     '----------------------------------------',
     'Word：在「开始 → 字体」里选「' + familyName + '」；找不到就确认装好并重启过 Word。',
-    'Photoshop：先用文字工具打字，再全选文字、在字体列表里选「' + familyName + '」—— 实测直接在选项栏',
+    'Photoshop：先用文字工具打字，再全选文字、在字体列表里选「' + familyName + '」—— 直接在选项栏',
     '           选了字体再输入不生效（出来的还是默认字体的样子），选中已有文字再选一次即可。',
     '网页：把 font.css 与字体文件放同一目录，然后',
     '      <link rel="stylesheet" href="./font.css">',
@@ -46,18 +46,19 @@ export function buildGuideText({ familyName, fullName, version, fileName, covera
     '这套字体收录了什么',
     '----------------------------------------',
     '收录 ' + coverage.total + ' 个字（其中 ' + coverage.fromCorrection + ' 个来自更正册覆盖）。',
-    '另外附带一个空格字形（宽度半个汉字，空轮廓）—— 打空格不必再回退到别的字体。',
+    '另外附带一个空格字形（宽度 0.3 个汉字，空轮廓）—— 打空格不必再回退到别的字体。',
     coverage.suspectNote ? coverage.suspectNote : '',
     missingNote ? missingNote : '',
     '完整的收录清单见 preview.html（或直接把字体装进系统，在字符映射表里看）。',
     '',
     '注意',
     '----------------------------------------',
-    '没写的字在 Word、Photoshop 与浏览器里都会回退成系统字体（2026-10-16 实测）—— 想要一套完整可用的字体，',
+    '没写的字在 Word、Photoshop 与浏览器里都会回退成系统字体 —— 想要一套完整可用的字体，',
     '建议先把常用字补齐（前 2000 字覆盖日常语料约 97%，见产品界面里的说明）。',
-    'Photoshop 注意：新建文字图层默认会预置占位文本（Lorem Ipsum），本字体没有的那些字符会触发',
-    '「字形保护」把整个图层换成系统字体 —— 在 首选项 → 文字 里关掉「用占位文本填充新文字图层」即可；',
-    '也可以先打字、再全选文字换一次字体。',
+    'Photoshop 注意：这套字体没有拉丁字母，输入中文时输入法先把拼音字母上屏，这些字母不在字体里，',
+    '会触发「字形保护」把整个文字图层换成系统字体（等汉字上屏已经是系统字体了）；新建文字图层默认预置的',
+    '占位文本（Lorem Ipsum）同样会触发。做法：先打字再全选文字换一次字体，或在 首选项 → 文字 里',
+    '关掉「用占位文本填充新文字图层」。',
     '字体的观感取决于书写：居中书写、别出格、大小匀称（笔画多的字撑满格，天生小的字居中写小），成品的字距与字重才稳定。',
     ''
   ]
@@ -137,13 +138,26 @@ export function buildPreviewHtml({ familyName, fileName, coverage, sampleText, m
  * @param {string} input.sampleText 样张文字
  * @returns {Promise<Uint8Array>} zip 字节
  */
+/**
+ * zip 条目的时间：**把本地时间伪装成 UTC**。
+ * 为什么（2026-10-22 用户实测发现）：JSZip 写 DOS 时间用的是 `date.getUTCHours()`（见
+ *   `node_modules/jszip/lib/generate/ZipFileWorker.js`），而 zip 的 DOS 时间字段没有时区概念、
+ *   解压工具按**本地时间**读。中国时区（UTC+8）下直接用 `new Date()` 会让包内文件时间比实际早 8 小时 ——
+ *   用户 21:50 生成的字体，解压后显示 13:50，排查时被误当成"旧字体"（这次就踩了）。
+ * 做法：把时刻加回 `getTimezoneOffset()` 的偏移，让 `getUTCHours()` 正好等于本地小时。
+ */
+function zipDate(d = new Date()) {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+}
+
 export async function packFontZip(input) {
   const zip = new JSZip()
   const folder = zip.folder(input.fileName) || zip
-  folder.file(input.fileName + '.ttf', input.ttf)
-  if (input.woff) folder.file(input.fileName + '.woff', input.woff)
-  if (input.woff2) folder.file(input.fileName + '.woff2', input.woff2)
-  folder.file('font.css', input.css)
+  const date = zipDate()
+  folder.file(input.fileName + '.ttf', input.ttf, { date })
+  if (input.woff) folder.file(input.fileName + '.woff', input.woff, { date })
+  if (input.woff2) folder.file(input.fileName + '.woff2', input.woff2, { date })
+  folder.file('font.css', input.css, { date })
   folder.file('使用说明.txt', buildGuideText({
     familyName: input.familyName,
     fullName: input.fullName,
@@ -156,7 +170,7 @@ export async function packFontZip(input) {
     licence: input.licence,
     // 说明里的"包内文件"清单要与实际打进 zip 的一致（woff2 可能是没有的）
     hasWoff2: !!input.woff2
-  }))
+  }), { date })
   folder.file('preview.html', buildPreviewHtml({
     familyName: input.familyName,
     fileName: input.fileName,
@@ -164,7 +178,7 @@ export async function packFontZip(input) {
     sampleText: input.sampleText,
     missingNote: input.coverage.missingNote,
     hasWoff2: !!input.woff2
-  }))
+  }), { date })
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 } })
 }
 
