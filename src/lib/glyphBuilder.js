@@ -1,13 +1,13 @@
 // 字形 → 字体（阶段一步骤 1.9）
 // 职责：把 1.6 提取出的手写掩膜，经"位图追踪（traceImage）→ 按书写格线性映射到 em 方格 → 只裁不放大（svgPath）
-//   → 组装字体（fonteditor-core）"变成可安装的 TTF / woff / woff2 与一份 @font-face CSS。
+//   → 直接写 TTF（ttfWriter）→ woff / woff2 编码（fonteditor-core）"变成可安装的字体与一份 @font-face CSS。
 // 为什么不用参考项目的 `buildFont.js`：那是**图标项目专用**的 —— PUA 码位分配、GSUB 连字表、内置 94 个拉丁基础字形、
 //   按 bbox 铺满的坐标映射，汉字一样都用不上（用标准 Unicode、统一全角 1000、按书写格线性映射）。
-//   本项目只借它的骨架：走 SVG font 中间格式 → `fonteditor.svg2ttfobject` → 修 name 表 → `createFont().write()`。
+//   本项目只用 fonteditor 做 woff / woff2 编码（它接受我们写出的 TTF 字节），**不再经过 SVG font 中间格式**。
 // 关键参数（决策 四-2、四-3、四-4）：
 //   em 方格 1000；字形占位 1000×1000（字面率 100%，书写格横向 0~1000、竖向 −100~900 —— 2026-10-04 由 900×900 抬高，清单 一-5）；
 //   汉字与中文标点全角 1000；数字/拉丁字母按**实际宽度**（0.3~0.8em，比例字体）；补的空格 **500**；
-//   **hmtx 全量**（`numberOfHMetrics = numGlyphs`，与系统手写体一致，见 ⑤）；
+//   **hmtx 全量**（`numberOfHMetrics = numGlyphs`，与系统手写体一致，见 ②）；
 //   映射按**书写格线性映射**（用户写多大就是多大），**不按包围盒铺满** —— 否则"一"和"国"会一样大。
 // 运行环境：需要打包器（fonteditor-core 的发布产物是 CJS 包装，浏览器不能直接加载）；
 //   potrace 是 WASM、woff2 还要一个单独的 wasm 文件（放在 public/woff2.wasm，见下面的常量说明）——
@@ -17,8 +17,8 @@ import { maskToPathData } from './traceImage.js'
 import { commandsToPathData, parsePathCommands, pathBBox } from './svgPath.js'
 import { charToCodePoint, classifyChar } from './charset.js'
 import { ensureInlineAsset, hasInlineAssets } from './inlineAssets.js'
-import { FONT_DEFAULTS, OUT_TOLERANCE, glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
-import { ensureFullHorizontalMetrics } from './ttfMetrics.js'
+import { FONT_DEFAULTS, glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
+import { buildTrueTypeFont } from './ttfWriter.js'
 
 // woff2 编码器要一个单独的 wasm（710KB）。**不能**从 node_modules 里 import：
 //   fonteditor-core 的 package.json `exports` 只声明了 `.` 与 `./lib/*`，`fonteditor-core/woff2/woff2.wasm` 会被拦下
@@ -49,69 +49,6 @@ export function toPostScriptName(familyName) {
   return ascii || 'SxFontCreator'
 }
 
-function escapeXml(s) {
-  return String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]))
-}
-
-// ── Windows 认中文字体所需的 OS/2 字段（清单 三-12，口径见《决策记录》四-5）──────────
-// 为什么必须补：Windows（Word / GDI / DirectWrite）判断"这个字体能不能用于中文"看的是 OS/2 表的**代码页位**。
-//   我们的字体原来 `ulCodePageRange1 = 1`（只声明 Latin-1）→ Word 的「中文字体」下拉里选不中它、
-//   输入中文一律回退宋体，而同一份字体在 PS 里中英文都正常（2026-10-04 装机实测，清单 三-4 / 三-12）。
-// 实测对照（零依赖探针直接解析 OS/2 二进制，2026-10-04）：
-//   SimSun 宋体   usWeightClass 400、fsSelection 0x0040、ulUnicodeRange2 含第 59 位、ulCodePageRange1 0x00040001
-//   SimHei 黑体 / KaiTi 楷体 / Microsoft YaHei 微软雅黑 同前（雅黑为 0x0004001F）
-//   我们的字体      usWeightClass 0（**非法值**，规范要求 100~900）、fsSelection 0x00C0、无第 59 位、代码页位只有 Latin-1
-// 位号依据：OpenType 规范 OS/2 表的 ulUnicodeRange 位表 —— 第 48 位 = CJK 符号和标点（U+3000–303F）、
-//   第 59 位 = **CJK 统一表意文字**（U+4E00–9FFF）。要小心：第 59 位落在 ulUnicodeRange2 的 bit27，
-//   不是 bit16（bit16 只是"中日韩符号和标点"）。下面这几个位都对应字表**实际覆盖**的字符块。
-const OS2_UNICODE_RANGE1 = 1 << 31 // 第 31 位：常用标点（字表内 6 个：“”‘’—…）
-const OS2_UNICODE_RANGE2 = (1 << 16) | (1 << 27) // 第 48 位中日韩符号和标点（14 个）+ 第 59 位 CJK 统一表意文字
-const OS2_UNICODE_RANGE3 = 1 << 4 // 第 68 位：半角及全角形式（字表内 8 个：？！，；：（）～）
-const OS2_PUA_BIT_IN_RANGE2 = 1 << 28 // 第 60 位：专用区（PUA）—— 我们没有 PUA 字形，要清掉（见下面的"接管"）
-const OS2_CODE_PAGE_GB2312 = 1 << 18 // 第 18 位：936 简体中文 GB2312 —— Windows 判定"能用于中文"的那一位
-
-/**
- * 补 Windows 认中文字体所需的 OS/2 字段。必须在 `fonteditor.svg2ttfobject()` 之后、
- * `createFont().write()` 之前调用（否则会被写盘逻辑改写，见下面 ulUnicodeRange2 的说明）。
- *
- * 四处改动：
- *   ① `usWeightClass`（字重级）= 400 —— 原来 0 是非法值，根因是生成的 SVG font-face 没声明 font-weight，
- *      fonteditor 解析时取到 0。常规体按规范是 400。
- *   ② `fsSelection`（字体选择标志）= 0x0040 —— 原来 0x00C0 = REGULAR | USE_TYPO_METRICS，两位都合法，
- *      但设了 USE_TYPO_METRICS 后行距改用 sTypoAscender−Descender+LineGap = 1.116em；改成只留 REGULAR
- *      后与四个系统中文字体一致，行距改用 usWinAscent+usWinDescent = 1.024em（字形只占 800 ~ −100，切不到）。
- *   ③ `ulCodePageRange1` / `ulUnicodeRange1` / `ulUnicodeRange3`：写盘时不会被改写，直接按位补。
- *   ④ `ulUnicodeRange2`：**必须用访问器（getter/setter）接管** —— fonteditor 的 OS/2 表在写盘时会硬写
- *      `ulUnicodeRange2 = 0x10000000`（第 60 位 = 专用区 PUA），直接赋值会被它抹掉（实测：赋完产物里仍是
- *      0x10000000、CJK 位为假）。用 setter 在它硬写之后把我们的位补回去（实测产物 = 0x08010000）。
- *
- * @param {object} ttfObj `fonteditor.svg2ttfobject()` 的返回值（就地修改）
- * @returns {object} 同一个对象，便于链式调用
- */
-export function patchOs2ForWindows(ttfObj) {
-  const os2 = ttfObj && ttfObj['OS/2']
-  if (!os2) return ttfObj
-  os2.usWeightClass = 400
-  os2.fsSelection = 0x40
-  os2.ulCodePageRange1 = (os2.ulCodePageRange1 | OS2_CODE_PAGE_GB2312) >>> 0
-  os2.ulUnicodeRange1 = (os2.ulUnicodeRange1 | OS2_UNICODE_RANGE1) >>> 0
-  os2.ulUnicodeRange3 = (os2.ulUnicodeRange3 | OS2_UNICODE_RANGE3) >>> 0
-  let range2 = (((os2.ulUnicodeRange2 | 0) & ~OS2_PUA_BIT_IN_RANGE2) | OS2_UNICODE_RANGE2) >>> 0
-  Object.defineProperty(os2, 'ulUnicodeRange2', {
-    get: () => range2,
-    // 写盘方 set 时把我们的位补回去、并清掉不成立的 PUA 位：既保住 CJK 位，也不谎报有专用区字形
-    set: (value) => { range2 = (((value | 0) & ~OS2_PUA_BIT_IN_RANGE2) | OS2_UNICODE_RANGE2) >>> 0 },
-    enumerable: true,
-    configurable: true
-  })
-  return ttfObj
-}
-
-// 汉字字形的 PostScript 名（uniXXXX 是惯例写法，Word / PS 的字符映射表按名字查找时能看到）
-function glyphName(char) {
-  const cp = charToCodePoint(char)
-  return 'uni' + cp.toString(16).toUpperCase().padStart(4, '0')
-}
 
 /**
  * 单个字形：掩膜 → em 方格坐标的 path。
@@ -302,52 +239,40 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.halfWidth, clamped: false })
   }
 
-  // ② SVG font（中间格式）：glyph 的 unicode 决定 cmap、horiz-adv-x 决定字宽
-  const glyphsXml = fontGlyphs.map((g) =>
-    '<glyph glyph-name="' + glyphName(g.char) + '" unicode="&#x' + g.code.toString(16) + ';" ' +
-    'horiz-adv-x="' + g.advanceWidth + '" d="' + escapeXml(g.d) + '"/>')
-  const svgFont = '<svg xmlns="http://www.w3.org/2000/svg">\n<defs><font id="' + escapeXml(familyName) +
-    '" horiz-adv-x="' + opt.fullWidth + '">\n<font-face font-family="' + escapeXml(familyName) +
-    '" units-per-em="' + opt.unitsPerEm + '" ascent="' + opt.glyphTop + '" descent="' + opt.glyphBottom + '"/>\n' +
-    glyphsXml.join('\n') + '\n</font></defs>\n</svg>'
-  const ttfObj = fonteditor.svg2ttfobject(svgFont, { combinePath: false })
-
-  // ③ OS/2 字段补位：Word 靠它认"这是中文字体"（清单 三-12）。位置很关键 —— 必须在写盘之前，
-  //   而且 ulUnicodeRange2 是用访问器接管的（fonteditor 写盘时会硬写这个字段，见 patchOs2ForWindows）
-  patchOs2ForWindows(ttfObj)
-
-  // ④ name 表（决策 四-1）：中英并列写在同一字段里 —— fonteditor 的 name 表按 platform/language 写记录
-  //   （Mac 一条 + Windows 一条，同一字符串），塞不进两套语言；若要严格的双语双记录得自己拼 name 表二进制
+  // ② 写 TTF：**直接写表**（ttfWriter.js），不再走 "SVG font → svg2ttfobject → createFont().write()"。
+  //   为什么换（清单 一-20 的排查结论）：1016（Word 正常）与交叉生成件（Word 里挤）除 glyf 编码外
+  //   逐表相同 —— 差异来自 fonteditor 把连续 off-curve 点之间的**隐含中点**显式写成一个 on-curve 点
+  //   （实测 285 → 306 点）。自研写盘按原始二次贝塞尔点序列编码（不插中点），
+  //   其余各表的字段照抄 1016 的实测值，把变量收敛到"只有 glyf"。
+  //   名称表（决策 四-1）：中英并列写在同一字段里（Windows 记录用 UTF-16，Mac 记录只写纯 ASCII 的字段）。
   const psName = toPostScriptName(familyName)
-  ttfObj.name = {
-    ...ttfObj.name,
-    fontFamily: familyName,
-    fontSubFamily: 'Regular',
-    uniqueSubFamily: familyName + ' Regular ' + version,
-    // 全名**跟着族名走**（2026-10-22 用户拍板）：Word / PS 的字体列表只看 Family（ID 1），
-    //   全名（ID 4）被 Windows 用在安装注册与字体预览上。两者不一致时会出现"注册名是 A、Word 里找 B"，
-    //   同族名的多份字体还会互相覆盖 —— 而且文件名只跟族名走，改全名根本区分不了版本。
-    //   所以这里不再接受单独填写的全名：全名 = 族名（要区分版本请改族名）。
-    fullName: familyName,
-    version: 'Version ' + version,
-    postScriptName: psName,
-    copyright: meta.copyright || ('Copyright ' + (meta.designer || '') + ' 由 SxFontCreator 生成'),
-    designer: meta.designer || '',
-    manufacturer: meta.manufacturer || 'SxFontCreator',
-    description: meta.description || (familyName + ' —— 用 SxFontCreator 从手写稿生成的手写体'),
-    licence: meta.licence || '',
-    urlOfLicence: meta.licenceUrl || '',
-    sampleText: meta.sampleText || built.slice(0, 12).map((g) => g.char).join('')
-  }
-
-  // ⑤ 写 TTF → woff → woff2
-  const font = fonteditor.createFont(ttfObj)
-  // **hmtx 全量**（每字 4 字节，`hhea.numberOfHMetrics = numGlyphs`）：
+  const ttfBytes = buildTrueTypeFont({
+    glyphs: fontGlyphs.map((g) => ({ code: g.code, advanceWidth: g.advanceWidth, d: g.d })),
+    meta: {
+      familyName,
+      fontSubFamily: 'Regular',
+      uniqueSubFamily: familyName + ' Regular ' + version,
+      // 全名**跟着族名走**（2026-10-22 用户拍板）：Word / PS 的字体列表只看 Family（ID 1），
+      //   全名（ID 4）被 Windows 用在安装注册与字体预览上。两者不一致时会出现"注册名是 A、Word 里找 B"，
+      //   同族名的多份字体还会互相覆盖 —— 而且文件名只跟族名走，改全名根本区分不了版本。
+      //   所以这里不再接受单独填写的全名：全名 = 族名（要区分版本请改族名）。
+      fullName: familyName,
+      version: 'Version ' + version,
+      postScriptName: psName,
+      copyright: meta.copyright || ('Copyright ' + (meta.designer || '') + ' 由 SxFontCreator 生成'),
+      designer: meta.designer || '',
+      manufacturer: meta.manufacturer || 'SxFontCreator',
+      description: meta.description || (familyName + ' —— 用 SxFontCreator 从手写稿生成的手写体'),
+      licence: meta.licence || '',
+      urlOfLicence: meta.licenceUrl || '',
+      sampleText: meta.sampleText || built.slice(0, 12).map((g) => g.char).join('')
+    }
+  })
+  // **hmtx 全量**（每字 4 字节，`hhea.numberOfHMetrics = numGlyphs`）由 ttfWriter 直接写出 ——
   //   空格半角 + 全量 hmtx 是系统手写体（方正小楷 / 悠哉 / 飞波正点）共同的形态，本项目也按这个形态输出；
   //   **但它并不能修复 Word 里汉字挤的问题**（2026-10-22 用户实测，见清单 一-20），别再把它当"Word 修复"。
   //   ttf2woff / woff2.encode 要 ArrayBuffer（不是 Uint8Array 视图），下面统一切一次。
-  const ttfFixed = ensureFullHorizontalMetrics(font.write({ type: 'ttf', toBuffer: false }))
-  const ttf = ttfFixed.buffer.slice(ttfFixed.byteOffset, ttfFixed.byteOffset + ttfFixed.byteLength)
+  const ttf = ttfBytes.buffer.slice(ttfBytes.byteOffset, ttfBytes.byteOffset + ttfBytes.byteLength)
   const woff = fonteditor.ttf2woff(ttf)
   let woff2 = null
   try {
