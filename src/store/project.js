@@ -110,7 +110,7 @@ export const useProjectStore = defineStore('project', {
       fileName: null,
       familyName: null,
       sizes: null, // { ttf, woff, woff2 }
-      stats: null, // 构建统计（字形数 / 跳过的 / 被裁的 / 半角数）
+      stats: null, // 构建统计（字形数 / 跳过的 / 被裁的 / 空格字形）
       coverage: null, // { total, fromCorrection, chars }
       skipped: 0,
       missing: 0,

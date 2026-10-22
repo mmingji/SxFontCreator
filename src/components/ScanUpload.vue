@@ -1488,9 +1488,10 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
             @click="zoomIndex = cell.index"
           ></span>
         </div>
-        <p class="panel-hint">
-          蓝框 = 有笔迹、橙框 = 可疑（偏淡或太小）、红框 = 被红笔圈掉、黄虚线 = 圈压在两格之间（归属待确认）；点任意一格看放大与统计
+        <p class="panel-hint" data-role="cell-legend">
+          蓝框 = 有笔迹、橙框 = 可疑（偏淡或太小）、红框 = 被红笔圈掉、黄虚线 = 圈压在两格之间（归属待确认）
         </p>
+        <p class="panel-hint" data-role="cell-legend-tip">点任意一格看放大与统计</p>
 
         <div v-if="zoomCell" class="scan-cell-zoom">
           <div class="scan-cell-zoom-img" :style="zoomStyle"></div>
@@ -1498,6 +1499,9 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
             <strong>第 {{ zoomCell.cell.index + 1 }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
             <p class="panel-hint" data-role="overflow-hint">{{ zoomOverflowHint }}</p>
+            <p class="panel-hint" data-role="zoom-bitmap-note">
+              这里显示的是识别时切出的位图（每格 96 像素，放大后有锯齿）；字形轮廓是矢量，要到「生成」那一步才由笔迹追踪出来。
+            </p>
           </div>
         </div>
       </div>

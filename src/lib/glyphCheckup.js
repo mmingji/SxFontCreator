@@ -12,7 +12,6 @@
 // 阈值来自 68 格真件实测（2026-10-07，第一页写满 4 行；分位数见《决策记录》四-9）：
 //   占格率（映射后外框高 / 书写格）：p10 0.63 / 中位 0.82 / p90 0.98；
 //   笔画宽度（p90，占书写格）：中位 5.0% / p90 7.1%；碎块：多数 1 块。
-import { classifyChar } from './charset.js'
 import { glyphMapping, mapBBoxToDesignBox } from './glyphGeometry.js'
 import { connectedComponents, strokeWidthEstimate } from './imageOps.js'
 
@@ -51,7 +50,10 @@ export function inspectGlyphMask(cell, options = {}) {
   const box = cell.boxInSlice || { x: 0, y: 0, width: 118, height: 118 }
   const width = cell.width || box.x + box.width
   const height = cell.height || box.y + box.height
-  const half = classifyChar(cell.char || '') === 'halfwidth'
+  // **2026-10-22 起数字/字母也按全角 1000 判**：字体构建端已经不再把半角压进 500 宽
+  //   （Word 2016 对 numberOfHMetrics>2 的字体会读错字宽，见 glyphBuilder ⑤），体检必须同一口径，
+  //   否则数字/字母会被按半角格算出虚高的占格率。`half` 参数保留在 glyphGeometry 里给几何回归用。
+  const half = false
   const messages = []
 
   // ① 掩膜口径：面积、外框（按**书写格**口径，越界与否要和纸面规则对得上）、碎块

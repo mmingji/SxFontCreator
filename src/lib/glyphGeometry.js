@@ -12,8 +12,8 @@ export const FONT_DEFAULTS = {
   glyphLeft: 0, // 占位框左边距：书写格左边落在 x = 0、右边落在 x = 1000
   glyphTop: 900, // 书写格顶边映射到 y = 900
   glyphBottom: -100, // 书写格底边映射到 y = -100（基线在格底上方 0.1em）
-  fullWidth: 1000, // 汉字与中文标点的 advanceWidth
-  halfWidth: 500, // 数字与拉丁字母的 advanceWidth
+  fullWidth: 1000, // 汉字与中文标点的 advanceWidth（2026-10-22 起数字/字母也用全角，见下）
+  halfWidth: 500, // **历史口径**：数字与拉丁字母曾按半角 500；2026-10-22 起构建/体检都不再使用
   turdsize: 2, // 透传给 potrace 的去噪点
   alphamax: 1
 }
@@ -25,7 +25,8 @@ export const OUT_TOLERANCE = 0.5
  * 书写格 → em 方格的换算参数（水平 / 垂直各一个缩放与偏移）。
  * @param {object} input
  * @param {object} input.boxInSlice 书写格在切片内的像素矩形 `{x,y,width,height}`
- * @param {boolean} input.half 是否半角字形（数字 / 拉丁字母，水平压一半收进 500 宽的格子，决策 四-3）
+ * @param {boolean} input.half 半角分支（**2026-10-22 起构建/体检都传 false**；保留给几何回归
+ *   与旧口径排查 —— 见 `test/glyph-checkup.mjs` 的"半角几何"那条）
  * @param {object} [input.traceTransform] potrace 的 transform（像素坐标要合并它，见 traceImage 的说明）
  * @param {object} [options] FONT_DEFAULTS 的子集
  */
