@@ -674,10 +674,15 @@ function buildOs2({ numGlyphs, avgWidth, firstChar, lastChar }) {
  *   meta：名称表字段（familyName / version / designer / copyright / licence ...）
  * @returns {Uint8Array} TTF 字节
  */
-export function buildTrueTypeFont({ glyphs, meta = {} }) {
+export function buildTrueTypeFont({ glyphs, meta = {}, notdefAdvance = 1000 } = {}) {
   // ① 分配 gid：0 = .notdef（空轮廓），其余按码位升序
+  //   **`.notdef` 的 advance 必须是 1000**（2026-10-22 实测，清单 一-20）：
+  //   Word 2016 会把这个值当成中文字体的默认字宽之一 —— fonteditor 自动补的 .notdef 是 **374**，
+  //   字体里一旦有空格字形，汉字就按 374 排、挤成一团；把同一个字体的 .notdef 单独改成 1000，
+  //   其余字节不动，Word 立刻恢复正常（双向对照：374→挤、1000→不挤）。
+  //   1016 当年也是 374，但它没有空格字形，所以一直没暴露 —— 这解释了 185~188 条为什么反复找不到变量。
   const items = glyphs.slice().sort((a, b) => a.code - b.code)
-  const all = [{ code: -1, advanceWidth: 1000, d: '' }].concat(items)
+  const all = [{ code: -1, advanceWidth: notdefAdvance, d: '' }].concat(items)
   const encoded = all.map((g) => {
     // 两种输入：生产路径给 `d`（path 字符串）；测试 / 诊断可以直接给点序列（`contours`），
     //   后者用于"把既有字体的轮廓原样重新编码"这类交叉验证（不经过 SVG path 的往返转换）。
