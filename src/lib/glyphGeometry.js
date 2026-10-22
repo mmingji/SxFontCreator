@@ -13,7 +13,12 @@ export const FONT_DEFAULTS = {
   glyphTop: 900, // 书写格顶边映射到 y = 900
   glyphBottom: -100, // 书写格底边映射到 y = -100（基线在格底上方 0.1em）
   fullWidth: 1000, // 汉字与中文标点的 advanceWidth
-  halfWidth: 500, // 补的空格字形的 advanceWidth（数字/字母按实际宽度，不用这个值）
+  halfWidth: 500, // **几何**口径的"半角宽度"（half 映射分支与几何回归用；数字/字母实际按墨迹宽度，不用这个值）
+  // 补的空格字形的 advanceWidth（2026-10-22 用户拍板 500 → 300）：
+  //   500（0.5em）是系统西文空格（Arial 0.278em / Segoe UI 0.274em）的近两倍，Word 里看着太宽；
+  //   300 = 0.3em，与三款系统手写体（方正 296 / 悠哉 333 / 飞波 500）里偏窄的两款同档。
+  //   **它与"Word 里汉字挤"无关**：挤的根因是 `.notdef` 的 advance（374），见《决策记录》四-3 / 清单 一-20。
+  spaceWidth: 300,
   turdsize: 2, // 透传给 potrace 的去噪点
   alphamax: 1
 }

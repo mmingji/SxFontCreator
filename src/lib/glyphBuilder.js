@@ -6,7 +6,7 @@
 //   本项目只用 fonteditor 做 woff / woff2 编码（它接受我们写出的 TTF 字节），**不再经过 SVG font 中间格式**。
 // 关键参数（决策 四-2、四-3、四-4）：
 //   em 方格 1000；字形占位 1000×1000（字面率 100%，书写格横向 0~1000、竖向 −100~900 —— 2026-10-04 由 900×900 抬高，清单 一-5）；
-//   汉字与中文标点全角 1000；数字/拉丁字母按**实际宽度**（0.3~0.8em，比例字体）；补的空格 **500**；
+//   汉字与中文标点全角 1000；数字/拉丁字母按**实际宽度**（0.3~0.8em，比例字体）；补的空格 **300**；
 //   **hmtx 全量**（`numberOfHMetrics = numGlyphs`，与系统手写体一致，见 ②）；
 //   映射按**书写格线性映射**（用户写多大就是多大），**不按包围盒铺满** —— 否则"一"和"国"会一样大。
 // 运行环境：需要打包器（fonteditor-core 的发布产物是 CJS 包装，浏览器不能直接加载）；
@@ -224,19 +224,20 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     throw err
   }
 
-  // ① **补一个空格字形**（2026-10-16 用户拍板"补空格"；2026-10-22 改为半角 500）。
+  // ① **补一个空格字形**（2026-10-16 用户拍板"补空格"；**2026-10-22 用户拍板宽度 300**）。
   //   为什么补：这份字体原来不含 U+0020 —— 用户打空格只能走系统回退；更要紧的是 **Adobe 的「字形保护」**
   //   （Glyph Protection，Photoshop 默认开启）：输入里只要有一个字符不在字体里，它就把**整个文字图层**
   //   换成系统字体（2026-10-16 实测：PS 新建文字图层默认预置的 "Lorem Ipsum" 就把这份只含汉字的字体
   //   当场换掉了；那次的实际触发字符是拉丁字母，见《使用说明》第五节 —— 空格同样是最常见的触发字符）。
-  //   **宽度 500（半角）**：对照系统手写体（方正小楷 296、悠哉 333、飞波正点 500）与宋体等中文字体，
-  //   空格应是半角；全角 1000 在 Word 里太宽。它仍是空轮廓、只占位。
+  //   **宽度 300（0.3em）**：500 是系统西文空格（Arial 0.278em / Segoe UI 0.274em）的近两倍、看着太宽；
+  //   300 与系统手写体里偏窄的两款（方正 296、悠哉 333）同档。它仍是空轮廓、只占位。
+  //   **别把它与"Word 里汉字挤"混在一起**：挤的根因是 `.notdef` 的 advance（374），见《决策记录》四-3。
   //   它**不计入"收录"**：coverage / mapping / 界面上的"N 个字"说的都是"用户写了多少字"（八-21 的口径），
   //   程序补的这一格不算用户的书写成果 —— 只在 stats 里用 spaceGlyph 标出来，供测试与说明引用。
   const fontGlyphs = built.slice()
   const hasSpaceGlyph = !byChar.has(' ')
   if (hasSpaceGlyph) {
-    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.halfWidth, clamped: false })
+    fontGlyphs.unshift({ char: ' ', code: 0x20, d: '', advanceWidth: opt.spaceWidth, clamped: false })
   }
 
   // ② 写 TTF：**直接写表**（ttfWriter.js），不再走 "SVG font → svg2ttfobject → createFont().write()"。
@@ -269,7 +270,7 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
     }
   })
   // **hmtx 全量**（每字 4 字节，`hhea.numberOfHMetrics = numGlyphs`）由 ttfWriter 直接写出 ——
-  //   空格半角 + 全量 hmtx 是系统手写体（方正小楷 / 悠哉 / 飞波正点）共同的形态，本项目也按这个形态输出；
+  //   空格窄 + 全量 hmtx 是系统手写体（方正小楷 / 悠哉 / 飞波正点）共同的形态，本项目也按这个形态输出；
   //   **但它并不能修复 Word 里汉字挤的问题**（2026-10-22 用户实测，见清单 一-20），别再把它当"Word 修复"。
   //   ttf2woff / woff2.encode 要 ArrayBuffer（不是 Uint8Array 视图），下面统一切一次。
   const ttf = ttfBytes.buffer.slice(ttfBytes.byteOffset, ttfBytes.byteOffset + ttfBytes.byteLength)

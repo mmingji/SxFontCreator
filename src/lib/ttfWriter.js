@@ -16,7 +16,7 @@
 //   - woff / woff2 仍由 fonteditor 编码（它只是编码器，接受我们写出的 TTF 字节），见 glyphBuilder.js。
 //
 // 产物契约（《决策记录》四-2 / 四-3 / 四-5 / 四-11，测试 test:fontbuild 逐条钉住）：
-//   em 1000、横向 0~1000、纵向 −100~900；汉字全角 1000；数字字母比例宽度；空格半角 500、空轮廓；
+//   em 1000、横向 0~1000、纵向 −100~900；汉字全角 1000；数字字母比例宽度；空格 300、空轮廓；
 //   hmtx **全量**（numberOfHMetrics = numGlyphs，每字 4 字节，lsb = 该字形 xMin）；
 //   OS/2 版本 4、usWeightClass 400、fsSelection 0x40、代码页 936、CJK 位；name 表中英并列。
 import { arcToCubic, parsePathCommands } from './svgPath.js'
