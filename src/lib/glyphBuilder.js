@@ -342,11 +342,9 @@ export async function buildGlyphFont(glyphs, meta = {}, cfg = {}) {
 
   // ⑤ 写 TTF → woff → woff2
   const font = fonteditor.createFont(ttfObj)
-  // **hmtx 必须补全成"每字一条"**（2026-10-22 对照系统手写体实测）：
-  //   Word 2016 对"中文字体槽位"的字体，会拿空格字形的 hmtx 条目当 CJK 基准；只要空格不是
-  //   半角 + hmtx 压缩到 2 条，整段汉字就会挤。系统里的方正小楷 / 悠哉 / 飞波正点都是
-  //   "空格半角 + numberOfHMetrics 覆盖全部字形"；本项目实测同样的组合在 Word 2016 里正常。
-  //   所以这里展开成"每字 4 字节"，同时保证 hhea.numberOfHMetrics = numGlyphs。
+  // **hmtx 全量**（每字 4 字节，`hhea.numberOfHMetrics = numGlyphs`）：
+  //   空格半角 + 全量 hmtx 是系统手写体（方正小楷 / 悠哉 / 飞波正点）共同的形态，本项目也按这个形态输出；
+  //   **但它并不能修复 Word 里汉字挤的问题**（2026-10-22 用户实测，见清单 一-20），别再把它当"Word 修复"。
   //   ttf2woff / woff2.encode 要 ArrayBuffer（不是 Uint8Array 视图），下面统一切一次。
   const ttfFixed = ensureFullHorizontalMetrics(font.write({ type: 'ttf', toBuffer: false }))
   const ttf = ttfFixed.buffer.slice(ttfFixed.byteOffset, ttfFixed.byteOffset + ttfFixed.byteLength)
