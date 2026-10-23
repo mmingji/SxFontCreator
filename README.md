@@ -1,5 +1,7 @@
 # SxFontCreator 手写字体制作器
 
+> 仓库：https://github.com/mmingji/SxFontCreator ｜ 许可：GPL-2.0（见 [LICENSE](LICENSE)）
+
 打印模板 → 照着格子手写 → 扫描回传 → 全自动切格提取手写字形 → 生成个人手写体字体（TTF / woff / woff2）。
 纯前端、零后端、离线可用；**数据只保存在本机浏览器里** —— 清理浏览器数据、换电脑或换浏览器都会没有，那时把扫描件文件夹重指一次、重跑一遍识别即可（识别是确定性的）；**扫描件原图程序不留，请自己留一份**。
 
@@ -42,6 +44,15 @@ npm run guide        # 重新生成《使用说明》单文件页（public/使�
 ## 第三方组件
 
 见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)：内置字体为霞鹜文楷（模板上的参考字，OFL-1.1，许可全文 `public/fonts/OFL.txt`）与悠哉字体 Yozai（「书写示意」的示范字，OFL-1.1，许可全文 `public/fonts/OFL-yozai.txt`）。
+
+## 许可
+
+本项目代码以 **GNU General Public License v2.0** 发布（全文见 [LICENSE](LICENSE)；随程序分发的同一份全文在 `public/LICENSE-GPL-2.0.txt`，会进 `dist/` 与便携版 zip）。
+
+- 第三方组件与数据的许可逐项列在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。其中 `esm-potrace-wasm`（potrace 的 WASM 封装）是 **GPL-2.0**：本仓库公开源码即满足其源码获取要求；对外分发构建产物（`dist/` 或便携版 zip）时随附 GPL 全文与源码地址即可。
+- 生成的手写字体（TTF / woff / woff2）是你自己笔迹的产物，**不受本项目 GPL 约束**，可以自由使用与分发。
+- `src/data/charRank.js` 的频序数据来自 Jun Da 的 *Modern Chinese Character Frequency List*，**仅用于研究与教学用途、非商业**；商业使用需取得作者书面许可（替代方案见 THIRD-PARTY-NOTICES.md）。
+- 只在自己机器上使用、或把生成的字体发给别人，都不触发 GPL 的分发义务。
 
 ## 文档
 

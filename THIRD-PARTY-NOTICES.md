@@ -2,7 +2,11 @@
 
 > 用途：登记参与构建或随产物分发的第三方组件、版本与许可，交付时随附。
 > 维护约定：新增或移除依赖时同步本文件；依赖版本以 `package.json` 为准。
-> 本项目自身代码的建议许可：MIT（见《实施计划》九、许可合规）。
+> 本项目自身代码的许可：**GPL-2.0**（仓库根目录 `LICENSE`，随包分发的同一份在 `public/LICENSE-GPL-2.0.txt`）—— 与 `esm-potrace-wasm` 的 GPL-2.0 兼容。
+
+## 分发时的义务（一句话）
+
+对外分发构建产物（`dist/` 或便携版 zip）时，随附 GPL-2.0 全文（`public/LICENSE-GPL-2.0.txt`，已在包内）并给出源码地址（本仓库）；只自己使用、或只把生成的字体发给别人，不触发这些义务。
 
 ## 运行时依赖（会打进产物）
 
@@ -14,7 +18,7 @@
 | fonteditor-core | MIT | 把提取出的手写字形组装成 TTF / woff / woff2（步骤 1.9 起成为运行时依赖，决策 六-6 的预告兑现） |
 | jszip | MIT | 打包下载：模板压缩包（模板 PDF + 空白更正册 + 《使用说明》+ 字序文件）与字体包（TTF / woff / woff2 + CSS + 使用说明 + preview.html）。下载动作用原生 `Blob` + `a[download]`，**不引 `file-saver`**（决策 六-6） |
 | pdfjs-dist | Apache-2.0 | 第 1 步的模板预览（`pdfjsLoader.js` 运行时 import，把生成的 PDF 渲染成位图）；测试侧也用它做渲染级像素断言。产物走 `legacy/build/` 以兼容 Chrome 90+（决策 六-10），worker 字节内联（交付形态见 六-4） |
-| esm-potrace-wasm | **GPL-2.0** | 手写掩膜 → 矢量轮廓（步骤 1.9）。选型见《决策记录》六-7：**自用无分发义务**；对外分发软件本体须随附 GPL 许可文本与源码获取方式 —— **闭源商业分发不适用**，那时改用 `imagetracerjs`（Unlicense）或自研轮廓追踪 |
+| esm-potrace-wasm | **GPL-2.0** | 手写掩膜 → 矢量轮廓（步骤 1.9）。选型见《决策记录》六-7：**自己使用 / 内部使用不触发分发义务**；对外分发软件本体须随附 GPL 许可文本与源码获取方式（全文见仓库 `LICENSE` 与 `public/LICENSE-GPL-2.0.txt`，源码地址：https://github.com/mmingji/SxFontCreator ，上游 potrace：https://potrace.sourceforge.net/ ）—— **闭源商业分发不适用**，那时改用 `imagetracerjs`（Unlicense）或自研轮廓追踪 |
 
 ## 随产物分发的字体数据
 
@@ -32,7 +36,7 @@ OFL-1.1 的三条实际约束：① 再分发必须随附许可文本；② 不�
 
 | 资源 | 许可 | 说明 |
 | --- | --- | --- |
-| `src/data/charRank.js` | **Jun Da 现代汉语单字频率表（仅研究与教学用途）** | 由 `scripts/build-char-rank.mjs` 生成的**频序字表**（字表 8274 字按使用频率排列：6976 字被收录、1298 字按官方笔画序排在末尾），用于界面上的"排列方式：按使用频率"（《决策记录》八-11）。数据来源：Jun Da《Modern Chinese Character Frequency List》，综合语料 1.935 亿字符，站上声明**版权归作者、仅研究与教学用途**；**对外分发软件本体或商业使用需另行取得作者书面许可**，自用不受影响。原始数据表缓存在 `.font-sources/`（不入库）。**退路**：对外分发时改用标 MIT 的 `hanziDB.csv`（同为该表派生，需注明上游来源），或向作者申请许可 |
+| `src/data/charRank.js` | **Jun Da 现代汉语单字频率表（仅研究与教学用途）** | 由 `scripts/build-char-rank.mjs` 生成的**频序字表**（字表 8274 字按使用频率排列：6976 字被收录、1298 字按官方笔画序排在末尾），用于界面上的"排列方式：按使用频率"（《决策记录》八-11）。数据来源：Jun Da《Modern Chinese Character Frequency List》，综合语料 1.935 亿字符，站上声明**版权归作者、仅研究与教学用途**；**本仓库以研究与教学用途公开、非商业；对外分发软件本体或商业使用需另行取得作者书面许可**（[版权页](https://lingua.mtsu.edu/chinese-computing/copyright.html)），自用不受影响。原始数据表缓存在 `.font-sources/`（不入库）。**退路**：对外商业分发时改用公开语料自建频序，或向作者申请许可（换 `hanziDB.csv` 不能解决 —— 它同样派生自这张表，见《提交历史》第 204 条）。 |
 | `src/data/charset.js` | 见说明 | 字表（**8274 字 = 8105 汉字 + 169 基础字符**）由 `scripts/build-charset.mjs` 生成：汉字取自下面的官方字表，基础字符按 **Unicode 码位**定义（清单逐字写在脚本里，不依赖任何第三方字表）。**2026-10-08 起不再使用做字体网 V4.0 的 GBK 字序文件**（《决策记录》三-1） |
 | `scripts/sources/通用规范汉字表-2013-8105.txt` | 国家标准字表内容（事实性数据） | **《通用规范汉字表》全表 8105 字**（国务院 2013 年公布，[国发〔2013〕23号](https://www.gov.cn/gongbao/content/2013/content_2481095.htm)），每行「序号 + 字 + 拼音」，字序为官方笔画序。**已入库（118KB）**，是 `scripts/build-charset.mjs` 的输入；另经 Unicode Unihan `kTGH` 与维基文库转录逐序号互证（三源零差异）。来源与核对见该目录的 `README.md` 与 `docs/字表标准与收字口径.md` |
 
