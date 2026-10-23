@@ -1626,8 +1626,25 @@ watch(() => preset.value.outline, () => {
           蓝框 = 有笔迹、橙框 = 可疑（偏淡或太小）、红框 = 被红笔圈掉、黄虚线 = 圈压在两格之间（归属待确认）
         </p>
         <p v-if="!zoomCell" class="panel-hint" data-role="cell-legend-tip">点任意一格看放大与统计</p>
-        <p v-else class="panel-hint">
+        <!-- 2026-10-23 用户口径：放大格的「字形 / 位图」切换跟在「关闭放大格」后面，同一行（原来在右侧信息区顶部） -->
+        <p v-else class="panel-hint" data-role="cell-zoom-bar">
           <button class="text" type="button" data-role="cell-zoom-close" @click="closeZoomCell()">关闭放大格</button>
+          <span v-if="zoomCell.cell.verdict !== 'empty'" class="scan-cell-zoom-view" data-role="cell-zoom-view">
+            <button
+              class="text"
+              type="button"
+              :class="{ active: zoomView === 'glyph' }"
+              data-role="cell-zoom-view-glyph"
+              @click="setZoomView('glyph')"
+            >字形</button>
+            <button
+              class="text"
+              type="button"
+              :class="{ active: zoomView === 'bitmap' }"
+              data-role="cell-zoom-view-bitmap"
+              @click="setZoomView('bitmap')"
+            >位图</button>
+          </span>
         </p>
 
         <div v-if="zoomCell" class="scan-cell-zoom">
@@ -1660,22 +1677,6 @@ watch(() => preset.value.outline, () => {
             </p>
           </div>
           <div class="scan-cell-zoom-info">
-            <div v-if="zoomCell.cell.verdict !== 'empty'" class="scan-cell-zoom-view" data-role="cell-zoom-view">
-              <button
-                class="text"
-                type="button"
-                :class="{ active: zoomView === 'glyph' }"
-                data-role="cell-zoom-view-glyph"
-                @click="setZoomView('glyph')"
-              >字形</button>
-              <button
-                class="text"
-                type="button"
-                :class="{ active: zoomView === 'bitmap' }"
-                data-role="cell-zoom-view-bitmap"
-                @click="setZoomView('bitmap')"
-              >位图</button>
-            </div>
             <strong>第 {{ zoomCell.cell.index + 1 }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
             <p class="panel-hint" data-role="overflow-hint">{{ zoomOverflowHint }}</p>

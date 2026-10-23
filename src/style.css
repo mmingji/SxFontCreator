@@ -1211,10 +1211,13 @@ button.text:hover {
   text-align: center;
 }
 
+/* 「字形 / 位图」切换：跟在「关闭放大格」后面同一行（2026-10-23 用户口径） */
 .scan-cell-zoom-view {
-  display: flex;
+  display: inline-flex;
+  align-items: center;
   gap: 10px;
-  margin-bottom: 4px;
+  margin-left: 12px;
+  vertical-align: middle;
 }
 
 .scan-cell-zoom-view button.active {
