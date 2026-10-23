@@ -22,6 +22,7 @@ import { IMAGE_EXTENSIONS, collectDirectoryFiles, findOrderFile, naturalCompare,
 import { clearScanDirHandle, loadScanDirHandle, requestScanDirPermission, saveScanDirHandle } from '../lib/scanDirHandle.js'
 import { setScanRunning } from '../lib/scanRunState.js'
 import { buildPageSheetFromStore } from '../lib/pageSheet.js'
+import { PRESET_DEFAULTS, PRESET_GROUPS, describePreset, extractOptionsFromPreset, markOptionsFromPreset, normalizePreset } from '../lib/scanPresets.js'
 import { LAYOUT, CM } from '../lib/layout.js'
 import { CELL_PAD_PT } from '../lib/gridDetector.js'
 import CorrectionConfirm from './CorrectionConfirm.vue'
@@ -137,6 +138,7 @@ const images = ref({}) // fileIndex → { thumb, sheet }（来自内存缓存，
 const IMAGE_HINT = IMAGE_EXTENSIONS.join(' / ')
 const openIndex = ref(null) // 展开格级视图的页
 const zoomIndex = ref(null) // 单格放大
+const advancedOpen = ref(false) // 识别高级设置浮窗（2026-10-23 用户拍板 A）
 const message = ref('')
 const messageType = ref('info') // info | error | done
 // 按钮行里的提示（2026-10-14 用户口径）："还没有可识别的图片…"这类**与那一下点击直接相关**的话，
@@ -607,6 +609,9 @@ async function start(options = {}) {
       extraSequences,
       // 页数口径：有字序文件时以文件声明的页数为准（识别侧汇总与缺页统计要用它）
       sheetPages: orderPages,
+      // 高级档位（scanPresets）：墨色 / 小点 / 补断笔 / 红圈灵敏度在这里随识别进 Worker
+      extractOptions: extractOptionsFromPreset(preset.value),
+      markOptions: markOptionsFromPreset(preset.value),
       onPageStart: (pageNo, total) => {
         progress.value = { ...progress.value, currentPage: pageNo, total, stageIndex: 0 }
       },
@@ -772,6 +777,9 @@ async function ingestOnePage(file, opts = {}) {
     extraSequences: rewriteExtraSequences(),
     fileIndex: opts.fileIndex === null || opts.fileIndex === undefined ? undefined : opts.fileIndex,
     pageNumberOverride: opts.fallbackPageNumber || undefined,
+    // 高级档位（scanPresets）：单页重传与整批识别用同一套参数
+    extractOptions: extractOptionsFromPreset(preset.value),
+    markOptions: markOptionsFromPreset(preset.value),
     onStage: (text) => setMessage('正在识别「' + file.name + '」：' + text, 'info')
   })
   const verdict = evaluateRescanAccept({ record })
@@ -1180,6 +1188,43 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
   if (out) parts.push('笔画越出书写格：上 ' + (ov.top || 0) + ' / 左 ' + (ov.left || 0) + ' / 下 ' + (ov.bottom || 0) + ' / 右 ' + (ov.right || 0) + ' 像素')
   return parts.join('；')
 })
+
+// ── 识别高级档位（2026-10-23 用户拍板 A）──────────────────────────────────
+// 界面只给中文档位（墨色 / 小点 / 补断笔 / 轮廓 / 红圈灵敏度），数字映射在 lib/scanPresets.js；
+// 改完**不自动重跑**：识别参数要重新识别、轮廓要重新生成 —— 提示里说清，否则用户会以为"改了没反应"。
+const preset = computed(() => normalizePreset(store.scan.advanced))
+const presetSummary = computed(() => describePreset(preset.value))
+function setPreset(patch) {
+  const before = preset.value
+  store.setScanAdvanced(patch)
+  const after = preset.value
+  const outlineChanged = patch.outline !== undefined && patch.outline !== before.outline
+  const othersChanged = Object.keys(patch).some((k) => k !== 'outline' && patch[k] !== before[k])
+  if (!outlineChanged && !othersChanged) return
+  const parts = []
+  if (othersChanged) {
+    parts.push(pages.value.length
+      ? '识别参数已改：要重新识别这一批才生效（已经识别出来的页不会自动变）'
+      : '识别参数已改：下次识别时生效')
+  }
+  if (outlineChanged) {
+    parts.push(store.font && store.font.built
+      ? '轮廓已改：要重新生成字体才生效'
+      : '轮廓已改：下次生成字体时生效')
+  }
+  setMessage(parts.join('；'), 'info')
+}
+function resetPreset() {
+  store.setScanAdvanced({ ...PRESET_DEFAULTS })
+  setMessage('高级设置已恢复默认：' + describePreset(PRESET_DEFAULTS), 'info')
+}
+// 单选组的读写：模板里不写计算属性名，统一走这两个函数
+function isPresetOn(key, value) {
+  return key === 'closeGaps' ? preset.value.closeGaps === (value === 'on') : preset.value[key] === value
+}
+function choosePreset(key, value) {
+  setPreset(key === 'closeGaps' ? { closeGaps: value === 'on' } : { [key]: value })
+}
 </script>
 
 <template>
@@ -1354,8 +1399,12 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
       </template>
     </div>
     <!-- 「清空结果」：放在步骤标题行右侧（2026-10-13 用户口径 —— 与第 1 步「更新预览」同一个位置）。
-         它作用的是"结果"，所以只要有结果就给入口；识别进行中禁点 -->
+         它作用的是"结果"，所以只要有结果就给入口；识别进行中禁点。
+         2026-10-23：「高级」放在它**左边**（`#step-head-actions` 自带 12px 间距，不会贴死） -->
     <Teleport to="#step-head-actions">
+      <button class="text" type="button" data-role="scan-advanced-open" :disabled="running" @click="advancedOpen = true">
+        高级
+      </button>
       <button class="text" type="button" data-role="scan-clear" :disabled="running || !pages.length" @click="clearAll">
         清空结果
       </button>
@@ -1517,6 +1566,42 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
       按字序文件对齐（没有文件时认纸面上的参考字）→ 红圈识别 → 字形提取」，
       并把每页的页号来源、写出格数与可疑格报给你；底部条码与右侧方块里的校验码会替你把这一页的字序再验一遍。
     </p>
+
+    <!-- 识别高级设置（2026-10-23 用户拍板 A）：五组中文档位，数字映射在 lib/scanPresets.js。
+         入口在步骤标题行「清空结果」左边；改完不自动重跑，提示里说清"要重新识别 / 重新生成"。 -->
+    <div v-if="advancedOpen" class="backup-overlay" @click.self="advancedOpen = false">
+      <div class="backup-modal" role="dialog" aria-label="识别高级设置" data-role="scan-advanced-modal">
+        <div class="backup-head">
+          <h3>识别高级设置</h3>
+          <button class="text" type="button" data-role="scan-advanced-close" @click="advancedOpen = false">关闭</button>
+        </div>
+        <p class="panel-hint">
+          这些档位决定"程序怎么认笔迹"。改完要点「开始识别」重新跑一次才生效（「轮廓」改的是生成字体时的追踪，需要重新生成）；已经识别出来的页不会自动变。
+        </p>
+        <div class="preset-list">
+          <div v-for="g in PRESET_GROUPS" :key="g.key" class="preset-row" :data-role="'preset-' + g.key">
+            <span class="preset-label">{{ g.title }}</span>
+            <label v-for="o in g.options" :key="o.value" class="radio">
+              <input
+                type="radio"
+                :name="'preset-' + g.key"
+                :value="o.value"
+                :checked="isPresetOn(g.key, o.value)"
+                @change="choosePreset(g.key, o.value)"
+              />{{ o.label }}
+            </label>
+            <p class="panel-hint preset-hint">{{ g.hint }}</p>
+          </div>
+        </div>
+        <p class="panel-hint preset-summary" data-role="preset-summary">当前：{{ presetSummary }}</p>
+        <p class="panel-hint preset-hint preset-note">
+          每组只改一个参数：墨色 → 笔迹灰度阈值；小点 → 最小墨点数；补断笔 → 1 像素闭运算；轮廓 → 拐角平滑；红圈灵敏度 → 红度阈值。具体数值按实测默认校准，不在这里展开。
+        </p>
+        <div class="preset-actions">
+          <button class="text" type="button" data-role="scan-advanced-reset" @click="resetPreset">恢复默认</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 这批结果用的文件（2026-10-13 用户口径）：能看清挑了哪些图片与字序文件，不要的去掉再识别。
          只动本轮的清单 —— 磁盘上的文件一个都不动（浏览器本来也删不了用户的文件）。

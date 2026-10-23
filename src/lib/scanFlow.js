@@ -388,6 +388,8 @@ export async function recognizePage(file, options = {}) {
     // attachRedMarks 在这些前提不满足时返回 null（页面不可用 / 没有矩阵 / 没开 keepDesignGray / 没彩色像素）：
     // 那就退回"不剔红圈"的切格结果，绝不因为拿不到红掩膜就整页失败
     const attached = attachRedMarks(page, rgba, {
+      // 高级档位（scanPresets）：红圈灵敏度只影响"红到什么程度算红笔"；其余判据不动
+      ...(opt.markOptions || {}),
       referenceRects: defaultReferenceRects(),
       turns: page.orientation ? page.orientation.turns : 0
     })
@@ -663,7 +665,8 @@ export async function recognizePage(file, options = {}) {
 
   // ④ 字形提取（1.6）：灰度分层 + 面积过滤，红圈像素按附加图层跳过
   stage('正在提取笔迹')
-  const extracted = extractPage(extractionBoxes)
+  // 高级档位（scanPresets）：墨色 / 小点 / 补断笔在这里生效；不传时用 EXTRACT_DEFAULTS
+  const extracted = extractPage(extractionBoxes, opt.extractOptions || {})
   const markedSet = new Set(record.markedCells || [])
   const uncertainSet = new Set(record.uncertainCells || [])
   const items = []

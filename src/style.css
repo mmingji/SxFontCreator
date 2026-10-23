@@ -518,6 +518,43 @@ button.text:hover {
   flex-wrap: wrap;
 }
 
+/* 识别高级设置（2026-10-23 用户拍板 A）：五组档位，一行一组；每组提示另起一行。
+   数值映射在 lib/scanPresets.js，这里只排布 —— 界面不出现"阈值/面积"这类开发口径。 */
+.preset-list {
+  margin-top: 2px;
+}
+
+.preset-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.preset-label {
+  min-width: 88px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.preset-hint {
+  flex-basis: 100%;
+  margin: 0 0 0 102px;
+}
+
+.preset-note {
+  margin: 8px 0 0;
+}
+
+.preset-summary {
+  margin: 16px 0 0;
+}
+
+.preset-actions {
+  margin-top: 14px;
+}
+
 /* 卡片里的标题行（生成结果 / 字体预览 / 字形体检）：标题 + 紧随其后的说明，窄窗口自动换行。
    说明一般都写在 `<h3>` 里紧跟标题（用户口径），这里只管排布与换行 */
 .panel-head {

@@ -16,6 +16,7 @@ import { countChars } from '../lib/charset.js'
 import { normalizeSelection } from '../lib/frequency.js'
 import { collectGlyphStats } from '../lib/scanMeta.js'
 import { toggleSnapshotExcluded } from '../lib/glyphCheckup.js'
+import { PRESET_DEFAULTS, normalizePreset } from '../lib/scanPresets.js'
 
 // 默认字体族名：产品命名（决策记录 七-1）。名称表字段自 1.9 起已全部有默认值（决策 四-1），
 // 界面上在第 3 步「生成字体」里改（顶栏原来那个族名输入框已去掉，一处填写）
@@ -67,6 +68,9 @@ export const useProjectStore = defineStore('project', {
       orderOverrides: {},
       chars: '',
       summary: null,
+      // 识别高级档位（2026-10-23 用户拍板 A）：墨色 / 小点 / 补断笔 / 轮廓 / 红圈灵敏度。
+      // 存进项目数据（不是界面开关）：同一批纸重新打开后要按同一套参数复现；缺失时按默认补齐。
+      advanced: { ...PRESET_DEFAULTS },
       // 这一轮识别是"跑完"还是"中途停止"（用户点「中止」，或识别中被刷新/关浏览器）——
       // **2026-10-15 落盘**：原来它只活在内存里（`ScanUpload` 的 runInfo），刷新即丢，
       // 于是"停下来了"这件事在界面上没有任何记录（真机反馈："点中止之后界面没有信息提示"）
@@ -177,6 +181,8 @@ export const useProjectStore = defineStore('project', {
         // 待重写清单（八-8 扩充）：同样兼容没有这个字段的旧项目
         if (data.rewrite && typeof data.rewrite === 'object' && !Array.isArray(data.rewrite)) this.rewrite = data.rewrite
         if (data.scan && typeof data.scan === 'object') Object.assign(this.scan, data.scan)
+        // 旧项目没有 advanced / 字段不全：读完立刻按默认补齐，界面与识别端拿到的永远是完整对象
+        this.scan.advanced = normalizePreset(this.scan.advanced)
         if (data.correction && typeof data.correction === 'object') Object.assign(this.correction, data.correction)
         if (data.font && typeof data.font === 'object') Object.assign(this.font, data.font)
       }
@@ -368,6 +374,14 @@ export const useProjectStore = defineStore('project', {
 
     // 2026-10-15 用户拍板：「手选页序」已去掉，setScanPageOrder 一并删除（scan.orderOverrides
     //   只作为旧项目数据的兼容字段留着，识别与界面都不再读它）。
+
+    // 识别高级档位（2026-10-23 用户拍板 A）：单项或几项一起改，非法值按默认收口。
+    // 改动本身不重跑识别 —— 界面负责提示"要重新识别 / 重新生成才生效"。
+    setScanAdvanced(patch) {
+      this.scan.advanced = normalizePreset({ ...this.scan.advanced, ...(patch || {}) })
+      this.markDirty()
+      schedulePersist(this)
+    },
 
     // 清掉识别结果（第 2 步的「清空结果」按钮用；内存缓存由组件一并清）。
     // **与第 3 步的「清空识别结果」是同一件事**，所以直接走 clearScanResults ——

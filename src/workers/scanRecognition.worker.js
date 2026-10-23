@@ -99,6 +99,9 @@ async function handlePage(msg) {
       extraSequences: msg.extraSequences,
       fileIndex: msg.fileIndex,
       pageNumberOverride: msg.pageNumberOverride,
+      // 高级档位（scanPresets）映射后的两个参数集：识别端只认这两份，不认界面上的档位名
+      extractOptions: msg.extractOptions,
+      markOptions: msg.markOptions,
       onStage: (text) => post({ type: 'stage', rid, text })
     })
     // **单页只发这一条**（没有 done）：主线程收到它就结束这一轮（见 scanWorkerClient 的说明）。
@@ -134,6 +137,9 @@ async function handleBatch(msg) {
       orderPages: msg.orderPages,
       extraSequences: msg.extraSequences,
       sheetPages: typeof msg.sheetPages === 'number' ? msg.sheetPages : undefined,
+      // 高级档位（scanPresets）映射后的两个参数集
+      extractOptions: msg.extractOptions,
+      markOptions: msg.markOptions,
       // 中止：`recognizeBatch` 在每页开始前问一次 —— 与"当前这一页处理完就停"的口径一致
       shouldStop: () => cancelled,
       onPageStart: (pageNo, total) => post({ type: 'pageStart', rid, pageNo, total }),

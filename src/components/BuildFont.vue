@@ -18,6 +18,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useProjectStore } from '../store/project.js'
 import { buildFinalGlyphPlan } from '../lib/scanFlow.js'
+import { traceOptionsFromPreset } from '../lib/scanPresets.js'
 import { buildFontFromPlan, clearLastBuild, getLastBuild } from '../lib/buildFont.js'
 import { buildPreviewHtml, packFontZip } from '../lib/fontPack.js'
 import { downloadBytes } from '../lib/download.js'
@@ -125,6 +126,8 @@ async function build() {
       // 构建时一视同仁地排除，区别只在清单与提示上（收录数说明会分别写出来）
       excluded: [...store.excludedChars, ...store.rewriteChars],
       woff2WasmUrl: './woff2.wasm',
+      // 高级档位的"轮廓"（alphamax）：在第 2 步「高级」里选，生成字体时生效
+      traceOptions: traceOptionsFromPreset(store.scan.advanced),
       onStage: (text) => { stage.value = text },
       onProgress: (done, total) => { progress.value = { done, total } }
     })

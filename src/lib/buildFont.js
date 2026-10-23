@@ -78,7 +78,7 @@ export async function collectGlyphInputs(items, { onStage } = {}) {
  * @param {(text:string)=>void} [input.onStage] 阶段文案
  * @returns {Promise<object>} glyphBuilder 的产物 + `missing`（缺原料的字形）+ `checkup`（体检快照）+ `excluded`
  */
-export async function buildFontFromPlan({ items, meta, woff2WasmUrl, excluded, onProgress, onStage }) {
+export async function buildFontFromPlan({ items, meta, woff2WasmUrl, excluded, traceOptions, onProgress, onStage }) {
   if (!items || !items.length) {
     const err = new Error('没有可用的字形：先在第 2 步识别扫描件，并在第 2 步核对更正配对（配对默认生效，不需要点确认）')
     err.code = 'NO_GLYPHS'
@@ -100,7 +100,8 @@ export async function buildFontFromPlan({ items, meta, woff2WasmUrl, excluded, o
     excluded: excludedSet
   })
   if (onStage) onStage(fromStore ? '正在追踪笔迹并组装字体（原料取自落盘掩膜）…' : '正在追踪笔迹并组装字体…')
-  const built = await buildGlyphFont(inputs, meta, { onProgress, woff2WasmUrl })
+  // 追踪参数：高级档位的"轮廓"（alphamax）在这里生效；不传时用 FONT_DEFAULTS（标准）
+  const built = await buildGlyphFont(inputs, meta, { onProgress, woff2WasmUrl, options: traceOptions || {} })
   lastBuild = {
     ...built,
     missing,

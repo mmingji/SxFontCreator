@@ -235,7 +235,9 @@ export async function recognizeBatchInWorker(files, options = {}) {
     orderChars: options.orderChars || '',
     orderPages: typeof options.orderPages === 'number' ? options.orderPages : undefined,
     extraSequences: Array.isArray(options.extraSequences) ? options.extraSequences : undefined,
-    sheetPages: typeof options.sheetPages === 'number' ? options.sheetPages : undefined
+    sheetPages: typeof options.sheetPages === 'number' ? options.sheetPages : undefined,
+    extractOptions: options.extractOptions || undefined,
+    markOptions: options.markOptions || undefined
   }, options)
 }
 
@@ -256,7 +258,9 @@ export async function recognizePageInWorker(file, options = {}) {
     orderPages: typeof options.orderPages === 'number' ? options.orderPages : undefined,
     extraSequences: Array.isArray(options.extraSequences) ? options.extraSequences : undefined,
     fileIndex,
-    pageNumberOverride: typeof options.pageNumberOverride === 'number' ? options.pageNumberOverride : undefined
+    pageNumberOverride: typeof options.pageNumberOverride === 'number' ? options.pageNumberOverride : undefined,
+    extractOptions: options.extractOptions || undefined,
+    markOptions: options.markOptions || undefined
   }, options)
   const record = res.pages[0]
   if (!record) throw new Error('识别线程没有返回这一页的结果')
