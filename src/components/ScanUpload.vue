@@ -1491,7 +1491,10 @@ const zoomIsMarkedLabel = computed(() => {  const z = zoomCell.value
         <p class="panel-hint" data-role="cell-legend">
           蓝框 = 有笔迹、橙框 = 可疑（偏淡或太小）、红框 = 被红笔圈掉、黄虚线 = 圈压在两格之间（归属待确认）
         </p>
-        <p class="panel-hint" data-role="cell-legend-tip">点任意一格看放大与统计</p>
+        <p v-if="!zoomCell" class="panel-hint" data-role="cell-legend-tip">点任意一格看放大与统计</p>
+        <p v-else class="panel-hint">
+          <button class="text" type="button" data-role="cell-zoom-close" @click="zoomIndex = null">关闭放大格</button>
+        </p>
 
         <div v-if="zoomCell" class="scan-cell-zoom">
           <div class="scan-cell-zoom-img" :style="zoomStyle"></div>
