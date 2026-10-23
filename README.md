@@ -1,5 +1,13 @@
 # SxFontCreator 手写字体制作器
 
+[中文](#中文) ｜ [English](#english)
+
+[![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
+[![Vue 3](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org/)
+[![Vite](https://img.shields.io/badge/Vite-6-646CFF.svg)](https://vitejs.dev/)
+[![Offline](https://img.shields.io/badge/offline-file%3A%2F%2F-success.svg)](https://github.com/mmingji/SxFontCreator)
+[![Version](https://img.shields.io/badge/version-0.1.0-informational.svg)](package.json)
+
 > 仓库：https://github.com/mmingji/SxFontCreator ｜ 许可：GPL-2.0（见 [LICENSE](LICENSE)）
 
 打印模板 → 照着格子手写 → 扫描回传 → 全自动切格提取手写字形 → 生成个人手写体字体（TTF / woff / woff2）。
@@ -11,7 +19,15 @@
 > **给用户看的那份完整说明是《使用说明》**（单一内容源 `src/lib/guide.js` → `npm run guide` → `public/使用说明.html`，随后进程序包与模板压缩包）—— 它讲"这是什么、三步怎么用、数据在哪、参考与借鉴了哪些、第三方许可是什么"。
 > 本文件（开发者入口）与它**刻意分工不同**：这里只写"怎么跑、目录在哪、细节去哪看"，用户向的内容一律不在这里重复（决策 一-15）。
 
-## 怎么跑起来
+## 中文
+
+### 界面
+
+| 第 1 步 选模板 | 第 2 步 识别与看格子 | 第 3 步 生成与预览 |
+| --- | --- | --- |
+| ![第 1 步：选模板](test/界面截图/step-1-template.jpg) | ![第 2 步：识别与看格子](test/界面截图/step-2-recognize-cell-zoom.jpg) | ![第 3 步：生成与预览](test/界面截图/step-3-generate-preview.jpg) |
+
+### 怎么跑起来
 
 完整命令见 `package.json`，下面是常用的几条：
 
@@ -27,7 +43,7 @@ npm run guide        # 重新生成《使用说明》单文件页（public/使�
 测试与构建的分层口径见《决策记录》六-5；只跑本轮相关的脚本用 `npm run test:<名字>`（名字见 `package.json`）。
 构建与测试前把 `TEMP` 设到 `test/.tmp/esbuild`、**跑 dev 时不要设**（《决策记录》六-12）。
 
-## 目录速查
+### 目录速查
 
 | 目录 | 内容 |
 | --- | --- |
@@ -38,14 +54,14 @@ npm run guide        # 重新生成《使用说明》单文件页（public/使�
 | `src/data/` | 脚本生成的数据（字表、频序），**请勿手改** |
 | `public/` | 内置字体子集与许可文本、《使用说明》单文件页、woff2 的 wasm |
 | `scripts/` | 构建期脚本（字表 / 频序 / 字体子集 / 分发打包）与只读体检工具 |
-| `test/` | 分层验证脚本，含真实扫描件夹具（`test/samples/`，不入库） |
+| `test/` | 分层验证脚本，含真实扫描件夹具（`test/samples/`，不入库）与界面截图 |
 | `docs/` | 全部文档，见下 |
 
-## 第三方组件
+### 第三方组件
 
 见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)：内置字体为霞鹜文楷（模板上的参考字，OFL-1.1，许可全文 `public/fonts/OFL.txt`）与悠哉字体 Yozai（「书写示意」的示范字，OFL-1.1，许可全文 `public/fonts/OFL-yozai.txt`）。
 
-## 许可
+### 许可
 
 本项目代码以 **GNU General Public License v2.0** 发布（全文见 [LICENSE](LICENSE)；随程序分发的同一份全文在 `public/LICENSE-GPL-2.0.txt`，会进 `dist/` 与便携版 zip）。
 
@@ -54,7 +70,7 @@ npm run guide        # 重新生成《使用说明》单文件页（public/使�
 - `src/data/charRank.js` 的频序数据来自 Jun Da 的 *Modern Chinese Character Frequency List*，**仅用于研究与教学用途、非商业**；商业使用需取得作者书面许可（替代方案见 THIRD-PARTY-NOTICES.md）。
 - 只在自己机器上使用、或把生成的字体发给别人，都不触发 GPL 的分发义务。
 
-## 文档
+### 文档
 
 | 文档 | 什么时候看 |
 | --- | --- |
@@ -69,3 +85,76 @@ npm run guide        # 重新生成《使用说明》单文件页（public/使�
 
 跨项目通用的《决策记录-通用.md》放在 `copies/` 下（**只读参考基线**：冻结、不随本项目演进）；它与 `AGENTS.md` 都**不入库**（见 `.gitignore`）。
 文档之间如有冲突，一律以《决策记录》为准。
+
+## English
+
+### What it is
+
+SxFontCreator is a handwriting-font creator: print a template → write characters by hand in the grid → scan the pages back → the app slices every cell, extracts the strokes and builds a personal handwriting font (TTF / woff / woff2).
+
+It is **pure front-end, no backend, fully offline** (double-click `dist/index.html`, no local server). **All data stays in your browser** — clearing browser data, switching computers or browsers loses it; just re-point the scan folder and run recognition again (recognition is deterministic). **Original scans are never stored by the app — keep your own copy.**
+
+This README is an **entry index** only (how to run, where things are). Project progress lives in `docs/提交历史.md`, open items in `docs/待办与风险清单.md`, and the authoritative decisions/contracts in `docs/决策记录.md`. The user-facing guide is `public/使用说明.html` (single source: `src/lib/guide.js` → `npm run guide`).
+
+> The documentation is written in Chinese; this English section is a faithful summary for international readers.
+
+### Screenshots
+
+| Step 1 — Template | Step 2 — Recognise & inspect cells | Step 3 — Generate & preview |
+| --- | --- | --- |
+| ![Step 1](test/界面截图/step-1-template.jpg) | ![Step 2](test/界面截图/step-2-recognize-cell-zoom.jpg) | ![Step 3](test/界面截图/step-3-generate-preview.jpg) |
+
+### Getting started
+
+```
+npm install          # if npm hits an EPERM cache error: npm install --cache .npm-cache
+npm run dev          # dev server: http://localhost:5173 (do not set TEMP to the project when running dev)
+npm run build        # build to dist/; double-click dist/index.html — file:// works, no server needed
+npm run pack         # build and zip a distributable: release/SxFontCreator-<version>-便携版.zip
+npm test             # full suite: unit → build → dist zip → file:// probe → end-to-end smoke
+npm run guide        # regenerate the single-file user guide (public/使用说明.html)
+```
+
+Before building or testing, set `TEMP` to `test/.tmp/esbuild`; **do not** do that while running `dev` (see `docs/决策记录.md` 六-12).
+
+### Layout
+
+| Directory | Contents |
+| --- | --- |
+| `src/lib/` | Image processing, font building, layout, recognition and local storage modules |
+| `src/workers/` | Web Worker for the recognition pipeline (preprocess / slice / reference-char matching / stroke extraction) |
+| `src/components/` | UI components: the three-step wizard (template / recognise / generate) and its panels |
+| `src/store/` | Project state (Pinia); `projectData()` is the single list of persisted fields |
+| `src/data/` | Generated data (character set, frequency order) — **do not edit by hand** |
+| `public/` | Built-in font subsets and licences, the single-file user guide, the woff2 wasm |
+| `scripts/` | Build-time scripts (charset / frequency / font subset / packaging) and read-only inspectors |
+| `test/` | Layered test scripts, real scan fixtures (`test/samples/`, not committed) and UI screenshots |
+| `docs/` | All documentation (Chinese), see below |
+
+### Third-party components
+
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Built-in fonts: LXGW WenKai (reference characters on the template, OFL-1.1, full licence in `public/fonts/OFL.txt`) and Yozai (sample glyphs for the writing guide, OFL-1.1, full licence in `public/fonts/OFL-yozai.txt`).
+
+### Licence
+
+The source code is released under the **GNU General Public License v2.0** (see [LICENSE](LICENSE); the same full text ships with the app as `public/LICENSE-GPL-2.0.txt`, included in `dist/` and the portable zip).
+
+- Third-party components and data are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). `esm-potrace-wasm` (potrace packaged as WASM) is **GPL-2.0**; publishing this repository satisfies its source-code requirement. When distributing build artifacts, ship the GPL text and the source URL.
+- **Fonts generated by this app are not covered by the GPL** — they are the product of your own handwriting and can be used and shared freely.
+- `src/data/charRank.js` uses Jun Da's *Modern Chinese Character Frequency List*, which is **for research and teaching purposes only, non-commercial**; commercial use requires the author's written permission (see THIRD-PARTY-NOTICES.md for alternatives).
+- Running the app on your own machine, or sharing the generated fonts, does not trigger any GPL distribution obligation.
+
+### Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [Requirements & technical design](docs/手写字体制作软件-需求与技术方案.md) | What the project does, baseline for features and tech choices |
+| [Implementation plan](docs/实施计划.md) | Step-by-step roadmap, key parameters, milestones |
+| [Decision log](docs/决策记录.md) | **Authoritative decisions, contracts, rejected options** — takes precedence over any other document |
+| [Open items & risks](docs/待办与风险清单.md) | Undecided items, measurements still to do, implementation notes |
+| [Character-set standard](docs/字表标准与收字口径.md) | Why 8274 characters, sources and cross-checks |
+| [Print test records](docs/打印实测记录表.md) | How print tests were measured and where results went |
+| [Acceptance checklist](docs/验收走查清单.md) | Manual acceptance walkthrough: what to expect at each step |
+| [Commit history](docs/提交历史.md) | What changed and why, round by round (project progress) |
+
+`docs/` is in Chinese; the decision log is the single source of truth whenever documents disagree.
