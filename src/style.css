@@ -1211,13 +1211,21 @@ button.text:hover {
   text-align: center;
 }
 
-/* 「字形 / 位图」切换：跟在「关闭放大格」后面同一行（2026-10-23 用户口径） */
+/* 放大格上方的操作行：「关闭放大格」+「字形 / 位图」同一行、同一基线（2026-10-23 用户口径）。
+   用 flex 而不是行内流：三个按钮都是 .text（自带下划线），inline-flex + vertical-align 会让
+   下划线各差一像素（实测贴图）。 */
+.cell-zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+}
+
+/* 「字形 / 位图」两个按钮：与关闭按钮同一行、内部再留 10px 间距 */
 .scan-cell-zoom-view {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  margin-left: 12px;
-  vertical-align: middle;
 }
 
 .scan-cell-zoom-view button.active {

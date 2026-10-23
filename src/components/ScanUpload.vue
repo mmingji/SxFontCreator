@@ -1627,7 +1627,7 @@ watch(() => preset.value.outline, () => {
         </p>
         <p v-if="!zoomCell" class="panel-hint" data-role="cell-legend-tip">点任意一格看放大与统计</p>
         <!-- 2026-10-23 用户口径：放大格的「字形 / 位图」切换跟在「关闭放大格」后面，同一行（原来在右侧信息区顶部） -->
-        <p v-else class="panel-hint" data-role="cell-zoom-bar">
+        <p v-else class="panel-hint cell-zoom-bar" data-role="cell-zoom-bar">
           <button class="text" type="button" data-role="cell-zoom-close" @click="closeZoomCell()">关闭放大格</button>
           <span v-if="zoomCell.cell.verdict !== 'empty'" class="scan-cell-zoom-view" data-role="cell-zoom-view">
             <button
