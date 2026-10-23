@@ -1573,10 +1573,13 @@ function choosePreset(key, value) {
       <div class="backup-modal" role="dialog" aria-label="识别高级设置" data-role="scan-advanced-modal">
         <div class="backup-head">
           <h3>识别高级设置</h3>
-          <button class="text" type="button" data-role="scan-advanced-close" @click="advancedOpen = false">关闭</button>
+          <span class="backup-head-actions">
+            <button class="text" type="button" data-role="scan-advanced-reset" @click="resetPreset">恢复默认</button>
+            <button class="text" type="button" data-role="scan-advanced-close" @click="advancedOpen = false">关闭</button>
+          </span>
         </div>
         <p class="panel-hint">
-          这些档位决定"程序怎么认笔迹"。改完要点「开始识别」重新跑一次才生效（「轮廓」改的是生成字体时的追踪，需要重新生成）；已经识别出来的页不会自动变。
+          这些档位决定"程序怎么认笔迹"。改完要重新识别才会生效（「轮廓」改的是生成字体时的追踪，需要重新生成）；已经识别出来的页不会自动变。
         </p>
         <div class="preset-list">
           <div v-for="g in PRESET_GROUPS" :key="g.key" class="preset-row" :data-role="'preset-' + g.key">
@@ -1597,9 +1600,6 @@ function choosePreset(key, value) {
         <p class="panel-hint preset-hint preset-note">
           每组只改一个参数：墨色 → 笔迹灰度阈值；小点 → 最小墨点数；补断笔 → 1 像素闭运算；轮廓 → 拐角平滑；红圈灵敏度 → 红度阈值。具体数值按实测默认校准，不在这里展开。
         </p>
-        <div class="preset-actions">
-          <button class="text" type="button" data-role="scan-advanced-reset" @click="resetPreset">恢复默认</button>
-        </div>
       </div>
     </div>
 

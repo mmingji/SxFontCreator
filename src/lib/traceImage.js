@@ -13,7 +13,7 @@ import { collectPathCommands, commandsToPathData } from './svgPath.js'
 export const TRACE_DEFAULTS = {
   turdsize: 2, // 面积小于它的孤立噪点丛忽略
   turnpolicy: 4, // minority：potrace 推荐的拐角决策策略
-  alphamax: 1, // 拐角平滑阈值上限（1 = 默认平滑；手写笔画的起收笔锐角保留得住）
+  alphamax: 1, // 拐角平滑阈值上限（1 = 默认平滑；手写笔画的起收笔锐角保留得住）。与 glyphGeometry.FONT_DEFAULTS.alphamax 同值 —— 生成端总是显式传后者，这里只是兜底，改默认值要两处一起改
   opticurve: 1, // 启用贝塞尔拟合，输出 path 更精简
   opttolerance: 0.2 // 曲线拟合容差：越小越贴原像素轮廓
 }

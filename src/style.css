@@ -507,10 +507,14 @@ button.text:hover {
   align-items: baseline;
   gap: 12px;
   flex-wrap: wrap;
+  /* 窗口窄、标题换行时，操作组仍然靠右（否则会落到第二行左侧，右边缘对不上 step-body） */
+  margin-left: auto;
 }
 
-/* 步骤标题行右侧的操作位（第 1 步「更新预览」、第 2 步「清空结果」、第 3 步「清空全部数据 / 重新生成」）：
-   多个按钮之间要留间距 —— 2026-10-14 用户反馈"清空全部数据和重新生成这俩按钮贴死了" */
+/* 步骤标题行右侧的操作位（第 1 步「更新预览」、第 2 步「高级 / 清空结果」、第 3 步「清空全部数据 / 重新生成」）：
+   多个按钮之间要留间距 —— 2026-10-14 用户反馈"清空全部数据和重新生成这俩按钮贴死了"。
+   2026-10-23 用户口径：这一组按钮的右边缘与 `.step-body` 的右边缘（卡片内容右边缘）对齐；
+   它们本来就在卡片内容里、天然对齐，**不加任何负外边距**（不要动 step-body 里的内容）。 */
 #step-head-actions {
   display: inline-flex;
   align-items: baseline;
@@ -549,10 +553,6 @@ button.text:hover {
 
 .preset-summary {
   margin: 16px 0 0;
-}
-
-.preset-actions {
-  margin-top: 14px;
 }
 
 /* 卡片里的标题行（生成结果 / 字体预览 / 字形体检）：标题 + 紧随其后的说明，窄窗口自动换行。
@@ -747,6 +747,7 @@ button.text:hover {
 
 /* 「扫描识别的状态与结果」这一块（2026-10-13 用户口径，两轮下来的定版）：标题行 + 三行描述
    （识别汇总 / 更正册的识别结果 / 字形落盘）+ 拦下的原因与数据兜底说明。「清空结果」在步骤标题行右侧。 */
+/* 第 2 步状态块 */
 .scan-status {
   margin: 8px 0;
   padding: 8px 12px 10px;
@@ -1500,6 +1501,13 @@ button.text.accent:hover {
   margin-bottom: 8px;
 }
 
+/* 浮窗标题行右侧的动作组（「恢复默认」+「关闭」）：两个文本按钮之间留 12px，别贴死 */
+.backup-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .backup-head h3 {
   margin: 0;
   font-size: 15px;
@@ -1514,6 +1522,9 @@ button.text.accent:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  /* 2026-10-23 用户口径：「查看完整说明」的右边缘要与 `.step-body` 右边缘（卡片内容右边缘）对齐。
+     顶栏的右内边距是 20px，卡片内容再缩进 16px + 1px 边框，所以这里左移 17px。 */
+  margin-right: 17px;
 }
 
 /* ── 字形体检：两栏 tab + 表格（2026-10-15 用户口径）──────────────────────────
