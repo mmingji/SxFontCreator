@@ -25,7 +25,7 @@ export const CHECKUP_DEFAULTS = {
   fillLarge: 1.02, // 占格率高于它 → "写得过满"（得留出余量：正好顶满书写格时占格率就是 1.00，
   //                  按 `>` 0.995 判会把"刚好写满、没出格"的字也提示一遍；真件最大的两个是 1.02 / 1.03）
   outsidePixels: 30, // 越出书写格的墨迹像素超过它 → 提示"有笔画出格"（真件 p90 为 50）
-  debrisArea: 60, // 掩膜里面积小于它的独立块 → 碎块（1.6 已按 12 像素过滤，这里报"偏大的可疑碎块"）
+  debrisArea: 60, // 掩膜里面积小于它的独立块 → 碎块（1.6 已按 10 像素过滤，这里报"偏大的可疑碎块"）
   debrisCount: 4, // 独立块数**超过**它 → 提示可能漏笔画（真件中位 2、p90 4；正常连笔本来就会分成几块）
   thinStrokeRatio: 0.03, // 笔画宽度中位数 / 书写格边长 低于它 → "笔画偏细"（真件中位 3.4%，最细 2.4%）
   darkInkGray: 130, // 笔迹灰度中位数高于它 → "墨色偏淡"（与 1.6 的 lightInkGray 同值）
@@ -83,7 +83,7 @@ export function inspectGlyphMask(cell, options = {}) {
     }
   }
 
-  // 碎块：独立连通块的面积分布（1.6 已按 12 像素过滤过，所以这里看到的最小块也已经"不小"了）。
+  // 碎块：独立连通块的面积分布（1.6 已按 10 像素过滤过，所以这里看到的最小块也已经"不小"了）。
   // 面积 < debrisArea 的块单独报"碎块"；只有一块时不报（那多半只是笔画断口）
   const maskObj = { data: cell.mask, width, height }
   const comps = connectedComponents(maskObj, { minArea: 1 }).components || []

@@ -9,7 +9,7 @@
 import { potrace, init as initPotrace } from 'esm-potrace-wasm'
 import { collectPathCommands, commandsToPathData } from './svgPath.js'
 
-// potrace 参数（沿用参考项目实测值；本项目在它之前已有"面积过滤 12 像素"，turdsize 只作兜底）
+// potrace 参数（沿用参考项目实测值；本项目在它之前已有"面积过滤 10 像素"，turdsize 只作兜底）
 export const TRACE_DEFAULTS = {
   turdsize: 2, // 面积小于它的孤立噪点丛忽略
   turnpolicy: 4, // minority：potrace 推荐的拐角决策策略
