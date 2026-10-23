@@ -57,21 +57,74 @@ const docPageCount = ref(0)
 // **必须与成品画布一样高**（2026-10-18 用户要求）：原来非就绪态画布是 display:none、body 只剩
 //   `min-height: 120px`，而成品约 450px —— "载入完成"那一下卡片猛长一截，下面的内容整体往下跳。
 // 高度取两个来源，优先级从高到低：
-//   ① **上一次渲染成功的画布高度** —— 那就是成品的实际高度。画布尺寸只在渲染时设置（窗口缩放不会改它），
-//      所以这个记录值与画布永远一致，翻页 / 换档位时按它撑住即可。
+//   ① **上一次渲染成功的画布高度** —— 那就是成品的实际高度。窗口缩放时画布显示尺寸由
+//      onContainerResize 先等比调整、再按新宽度重渲染（见下），这个记录值始终跟着走；
 //   ② **还没有渲染过任何一页**（打开这一步的第一次加载）时，按容器宽度与纸张宽高比推算 ——
 //      与 renderPage 算缩放用的是同一个宽度口径，误差只在取整那一像素上。
 const placeholderHeight = ref(0)
 
-// 按容器宽度推算成品高度（给"第一次加载"用；写法与 renderPage 里的 scale 计算保持一致）
-function measurePlaceholder() {
+// ── 容器宽度变化：立刻等比缩放 + 防抖重渲染（2026-10-23 用户口径）──────────────
+// 为什么必须有：画布的显示尺寸在渲染时按"当时容器宽度"写成固定像素；窗口变窄后容器装不下，
+//   `.pdf-preview-body` 又是 overflow:auto —— 右侧被裁掉（可横向滚动），而不是跟着缩小。
+// 口径：① 宽度一变先把画布按新宽度等比缩放（这一刻起不再裁切）；
+//      ② 防抖 150ms 后按新宽度重渲染这一页（pdf.js 一页几十毫秒，目的是保持清晰）；
+//      ③ 灰底板高度跟着新宽度一起更新，避免"载入完成"时卡片跳高。
+const RESIZE_DEBOUNCE = 150
+let resizeObserver = null
+let resizeTimer = null
+let zoomResizeTimer = null
+let renderedWidth = 0 // 上一次按多少像素宽渲染的（0 = 还没渲染过任何一页）
+
+function effectiveWidth() {
   const body = bodyRef.value
-  const width = Math.min(props.maxWidth, (body && body.clientWidth) || props.maxWidth)
-  return Math.round(width / (props.pageRatio > 0 ? props.pageRatio : 297 / 210))
+  return Math.min(props.maxWidth, (body && body.clientWidth) || props.maxWidth)
+}
+
+// 按给定宽度设置画布的显示尺寸（不重渲染，只缩放显示；比例取自纸张宽高比）
+function applyDisplayWidth(width) {
+  const canvas = canvasRef.value
+  if (!canvas || !width) return
+  const ratio = props.pageRatio > 0 ? props.pageRatio : 297 / 210
+  canvas.style.width = Math.round(width) + 'px'
+  canvas.style.height = Math.round(width / ratio) + 'px'
+  placeholderHeight.value = Math.round(width / ratio)
+}
+
+function onContainerResize() {
+  const width = effectiveWidth()
+  if (!renderedWidth) {
+    // 还没渲染过任何一页（首次加载）：只把灰底板按新宽度撑好，渲染由 openDoc 负责
+    placeholderHeight.value = measurePlaceholder()
+    return
+  }
+  if (Math.abs(width - renderedWidth) < 2) return
+  if (status.value === 'ready') applyDisplayWidth(width)
+  clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    if (status.value === 'ready' || status.value === 'rendering') renderPage(openToken)
+  }, RESIZE_DEBOUNCE)
+}
+
+// 放大层按**视口**算尺寸（与主预览画布无关）：窗口变大时要跟着变大，不能停在旧的小尺寸上。
+// 窗口变小时受屏幕限制，按新视口重算即可（这不是"看大图变小"，而是屏幕装不下）。
+function onWindowResize() {
+  if (!zoomOpen.value) return
+  clearTimeout(zoomResizeTimer)
+  zoomResizeTimer = setTimeout(() => { if (zoomOpen.value) renderZoom() }, RESIZE_DEBOUNCE)
+}
+
+// 按容器宽度推算成品高度（给"第一次加载"用；与 effectiveWidth 同一个宽度口径）
+function measurePlaceholder() {
+  return Math.round(effectiveWidth() / (props.pageRatio > 0 ? props.pageRatio : 297 / 210))
 }
 
 onMounted(() => {
   if (!placeholderHeight.value) placeholderHeight.value = measurePlaceholder()
+  if (typeof ResizeObserver === 'function') {
+    resizeObserver = new ResizeObserver(() => onContainerResize())
+    if (bodyRef.value) resizeObserver.observe(bodyRef.value)
+  }
+  window.addEventListener('resize', onWindowResize)
 })
 
 // pdf.js 的模块加载与 worker 落位抽在 lib/pdfjsLoader.js —— 那里是"pdf.js 怎么用"的唯一出处
@@ -168,6 +221,8 @@ async function renderPage(token) {
     // 按容器宽度（不超过 maxWidth）算缩放：A4 横向 842pt 宽，容器 900px 时约 1.07 倍
     const base = page.getViewport({ scale: 1 })
     const containerWidth = Math.min(props.maxWidth, (bodyRef.value && bodyRef.value.clientWidth) || props.maxWidth)
+    // 记下这一轮是按多宽渲染的：容器宽度监听据此判断"要不要重渲染"（见 onContainerResize）
+    renderedWidth = containerWidth
     const scale = containerWidth / base.width
     const dpr = Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1)
     const viewport = page.getViewport({ scale })
@@ -275,6 +330,13 @@ onBeforeUnmount(() => {
   disposeTask(loadingTask)
   loadingTask = null
   docRef.value = null
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  clearTimeout(resizeTimer)
+  clearTimeout(zoomResizeTimer)
+  window.removeEventListener('resize', onWindowResize)
   document.removeEventListener('keydown', onKeydown)
 })
 </script>

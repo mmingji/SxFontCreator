@@ -1141,7 +1141,7 @@ button.text:hover {
   border-width: 2px;
 }
 
-/* 单格放大：用同一张拼图做"精灵图"（background-size 放大 17×8 倍 + 按格号取偏移），不额外占内存 */
+/* 单格放大：左边 192×192 的画框（默认矢量字形，可切识别时的位图），右边是统计与切换 */
 .scan-cell-zoom {
   display: flex;
   align-items: flex-start;
@@ -1154,14 +1154,73 @@ button.text:hover {
 }
 
 .scan-cell-zoom-img {
+  position: relative;
   flex: none;
   width: 192px;
   height: 192px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background-color: #fff;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* 字形视图：SVG 铺满画框 */
+.scan-cell-zoom-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 设计框（书写格映射范围）与基线：浅灰参照线，不与字形抢注意力 */
+.scan-cell-zoom-svg .zoom-frame {
+  fill: none;
+  stroke: #d8dde5;
+  stroke-width: 12;
+}
+
+.scan-cell-zoom-svg .zoom-baseline {
+  stroke: #e6ebf2;
+  stroke-width: 10;
+  stroke-dasharray: 40 30;
+}
+
+.scan-cell-zoom-svg .zoom-glyph {
+  fill: #1a1a1a;
+}
+
+/* 位图视图：146 像素原图铺满画框；pixelated 让"放大后有锯齿"如实呈现 */
+.scan-cell-zoom-bitmap {
+  position: absolute;
+  inset: 0;
   background-repeat: no-repeat;
   image-rendering: pixelated;
+}
+
+/* 尚无字形可画（正在现算 / 这一格没写 / 取不到掩膜）时的占位说明 */
+.scan-cell-zoom-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.scan-cell-zoom-view {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.scan-cell-zoom-view button.active {
+  color: var(--primary-dark);
+  font-weight: 600;
+  text-decoration: underline;
 }
 
 .scan-cell-zoom-info {

@@ -3,7 +3,8 @@
 // 职责：① 指定一个文件夹（系统文件夹对话框）→ 挑图片与字序文件 → 串行识别，边跑边显示、可中止
 //   ② **收批闸门**（单页失败跳过；右侧方块读不出只提示，页号与字序由纸面参考字定）
 //   ③ 结果**一页一张卡片**（状态 / 一行统计 / 看格子 / 作废 / 重传；完整信息在 hover 里）
-//   ④ 格级视图与单格放大（收进「看格子」弹窗，点开才渲染）
+//   ④ 格级视图与单格放大（收进「看格子」弹窗，点开才渲染）；放大格默认看**现算的矢量字形**，
+//      可切回识别时的位图（2026-10-23 用户口径，决策 八-22）
 // 2026-10-15 用户拍板去掉的两条界面操作：**手选页序**（含拖动排序）与**逐格确认** ——
 //   前者把准确性交给用户填数字（顺序一错整批错字），后者在"每页自证"落地后已无必要：
 //   右侧方块里那 12 位现在是"这一页那些字的指纹"，识别端能自己验出字序对不对（见 lib/pageCode.js）。
@@ -1157,7 +1158,8 @@ const zoomCell = computed(() => {
   const cell = (page.cells || []).find((c) => c.index === zoomIndex.value) || null
   return cell ? { page, cell } : null
 })
-// 用格子拼图做"精灵图"放大单格：background-size 放大 17×8 倍、再按格号取偏移（不额外占内存）
+// 位图视图用格子拼图做"精灵图"放大单格：background-size 放大 17×8 倍、再按格号取偏移（不额外占内存）；
+// 字形视图不走这里（它按掩膜现算矢量，见上面的 ensureZoomOutline）
 const zoomStyle = computed(() => {
   if (!zoomCell.value) return {}
   const sheet = images.value[zoomCell.value.page.fileIndex]
@@ -1225,6 +1227,89 @@ function isPresetOn(key, value) {
 function choosePreset(key, value) {
   setPreset(key === 'closeGaps' ? { closeGaps: value === 'on' } : { [key]: value })
 }
+
+// ── 单格放大：字形 / 位图双视图（2026-10-23 用户拍板 A）──────────────────────
+// 字形 = 按生成字体同一条路径现算的矢量轮廓（lib/cellGlyphPreview → glyphOutline.buildGlyphPath），
+//   追踪参数取当前「轮廓」档位；位图 = 识别时切出的原图（用来核对识别有没有丢笔画）。
+// 默认看字形；切换状态**跨格保持**（连续核对识别原貌时不必每格都切一次）。
+// 为什么不做在整页 136 个小格里：小格只有几十像素、矢量与位图看不出差别，而整页追踪一次约 0.5 秒；
+//   小格仍用位图，重点是"看识别状态"（蓝框 / 橙框 / 红框）。
+const zoomView = ref('glyph') // 'glyph' | 'bitmap'
+const zoomOutline = ref({ status: 'idle', d: '', key: '', reason: '' })
+let zoomToken = 0
+// key 带上「轮廓」档位：档位一变，同一格也要重新追踪（否则看到的是旧档位的字形）
+const zoomOutlineKey = computed(() => {
+  const z = zoomCell.value
+  return z ? z.page.fileIndex + ':' + z.cell.index + ':' + preset.value.outline : ''
+})
+
+async function ensureZoomOutline() {
+  const z = zoomCell.value
+  if (!z) return
+  if (z.cell.verdict === 'empty') {
+    zoomOutline.value = { status: 'empty', d: '', key: zoomOutlineKey.value, reason: '这一格没写' }
+    return
+  }
+  const key = zoomOutlineKey.value
+  // 同一格、同一档位的结果直接复用（在字形 / 位图之间来回切时不重算）
+  if (zoomOutline.value.key === key &&
+      (zoomOutline.value.status === 'ready' || zoomOutline.value.status === 'empty' ||
+       zoomOutline.value.status === 'loading')) return
+  const token = ++zoomToken
+  zoomOutline.value = { status: 'loading', d: '', key, reason: '' }
+  try {
+    // 动态加载：第 2 步打开时不背 potrace 与追踪模块，第一次点开多几十毫秒
+    const { loadCellGlyph, buildCellOutline } = await import('../lib/cellGlyphPreview.js')
+    const glyph = await loadCellGlyph({ fileIndex: z.page.fileIndex, cellIndex: z.cell.index })
+    if (token !== zoomToken) return
+    if (!glyph) {
+      // 落盘只存"有笔迹"的格：取不到掩膜时退回位图，并说明原因
+      zoomOutline.value = { status: 'missing', d: '', key, reason: '这一格没有可用的笔迹掩膜（可能已被清空识别结果）' }
+      zoomView.value = 'bitmap'
+      return
+    }
+    const path = await buildCellOutline(glyph, store.scan.advanced)
+    if (token !== zoomToken) return
+    if (path.empty) {
+      zoomOutline.value = { status: 'nooutline', d: '', key, reason: '这一格追踪不出轮廓（笔迹可能过细）' }
+      zoomView.value = 'bitmap'
+      return
+    }
+    zoomOutline.value = { status: 'ready', d: path.d, key, reason: '' }
+  } catch (e) {
+    if (token !== zoomToken) return
+    zoomOutline.value = { status: 'error', d: '', key, reason: e && e.message ? e.message : String(e) }
+    zoomView.value = 'bitmap'
+  }
+}
+
+function openZoomCell(index) {
+  if (zoomIndex.value === index) return
+  zoomIndex.value = index
+  ensureZoomOutline()
+}
+
+function closeZoomCell() {
+  zoomIndex.value = null
+}
+
+function setZoomView(view) {
+  zoomView.value = view
+  if (view === 'glyph') ensureZoomOutline()
+}
+
+// 放大格关掉（或换页 / 换格）时清掉旧轮廓：避免下一次打开时先闪一下上一格的形状
+watch(zoomIndex, (v) => {
+  if (v === null) {
+    zoomToken++
+    zoomOutline.value = { status: 'idle', d: '', key: '', reason: '' }
+  }
+})
+// 改了「轮廓」档位：正在看的字形要跟着变（与生成字体时取值同源，见 scanPresets.traceOptionsFromPreset）
+watch(() => preset.value.outline, () => {
+  if (zoomCell.value && zoomView.value === 'glyph') ensureZoomOutline()
+})
+
 </script>
 
 <template>
@@ -1534,7 +1619,7 @@ function choosePreset(key, value) {
             :data-verdict="cell.verdict"
             :data-marked="cell.marked ? '1' : '0'"
             :title="cellTitle(cell)"
-            @click="zoomIndex = cell.index"
+            @click="openZoomCell(cell.index)"
           ></span>
         </div>
         <p class="panel-hint" data-role="cell-legend">
@@ -1542,17 +1627,61 @@ function choosePreset(key, value) {
         </p>
         <p v-if="!zoomCell" class="panel-hint" data-role="cell-legend-tip">点任意一格看放大与统计</p>
         <p v-else class="panel-hint">
-          <button class="text" type="button" data-role="cell-zoom-close" @click="zoomIndex = null">关闭放大格</button>
+          <button class="text" type="button" data-role="cell-zoom-close" @click="closeZoomCell()">关闭放大格</button>
         </p>
 
         <div v-if="zoomCell" class="scan-cell-zoom">
-          <div class="scan-cell-zoom-img" :style="zoomStyle"></div>
+          <div class="scan-cell-zoom-img">
+            <!-- 字形：按生成字体同一条路径现算（当前「轮廓」档位），矢量绘制 -->
+            <svg
+              v-if="zoomView === 'glyph' && zoomOutline.status === 'ready'"
+              class="scan-cell-zoom-svg"
+              data-role="cell-zoom-svg"
+              viewBox="-16 -16 1032 1032"
+              role="img"
+              aria-label="这一格的矢量字形"
+            >
+              <!-- 设计框 = 书写格映射出来的范围（横向 0~1000、纵向 −100~900）；基线在 y = 0 -->
+              <rect class="zoom-frame" x="0" y="0" width="1000" height="1000"></rect>
+              <line class="zoom-baseline" x1="0" y1="900" x2="1000" y2="900"></line>
+              <g transform="translate(0,900) scale(1,-1)">
+                <path class="zoom-glyph" :d="zoomOutline.d"></path>
+              </g>
+            </svg>
+            <!-- 位图：识别时切出的原图（146 像素/格），用于核对识别原貌 -->
+            <div
+              v-else-if="zoomView === 'bitmap' && zoomOutline.status !== 'empty'"
+              class="scan-cell-zoom-bitmap"
+              data-role="cell-zoom-bitmap"
+              :style="zoomStyle"
+            ></div>
+            <p v-else class="scan-cell-zoom-state" data-role="cell-zoom-state">
+              {{ zoomOutline.status === 'loading' ? '正在按当前轮廓档位现算字形…' : (zoomOutline.reason || '正在取这一格的笔迹…') }}
+            </p>
+          </div>
           <div class="scan-cell-zoom-info">
+            <div v-if="zoomCell.cell.verdict !== 'empty'" class="scan-cell-zoom-view" data-role="cell-zoom-view">
+              <button
+                class="text"
+                type="button"
+                :class="{ active: zoomView === 'glyph' }"
+                data-role="cell-zoom-view-glyph"
+                @click="setZoomView('glyph')"
+              >字形</button>
+              <button
+                class="text"
+                type="button"
+                :class="{ active: zoomView === 'bitmap' }"
+                data-role="cell-zoom-view-bitmap"
+                @click="setZoomView('bitmap')"
+              >位图</button>
+            </div>
             <strong>第 {{ zoomCell.cell.index + 1 }} 格{{ zoomCell.cell.char ? '「' + zoomCell.cell.char + '」' : '' }}</strong>
             <p class="panel-hint">{{ zoomIsMarkedLabel }}</p>
             <p class="panel-hint" data-role="overflow-hint">{{ zoomOverflowHint }}</p>
             <p class="panel-hint" data-role="zoom-bitmap-note">
-              这里显示的是识别时切出的位图（每格 146 像素，放大后有锯齿）；字形轮廓是矢量，要到「生成」那一步才由笔迹追踪出来。
+              「字形」是按当前「轮廓」档位现算的矢量（追踪 → 按书写格映射、只裁不放大，与生成字体同一条路径）；
+              切到「位图」可看识别时切出的原图（每格 146 像素，放大后有锯齿）。
             </p>
           </div>
         </div>
