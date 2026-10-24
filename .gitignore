@@ -5,6 +5,10 @@
 # 2026-10-08：参考项目 sn-font-manager-copies 与单独的做字体网目录都已删，统一收进 copies/
 copies/
 
+# 开发文档与测试脚本：2026-10-24 起不随仓库提供（本地保留；README 只做入口索引）
+docs/
+test/
+
 # AI 协作规约（仅本地使用，不入库分发）
 /AGENTS.md
 
