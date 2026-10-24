@@ -10,7 +10,8 @@
 
 > 仓库：https://github.com/mmingji/SxFontCreator ｜ 许可：GPL-2.0（见 [LICENSE](LICENSE)）
 
-打印模板 → 照着格子手写 → 扫描回传 → 全自动切格提取手写字形 → 生成个人手写体字体（TTF / woff / woff2）。
+**手写体 / 手写字体制作器 HandWrite FontCreator**：自定义模板 / 可全量可随便一段话 → 纸笔手写 / 支持多轮更正 → 扫描识别 / 参数可调 → 自动切格提取字形并生成个人手写体字体（TTF / woff2）。无需网络、无需任何配置、开箱即用。
+
 纯前端、零后端、离线可用；**数据只保存在本机浏览器里** —— 清理浏览器数据、换电脑或换浏览器都会没有，那时把扫描件文件夹重指一次、重跑一遍识别即可（识别是确定性的）；**扫描件原图程序不留，请自己留一份**。
 
 本文件只做**入口索引**：怎么跑、目录在哪。开发文档（决策记录、实施计划、提交历史等）不随仓库提供。
@@ -32,11 +33,10 @@ npm install          # 若报 npm 缓存目录权限错误（EPERM），改用�
 npm run dev          # 开发服务：http://localhost:5173（跑 dev 时不要把 TEMP 设到项目内）
 npm run build        # 构建到 dist/；产物**双击 dist/index.html 即用**（file:// 形态，不需要本地服务）
 npm run pack         # 构建并打出可分发的 zip（release/SxFontCreator-<版本>-便携版.zip）
-npm test             # 全套：各测试脚本 → 构建 → 分发 zip → file:// 探针 → 冒烟（默认以 file:// 打开）
 npm run guide        # 重新生成《使用说明》单文件页（public/使用说明.html）
 ```
 
-构建与测试前把 `TEMP` 设到 `test/.tmp/esbuild`、**跑 dev 时不要设**。
+构建前把 `TEMP` 设到一个可写目录（本机 `%TEMP%` 删除受限时会中断构建）、**跑 dev 时不要设**。
 
 ## 目录速查
 

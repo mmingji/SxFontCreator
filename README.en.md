@@ -10,7 +10,7 @@
 
 > Repository: https://github.com/mmingji/SxFontCreator ｜ Licence: GPL-2.0 (see [LICENSE](LICENSE))
 
-Print a template → write the characters by hand in the grid → scan the pages back → the app slices every cell, extracts the strokes and builds a personal handwriting font (TTF / woff / woff2).
+**Handwriting font maker (HandWrite FontCreator)**: custom templates / the full character set or just a short passage → write by hand / multi-round corrections → scan and recognise with adjustable parameters → automatic cell slicing and stroke extraction → your own handwriting font (TTF / woff2). No network, no configuration, ready out of the box.
 
 Pure front-end, no backend, fully offline (double-click `dist/index.html`, no local server). **All data stays in your browser** — clearing browser data, switching computers or browsers loses it; just re-point the scan folder and run recognition again (recognition is deterministic). **Original scans are never stored by the app — keep your own copy.**
 
@@ -31,11 +31,10 @@ npm install          # if npm hits an EPERM cache error: npm install --cache .np
 npm run dev          # dev server: http://localhost:5173 (do not set TEMP to the project when running dev)
 npm run build        # build to dist/; double-click dist/index.html — file:// works, no server needed
 npm run pack         # build and zip a distributable: release/SxFontCreator-<version>-便携版.zip
-npm test             # full suite: unit → build → dist zip → file:// probe → end-to-end smoke
 npm run guide        # regenerate the single-file user guide (public/使用说明.html)
 ```
 
-Before building or testing, set `TEMP` to `test/.tmp/esbuild`; **do not** do that while running `dev`.
+Before building, point `TEMP` at a writable directory (the system `%TEMP%` may reject deletions and break the build); **do not** do that while running `dev`.
 
 ## Layout
 

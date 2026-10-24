@@ -11,7 +11,7 @@
 //   「七、参考与借鉴」压成三句（借鉴来源 / 自研声明 / 第三方许可）。
 //   同轮三处口径变动：① **"没写的字在 Word 里显示成方框"作废** —— 2026-10-16 实测 Word 也会回退成
 //   系统字体（浏览器与 Photoshop 同理）；② 新增 Photoshop 的实测坑（占位文本触发「字形保护」）；
-//   ③ 生成字体会**自动补一个空格字形**（空轮廓、advance 1000，见 lib/glyphBuilder.js）。
+//   ③ 生成字体会**自动补一个空格字形**（空轮廓、advance 300，2026-10-22 定案；见 lib/glyphBuilder.js）。
 //   渲染只支持一种行内标记 `**加粗**`（scripts/render-guide.mjs），因此正文里不再使用反引号。
 
 export const GUIDE_TITLE = 'SxFontCreator 使用说明'
