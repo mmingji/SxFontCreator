@@ -3,7 +3,8 @@
 //   界面只显示中文档位，映射到这里再由各模块使用。数字仍以各模块的默认值为准，这里只做"档位 → 参数"。
 // 为什么集中在一处：界面上改档位、识别端与生成端各自取值；分散写会把同一档位的含义写出两套。
 // 口径（《决策记录》二-10 与新增的识别高级档位条目）：
-//   ink      墨色：偏淡 = 阈值更低（保留淡笔迹）、偏深 = 阈值更高（只留深墨）
+//   ink      墨色：偏淡 = 阈值更高（保留淡笔迹、笔画更粗）、偏深 = 阈值更低（只留深墨、笔画更细）
+//            （2026-10-24 修正：原映射写反了 —— 灰度越深值越小，阈值 130 只会让笔画更细）
 //   dots     小点：保留 = 面积门槛更低（8，连"调"的 10 像素点都留）、严格 = 更高（15）
 //   closeGaps 补断笔：开 = 闭运算半径 1（断口 1~2 像素补上）、关 = 0
 //   outline  轮廓：圆润 = alphamax 1.3、硬朗 = 0.6（越小起收笔越锐）
@@ -92,7 +93,7 @@ export function normalizePreset(input) {
 export function extractOptionsFromPreset(input) {
   const p = normalizePreset(input)
   return {
-    inkThreshold: p.ink === 'light' ? 130 : p.ink === 'dark' ? 170 : 150,
+    inkThreshold: p.ink === 'light' ? 170 : p.ink === 'dark' ? 130 : 150,
     minBlobArea: p.dots === 'keep' ? 8 : p.dots === 'strict' ? 15 : 10,
     closeRadius: p.closeGaps ? 1 : 0
   }
